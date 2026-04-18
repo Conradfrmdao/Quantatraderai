@@ -1,0 +1,43 @@
+# QuntaTradeAI risk configuration.
+#
+# Per-(venue, asset_class) overrides. The `default` block is applied
+# when no matching override is found. Env vars in .env are the outermost
+# fallback (see src/config_loader.py).
+#
+# asset_class values: crypto_perp | crypto_spot | forex
+#
+# Bump these numbers only after backtesting and a successful testnet/practice run.
+
+default:
+  max_position_pct: 3.0
+  max_loss_per_position_pct: 8.0
+  max_leverage: 2.0
+  max_total_exposure_pct: 20.0
+  daily_loss_circuit_breaker_pct: 4.0
+  mandatory_sl_pct: 2.5
+  max_concurrent_positions: 5
+  min_balance_reserve_pct: 30.0
+
+overrides:
+  - venue: hyperliquid
+    asset_class: crypto_perp
+    max_leverage: 3.0
+    mandatory_sl_pct: 2.5
+
+  - venue: ccxt
+    asset_class: crypto_spot
+    # Spot cannot be leveraged
+    max_leverage: 1.0
+    max_position_pct: 5.0
+
+  - venue: ccxt
+    asset_class: crypto_perp
+    max_leverage: 3.0
+
+  - venue: oanda
+    asset_class: forex
+    # Forex pip moves are tiny; wider position pct, tighter SL in pct terms
+    max_position_pct: 5.0
+    max_leverage: 10.0
+    mandatory_sl_pct: 0.5
+    max_loss_per_position_pct: 2.0

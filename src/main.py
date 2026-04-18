@@ -44,7 +44,14 @@ def get_interval_seconds(interval_str):
 def main():
     """Parse CLI args, bootstrap dependencies, and launch the trading loop."""
     clear_terminal()
-    parser = argparse.ArgumentParser(description="LLM-based Trading Agent on Hyperliquid")
+    parser = argparse.ArgumentParser(
+        prog="qunta",
+        description="QuntaTradeAI — Claude-powered multi-venue AI trading agent.",
+    )
+    parser.add_argument("--venue", type=str, default=None,
+                        help="hyperliquid (default) | ccxt[:<exchange>] | oanda. "
+                             "Currently this main loop uses the Hyperliquid path; other venues "
+                             "are exercised via src/backtesting/engine.py and src/dashboard/status.py.")
     parser.add_argument("--assets", type=str, nargs="+", required=False, help="Assets to trade, e.g., BTC ETH")
     parser.add_argument("--interval", type=str, required=False, help="Interval period, e.g., 1h")
     args = parser.parse_args()

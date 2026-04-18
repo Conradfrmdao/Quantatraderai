@@ -1,19 +1,23 @@
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.title="QuntaTradeAI"
+LABEL org.opencontainers.image.description="Claude-powered multi-venue AI trading agent (crypto + forex)."
+
 WORKDIR /app
 
-# Install dependencies directly (no poetry needed)
 RUN pip install --no-cache-dir \
     hyperliquid-python-sdk \
     anthropic \
     python-dotenv \
     aiohttp \
-    requests
+    requests \
+    rich \
+    ccxt \
+    pyyaml
 
-# Copy source
 COPY src ./src
+COPY risk.yaml ./risk.yaml
 
-# API defaults
 ENV APP_PORT=3000
 EXPOSE 3000
 

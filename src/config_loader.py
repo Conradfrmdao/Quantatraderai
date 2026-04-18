@@ -1,4 +1,4 @@
-"""Centralized environment variable loading for the trading agent configuration."""
+"""Centralized environment variable loading for QuntaTradeAI."""
 
 import json
 import os
@@ -8,7 +8,6 @@ load_dotenv()
 
 
 def _get_env(name: str, default: str | None = None, required: bool = False) -> str | None:
-    """Fetch an environment variable with optional default and required validation."""
     value = os.getenv(name, default)
     if required and (value is None or value == ""):
         raise RuntimeError(f"Missing required environment variable: {name}")
@@ -50,7 +49,6 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
     if raw is None or raw.strip() == "":
         return default
     raw = raw.strip()
-    # Support JSON-style lists
     if raw.startswith("[") and raw.endswith("]"):
         try:
             parsed = json.loads(raw)
@@ -59,7 +57,6 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
             return [str(item).strip().strip('"\'') for item in parsed if str(item).strip()]
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Invalid JSON list for {name}: {raw}") from exc
-    # Fallback: comma separated string
     values = []
     for item in raw.split(","):
         cleaned = item.strip().strip('"\'')
@@ -69,37 +66,54 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
 
 
 CONFIG = {
+    # Venue selection
+    "venue": _get_env("VENUE", "hyperliquid"),
+
     # Hyperliquid
-    "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY") or _get_env("LIGHTER_PRIVATE_KEY"),
+    "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY"),
     "mnemonic": _get_env("MNEMONIC"),
     "hyperliquid_base_url": _get_env("HYPERLIQUID_BASE_URL"),
     "hyperliquid_network": _get_env("HYPERLIQUID_NETWORK", "mainnet"),
-    "hyperliquid_vault_address": _get_env("HYPERLIQUID_VAULT_ADDRESS"),  # Main wallet address (agent signs on behalf)
+    "hyperliquid_vault_address": _get_env("HYPERLIQUID_VAULT_ADDRESS"),
 
-    # LLM — Anthropic Claude API (primary)
+    # CCXT (generic crypto exchange)
+    "ccxt_exchange": _get_env("CCXT_EXCHANGE", "binance"),
+    "ccxt_api_key": _get_env("CCXT_API_KEY"),
+    "ccxt_api_secret": _get_env("CCXT_API_SECRET"),
+    "ccxt_sandbox": _get_bool("CCXT_SANDBOX", True),
+
+    # OANDA (forex)
+    "oanda_api_token": _get_env("OANDA_API_TOKEN"),
+    "oanda_account_id": _get_env("OANDA_ACCOUNT_ID"),
+    "oanda_env": _get_env("OANDA_ENV", "practice"),
+
+    # LLM — Anthropic Claude
     "anthropic_api_key": _get_env("ANTHROPIC_API_KEY", required=True),
-    "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-20250514"),
+    "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-6"),
     "sanitize_model": _get_env("SANITIZE_MODEL", "claude-haiku-4-5-20251001"),
     "max_tokens": _get_int("MAX_TOKENS", 4096),
     "enable_tool_calling": _get_bool("ENABLE_TOOL_CALLING", False),
-
-    # Extended thinking (Claude)
     "thinking_enabled": _get_bool("THINKING_ENABLED", False),
     "thinking_budget_tokens": _get_int("THINKING_BUDGET_TOKENS", 10000),
 
-    # Runtime controls
-    "assets": _get_env("ASSETS"),  # e.g., "BTC ETH SOL OIL GOLD SPX"
-    "interval": _get_env("INTERVAL"),  # e.g., "5m", "1h"
+    # Runtime
+    "assets": _get_env("ASSETS"),
+    "interval": _get_env("INTERVAL"),
 
-    # Risk management
-    "max_position_pct": _get_env("MAX_POSITION_PCT", "10"),
-    "max_loss_per_position_pct": _get_env("MAX_LOSS_PER_POSITION_PCT", "20"),
-    "max_leverage": _get_env("MAX_LEVERAGE", "10"),
-    "max_total_exposure_pct": _get_env("MAX_TOTAL_EXPOSURE_PCT", "50"),
-    "daily_loss_circuit_breaker_pct": _get_env("DAILY_LOSS_CIRCUIT_BREAKER_PCT", "10"),
-    "mandatory_sl_pct": _get_env("MANDATORY_SL_PCT", "5"),
-    "max_concurrent_positions": _get_env("MAX_CONCURRENT_POSITIONS", "10"),
-    "min_balance_reserve_pct": _get_env("MIN_BALANCE_RESERVE_PCT", "20"),
+    # Risk management — global fallbacks; per-venue overrides in risk.yaml
+    "max_position_pct": _get_env("MAX_POSITION_PCT", "3"),
+    "max_loss_per_position_pct": _get_env("MAX_LOSS_PER_POSITION_PCT", "8"),
+    "max_leverage": _get_env("MAX_LEVERAGE", "2"),
+    "max_total_exposure_pct": _get_env("MAX_TOTAL_EXPOSURE_PCT", "20"),
+    "daily_loss_circuit_breaker_pct": _get_env("DAILY_LOSS_CIRCUIT_BREAKER_PCT", "4"),
+    "mandatory_sl_pct": _get_env("MANDATORY_SL_PCT", "2.5"),
+    "max_concurrent_positions": _get_env("MAX_CONCURRENT_POSITIONS", "5"),
+    "min_balance_reserve_pct": _get_env("MIN_BALANCE_RESERVE_PCT", "30"),
+    "risk_config_path": _get_env("RISK_CONFIG_PATH", "risk.yaml"),
+
+    # Alerts
+    "telegram_bot_token": _get_env("TELEGRAM_BOT_TOKEN"),
+    "telegram_chat_id": _get_env("TELEGRAM_CHAT_ID"),
 
     # API server
     "api_host": _get_env("API_HOST", "0.0.0.0"),

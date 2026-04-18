@@ -1,28 +1,87 @@
-"""Centralized risk management for the trading agent.
+"""Centralized risk management for QuntaTradeAI.
 
 All safety guards are enforced here, independent of LLM decisions.
-The LLM cannot override these limits — they are hard-coded checks
-applied before every trade execution.
+Limits are loaded from risk.yaml with per-(venue, asset_class) overrides;
+env vars in .env are the outermost fallback.
 """
 
 import logging
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from src.config_loader import CONFIG
 
 
-class RiskManager:
-    """Enforces risk limits on every trade before execution."""
+def _load_yaml_config(path: str) -> dict:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        import yaml
+    except ImportError:
+        logging.warning("pyyaml not installed; skipping risk.yaml at %s", path)
+        return {}
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        logging.warning("risk.yaml at %s is not a mapping; ignoring", path)
+        return {}
+    return data
 
-    def __init__(self):
-        self.max_position_pct = float(CONFIG.get("max_position_pct") or 10)
-        self.max_loss_per_position_pct = float(CONFIG.get("max_loss_per_position_pct") or 20)
-        self.max_leverage = float(CONFIG.get("max_leverage") or 10)
-        self.max_total_exposure_pct = float(CONFIG.get("max_total_exposure_pct") or 50)
-        self.daily_loss_circuit_breaker_pct = float(CONFIG.get("daily_loss_circuit_breaker_pct") or 10)
-        self.mandatory_sl_pct = float(CONFIG.get("mandatory_sl_pct") or 5)
-        self.max_concurrent_positions = int(CONFIG.get("max_concurrent_positions") or 10)
-        self.min_balance_reserve_pct = float(CONFIG.get("min_balance_reserve_pct") or 20)
+
+def _resolve_limits(yaml_cfg: dict, venue: str | None, asset_class: str | None) -> dict:
+    """Merge yaml default + matching override for (venue, asset_class)."""
+    merged = dict(yaml_cfg.get("default") or {})
+    for override in yaml_cfg.get("overrides") or []:
+        if not isinstance(override, dict):
+            continue
+        if override.get("venue") == venue and override.get("asset_class") == asset_class:
+            merged.update({k: v for k, v in override.items() if k not in {"venue", "asset_class"}})
+            break
+    return merged
+
+
+class RiskManager:
+    """Enforces risk limits on every trade before execution.
+
+    venue/asset_class pick the override block in risk.yaml. Env vars in
+    CONFIG are the fallback when neither risk.yaml nor an override provides
+    a value.
+    """
+
+    def __init__(self, venue: str | None = None, asset_class: str | None = None):
+        self.venue = venue or CONFIG.get("venue")
+        self.asset_class = asset_class
+
+        yaml_cfg = _load_yaml_config(CONFIG.get("risk_config_path") or "risk.yaml")
+        yaml_limits = _resolve_limits(yaml_cfg, self.venue, self.asset_class)
+
+        def _pick(key: str, env_key: str, cast, default):
+            if key in yaml_limits:
+                return cast(yaml_limits[key])
+            env_val = CONFIG.get(env_key)
+            if env_val is not None:
+                return cast(env_val)
+            return cast(default)
+
+        self.max_position_pct = _pick("max_position_pct", "max_position_pct", float, 3)
+        self.max_loss_per_position_pct = _pick(
+            "max_loss_per_position_pct", "max_loss_per_position_pct", float, 8
+        )
+        self.max_leverage = _pick("max_leverage", "max_leverage", float, 2)
+        self.max_total_exposure_pct = _pick(
+            "max_total_exposure_pct", "max_total_exposure_pct", float, 20
+        )
+        self.daily_loss_circuit_breaker_pct = _pick(
+            "daily_loss_circuit_breaker_pct", "daily_loss_circuit_breaker_pct", float, 4
+        )
+        self.mandatory_sl_pct = _pick("mandatory_sl_pct", "mandatory_sl_pct", float, 2.5)
+        self.max_concurrent_positions = _pick(
+            "max_concurrent_positions", "max_concurrent_positions", int, 5
+        )
+        self.min_balance_reserve_pct = _pick(
+            "min_balance_reserve_pct", "min_balance_reserve_pct", float, 30
+        )
 
         # Daily tracking
         self.daily_high_value = None
@@ -30,8 +89,13 @@ class RiskManager:
         self.circuit_breaker_active = False
         self.circuit_breaker_date = None
 
+        logging.info(
+            "RISK: venue=%s asset_class=%s limits=pos<=%.1f%% lev<=%.1fx SL=%.2f%% DD=%.1f%%",
+            self.venue, self.asset_class, self.max_position_pct,
+            self.max_leverage, self.mandatory_sl_pct, self.daily_loss_circuit_breaker_pct,
+        )
+
     def _reset_daily_if_needed(self, account_value: float):
-        """Reset daily high watermark at UTC day boundary."""
         today = datetime.now(timezone.utc).date()
         if self.daily_high_date != today:
             self.daily_high_value = account_value
@@ -46,7 +110,6 @@ class RiskManager:
     # ------------------------------------------------------------------
 
     def check_position_size(self, alloc_usd: float, account_value: float) -> tuple[bool, str]:
-        """Single position cannot exceed max_position_pct of account."""
         if account_value <= 0:
             return False, "Account value is zero or negative"
         max_alloc = account_value * (self.max_position_pct / 100.0)
@@ -59,7 +122,6 @@ class RiskManager:
 
     def check_total_exposure(self, positions: list[dict], new_alloc: float,
                               account_value: float) -> tuple[bool, str]:
-        """Sum of all position notionals + new allocation cannot exceed max_total_exposure_pct."""
         current_exposure = 0.0
         for pos in positions:
             qty = abs(float(pos.get("quantity") or pos.get("szi") or 0))
@@ -75,7 +137,6 @@ class RiskManager:
         return True, ""
 
     def check_leverage(self, alloc_usd: float, balance: float) -> tuple[bool, str]:
-        """Effective leverage of new trade cannot exceed max_leverage."""
         if balance <= 0:
             return False, "Balance is zero or negative"
         effective_lev = alloc_usd / balance
@@ -86,7 +147,6 @@ class RiskManager:
         return True, ""
 
     def check_daily_drawdown(self, account_value: float) -> tuple[bool, str]:
-        """Activate circuit breaker if account drops max % from daily high."""
         self._reset_daily_if_needed(account_value)
         if self.circuit_breaker_active:
             return False, "Daily loss circuit breaker is active — no new trades until tomorrow (UTC)"
@@ -102,7 +162,6 @@ class RiskManager:
         return True, ""
 
     def check_concurrent_positions(self, current_count: int) -> tuple[bool, str]:
-        """Limit number of simultaneous open positions."""
         if current_count >= self.max_concurrent_positions:
             return False, (
                 f"Already at max concurrent positions ({self.max_concurrent_positions})"
@@ -110,7 +169,6 @@ class RiskManager:
         return True, ""
 
     def check_balance_reserve(self, balance: float, initial_balance: float) -> tuple[bool, str]:
-        """Don't trade if balance falls below reserve threshold."""
         if initial_balance <= 0:
             return True, ""
         min_balance = initial_balance * (self.min_balance_reserve_pct / 100.0)
@@ -127,10 +185,8 @@ class RiskManager:
 
     def enforce_stop_loss(self, sl_price: float | None, entry_price: float,
                            is_buy: bool) -> float:
-        """Ensure every trade has a stop-loss. Auto-set if missing."""
         if sl_price is not None:
             return sl_price
-        # Auto-set SL at mandatory_sl_pct from entry
         sl_distance = entry_price * (self.mandatory_sl_pct / 100.0)
         if is_buy:
             return round(entry_price - sl_distance, 2)
@@ -142,16 +198,6 @@ class RiskManager:
     # ------------------------------------------------------------------
 
     def check_losing_positions(self, positions: list[dict]) -> list[dict]:
-        """Return positions that should be force-closed due to excessive loss.
-
-        Args:
-            positions: List of position dicts with keys:
-                coin/symbol, szi/quantity, entryPx/entry_price,
-                pnl/unrealized_pnl
-
-        Returns:
-            List of positions that exceed the max loss threshold.
-        """
         to_close = []
         for pos in positions:
             coin = pos.get("coin") or pos.get("symbol")
@@ -188,19 +234,6 @@ class RiskManager:
 
     def validate_trade(self, trade: dict, account_state: dict,
                         initial_balance: float) -> tuple[bool, str, dict]:
-        """Run all safety checks on a proposed trade.
-
-        Args:
-            trade: LLM trade decision with keys:
-                asset, action, allocation_usd, tp_price, sl_price
-            account_state: Current account with keys:
-                balance, total_value, positions
-            initial_balance: Starting balance for reserve check
-
-        Returns:
-            (allowed, reason, adjusted_trade)
-            adjusted_trade may have modified sl_price if it was missing.
-        """
         action = trade.get("action", "hold")
         if action == "hold":
             return True, "", trade
@@ -209,50 +242,43 @@ class RiskManager:
         if alloc_usd <= 0:
             return False, "Zero or negative allocation", trade
 
-        # Hyperliquid minimum order size is $10
-        if alloc_usd < 11.0:
-            alloc_usd = 11.0
+        # Venue minimum order size (Hyperliquid is $10). Bump if below.
+        min_order_usd = float(account_state.get("min_order_usd", 11.0))
+        if alloc_usd < min_order_usd:
+            alloc_usd = min_order_usd
             trade = {**trade, "allocation_usd": alloc_usd}
-            logging.info("RISK: Bumped allocation to $11 (Hyperliquid $10 minimum)")
+            logging.info("RISK: Bumped allocation to $%.2f (venue minimum)", min_order_usd)
 
         account_value = float(account_state.get("total_value", 0))
         balance = float(account_state.get("balance", 0))
         positions = account_state.get("positions", [])
         is_buy = action == "buy"
 
-        # 1. Daily drawdown circuit breaker
         ok, reason = self.check_daily_drawdown(account_value)
         if not ok:
             return False, reason, trade
 
-        # 2. Balance reserve
         ok, reason = self.check_balance_reserve(balance, initial_balance)
         if not ok:
             return False, reason, trade
 
-        # 3. Position size limit
         ok, reason = self.check_position_size(alloc_usd, account_value)
         if not ok:
-            # Cap allocation instead of rejecting
             max_alloc = account_value * (self.max_position_pct / 100.0)
-            # But never below Hyperliquid's $10 minimum
-            if max_alloc < 11.0:
-                max_alloc = 11.0
+            if max_alloc < min_order_usd:
+                max_alloc = min_order_usd
             logging.warning("RISK: Capping allocation from $%.2f to $%.2f", alloc_usd, max_alloc)
             alloc_usd = max_alloc
             trade = {**trade, "allocation_usd": alloc_usd}
 
-        # 4. Total exposure
         ok, reason = self.check_total_exposure(positions, alloc_usd, account_value)
         if not ok:
             return False, reason, trade
 
-        # 5. Leverage check
         ok, reason = self.check_leverage(alloc_usd, balance)
         if not ok:
             return False, reason, trade
 
-        # 6. Concurrent positions
         active_count = sum(
             1 for p in positions
             if abs(float(p.get("szi") or p.get("quantity") or 0)) > 0
@@ -261,7 +287,6 @@ class RiskManager:
         if not ok:
             return False, reason, trade
 
-        # 7. Enforce mandatory stop-loss
         current_price = float(trade.get("current_price", 0))
         entry_price = current_price if current_price > 0 else 1.0
         sl_price = trade.get("sl_price")
@@ -274,8 +299,9 @@ class RiskManager:
         return True, "", trade
 
     def get_risk_summary(self) -> dict:
-        """Return current risk parameters for inclusion in LLM context."""
         return {
+            "venue": self.venue,
+            "asset_class": self.asset_class,
             "max_position_pct": self.max_position_pct,
             "max_loss_per_position_pct": self.max_loss_per_position_pct,
             "max_leverage": self.max_leverage,

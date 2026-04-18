@@ -1,26 +1,51 @@
 """Decision-making agent that orchestrates LLM prompts and indicator lookups.
 
-Uses the Anthropic Claude API directly for trade decisions.
+Supports multiple LLM providers via src/agent/providers/:
+  anthropic  — Claude (best quality)                        PAID
+  groq       — Llama 3.3 70B / 8B, Gemma2                  FREE
+  gemini     — Gemini 2.0 Flash / 1.5 Flash                 FREE
+  ollama     — any local model (llama3, mistral, …)         FREE (local)
+  openrouter — DeepSeek-R1, Llama, Mistral and more         FREE models
+
+Set LLM_PROVIDER and LLM_MODEL in .env.
 """
 
 import asyncio
-import anthropic
-from src.config_loader import CONFIG
-from src.indicators.local_indicators import compute_all, last_n, latest
 import json
 import logging
 from datetime import datetime
 
+from src.agent.providers.factory import get_provider
+from src.config_loader import CONFIG
+from src.indicators.local_indicators import compute_all, last_n, latest
+
 
 class TradingAgent:
-    """High-level trading agent that delegates reasoning to Claude."""
+    """High-level trading agent that delegates reasoning to an LLM provider."""
 
     def __init__(self, hyperliquid=None):
-        self.model = CONFIG["llm_model"]
-        self.client = anthropic.Anthropic(api_key=CONFIG["anthropic_api_key"])
+        self.provider = get_provider()
+        self.model = self.provider.model
         self.hyperliquid = hyperliquid
-        self.sanitize_model = CONFIG.get("sanitize_model") or "claude-haiku-4-5-20251001"
         self.max_tokens = int(CONFIG.get("max_tokens") or 4096)
+
+        # Fallback sanitizer — use a cheap Anthropic model if available,
+        # otherwise reuse the same provider.
+        sanitize_model = CONFIG.get("sanitize_model")
+        anthropic_key = CONFIG.get("anthropic_api_key")
+        if sanitize_model and anthropic_key and not anthropic_key.startswith("dummy"):
+            try:
+                from src.agent.providers.anthropic_provider import AnthropicProvider
+                self._sanitize_provider = AnthropicProvider(model=sanitize_model)
+            except Exception:
+                self._sanitize_provider = self.provider
+        else:
+            self._sanitize_provider = self.provider
+
+        logging.info(
+            "TradingAgent using provider=%s model=%s",
+            self.provider.name, self.provider.model,
+        )
 
     def decide_trade(self, assets, context):
         """Decide for multiple assets in one call."""

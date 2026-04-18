@@ -1,119 +1,133 @@
-# Hyperliquid AI Trading Agent
+# QuntaTradeAI
 
-An AI-powered trading agent that uses Claude to analyze markets and execute perpetual futures trades on Hyperliquid. Supports crypto, stocks, commodities, indices, and forex via HIP-3 markets.
+A Claude-powered, multi-venue AI trading agent. QuntaTradeAI evaluates live market data with technical indicators, asks Claude for buy/sell/hold decisions, and executes trades through pluggable venue adapters across **crypto** and **forex** platforms.
+
+> Originally forked from [aggarwaldev/hyperliquid-trading-agent](https://github.com/aggarwaldev/hyperliquid-trading-agent). Rearchitected to be venue-agnostic, with tightened risk defaults and scaffolding for backtesting and alerts.
 
 ## What It Does
 
-1. Fetches real-time candle data and computes technical indicators (EMA, RSI, MACD, ATR, BBands, ADX, OBV, VWAP) locally from Hyperliquid
-2. Sends full market context to Claude, which decides buy/sell/hold for each asset
-3. Executes trades with take-profit and stop-loss orders
-4. Hard-coded safety guards enforce position limits, leverage caps, and loss protection
+1. Fetches real-time candles from the selected venue and computes local technical indicators (EMA, RSI, MACD, ATR, BBands, ADX, OBV, VWAP).
+2. Sends the full market context to Claude, which returns structured buy/sell/hold decisions with allocation and TP/SL.
+3. The risk manager validates every trade against hard-coded limits before execution.
+4. The venue adapter executes the approved orders.
 
-## Tradeable Markets
+## Supported Venues
 
-All 229+ Hyperliquid perp markets plus HIP-3 tradfi assets:
+| Venue | Asset classes | Adapter |
+|---|---|---|
+| **Hyperliquid** | Crypto perps (+ HIP-3 tradfi assets) | `src/venues/crypto/hyperliquid.py` |
+| **CCXT** (100+ exchanges: Binance, Coinbase, Kraken, OKX, Bybit, KuCoin, Bitget, Gate, MEXC, ...) | Crypto spot + many perps | `src/venues/crypto/ccxt_adapter.py` |
+| **OANDA** | Forex majors/minors/exotics + CFDs | `src/venues/forex/oanda.py` |
 
-- **Crypto**: BTC, ETH, SOL, HYPE, AVAX, SUI, ARB, LINK, and 200+ more
-- **Stocks**: xyz:TSLA, xyz:NVDA, xyz:AAPL, xyz:GOOGL, xyz:AMZN, xyz:META, xyz:MSFT, xyz:COIN, xyz:PLTR...
-- **Commodities**: xyz:GOLD, xyz:SILVER, xyz:BRENTOIL, xyz:CL, xyz:COPPER, xyz:NATGAS, xyz:PLATINUM
-- **Indices**: xyz:SP500, xyz:XYZ100
-- **Forex**: xyz:EUR, xyz:JPY
+Additional native adapters (Binance perps, MetaTrader 5, Interactive Brokers) are stubbed and can be filled in as needs arise.
 
 ## Safety Guards
 
-All enforced in code, not just LLM prompts. Configurable via `.env`:
+All enforced in code, not just LLM prompts. Defaults are intentionally conservative:
 
-| Guard | Default | Description |
-|-------|---------|-------------|
-| Max Position Size | 10% | Single position capped at 10% of portfolio |
-| Force Close | -20% | Auto-close positions at 20% loss |
-| Max Leverage | 10x | Hard leverage cap |
-| Total Exposure | 50% | All positions combined capped at 50% |
-| Daily Circuit Breaker | -10% | Stops new trades at 10% daily drawdown |
-| Mandatory Stop-Loss | 5% | Auto-set SL if LLM doesn't provide one |
-| Max Positions | 10 | Concurrent position limit |
-| Balance Reserve | 20% | Don't trade below 20% of initial balance |
+| Guard | QuntaTradeAI default | Upstream default |
+|-------|---------------------|------------------|
+| Max position size | **3%** | 10% |
+| Max leverage | **2x** | 10x |
+| Mandatory stop-loss | **2.5%** | 5% |
+| Daily drawdown circuit breaker | **-4%** | -10% |
+| Force-close loss threshold | **-8%** | -20% |
+| Total exposure | **20%** | 50% |
+| Max concurrent positions | **5** | 10 |
+| Balance reserve | **30%** | 20% |
+
+Loosen these only after backtesting and a testnet/practice run.
+
+Per-venue and per-asset-class overrides live in [risk.yaml](risk.yaml).
 
 ## Setup
 
 ### Prerequisites
 - Python 3.12+
-- Anthropic API key
-- Hyperliquid wallet (agent wallet as signer + main wallet with funds)
+- [Poetry](https://python-poetry.org/) 2.x (or use plain pip per the Dockerfile)
 
-### Configuration
-
+### Install
 ```bash
+poetry install
 cp .env.example .env
-# Edit .env with your keys
+# fill in your keys
 ```
 
-Required environment variables:
-- `ANTHROPIC_API_KEY` — Claude API key
-- `HYPERLIQUID_PRIVATE_KEY` — Agent/API wallet private key (signer only)
-- `HYPERLIQUID_VAULT_ADDRESS` — Main wallet address (holds funds)
-- `ASSETS` — Space-separated list of assets to trade
-- `INTERVAL` — Trading loop interval (e.g. `5m`, `1h`)
+### API keys
 
-### Install & Run
+1. **Anthropic** — create a key at [console.anthropic.com](https://console.anthropic.com) and set `ANTHROPIC_API_KEY`. Default model is `claude-sonnet-4-6` (cheaper for per-bar loops); switch to `claude-opus-4-7` for higher-stakes decisions.
+2. **Hyperliquid** — in the Hyperliquid UI, generate an **API wallet** (not your main seed), set `HYPERLIQUID_PRIVATE_KEY` (API wallet key) and `HYPERLIQUID_VAULT_ADDRESS` (main wallet). Start with `HYPERLIQUID_NETWORK=testnet`.
+3. **CCXT crypto exchange** — pick one (e.g. Binance). Create a key with **trade enabled, withdrawals disabled**, IP-allowlisted. Set `CCXT_EXCHANGE`, `CCXT_API_KEY`, `CCXT_API_SECRET`, `CCXT_SANDBOX=true`.
+4. **OANDA** — create a **practice** account at [developer.oanda.com](https://developer.oanda.com), generate a personal access token. Set `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID`, `OANDA_ENV=practice`.
+5. **Telegram alerts** (optional) — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+
+### Run
 
 ```bash
-pip install hyperliquid-python-sdk anthropic python-dotenv aiohttp requests
-python3 src/main.py
+# Hyperliquid (default)
+poetry run qunta --venue hyperliquid --assets "BTC ETH SOL" --interval 5m
+
+# CCXT (Binance spot)
+poetry run qunta --venue ccxt --assets "BTC/USDT ETH/USDT" --interval 15m
+
+# OANDA (forex, practice env)
+poetry run qunta --venue oanda --assets "EUR_USD GBP_USD USD_JPY" --interval 1h
 ```
 
-Or with CLI args:
+Or via `.env` (`VENUE`, `ASSETS`, `INTERVAL`) and `poetry run qunta`.
+
+### Backtesting
+
 ```bash
-python3 src/main.py --assets "BTC ETH SOL xyz:GOLD xyz:TSLA" --interval 5m
+poetry run python -m src.backtesting.engine \
+    --venue hyperliquid --symbol BTC --timeframe 1h --days 30 --sample 50
 ```
 
-### Agent Wallet Setup
+Backtests call the **same** `decision_maker` and `risk_manager` code as live; only the venue is swapped for a mock that tracks PnL in memory.
 
-1. Go to app.hyperliquid.xyz → Settings → API Wallets
-2. Add your agent wallet address as an authorized signer
-3. Set `HYPERLIQUID_VAULT_ADDRESS` to your main wallet address in `.env`
+### Status CLI
 
-The agent wallet signs trades on behalf of your main wallet. It cannot withdraw funds.
+```bash
+poetry run python -m src.dashboard.status
+```
+
+Prints current positions, today's PnL, and the last N Claude decisions.
+
+## Validation Sequence (do this before real money)
+
+1. **Backtest** the tightened risk config on ≥30 days of historical data. Confirm it's not catastrophic.
+2. **Testnet / practice run** — Hyperliquid testnet or OANDA practice env. Run the live loop for several full decision cycles. Confirm orders submit, the risk manager rejects oversized trades, and alerts fire.
+3. **Live with minimum stake** — only after 1 and 2 pass, start with the smallest viable equity.
 
 ## Structure
 
 ```
 src/
-  main.py                  # Entry point, trading loop, API server
-  config_loader.py         # Environment config with defaults
-  risk_manager.py          # Safety guards (position limits, loss protection)
-  agent/
-    decision_maker.py      # Claude API integration, tool calling
-  indicators/
-    local_indicators.py    # EMA, RSI, MACD, ATR, BBands, ADX, OBV, VWAP
-    taapi_client.py        # Legacy (unused) — kept for reference
-  trading/
-    hyperliquid_api.py     # Order execution, candles, state queries
-  utils/
-    formatting.py          # Number formatting
-    prompt_utils.py        # JSON serialization helpers
+  main.py                   # Entry point, trading loop, API server
+  config_loader.py          # Environment config
+  risk_manager.py           # Safety guards
+  agent/decision_maker.py   # Claude integration
+  indicators/               # Local TA indicators
+  venues/
+    base.py                 # Abstract Venue interface
+    models.py               # Shared Order/Position/Balance/Candle dataclasses
+    registry.py             # venue-name -> adapter
+    crypto/
+      hyperliquid.py
+      ccxt_adapter.py
+    forex/
+      oanda.py
+  backtesting/              # Backtest engine + mock venue
+  alerts/                   # Notifier (Telegram, console)
+  dashboard/                # Status CLI
+  trading/hyperliquid_api.py  # Legacy wrapper, now used by venues/crypto/hyperliquid.py
 ```
-
-## How It Works
-
-Each loop iteration:
-1. Fetches account state (balance, positions, PnL)
-2. Force-closes any position at >= 20% loss
-3. Gathers candle data and computes indicators for all assets
-4. Sends everything to Claude with risk limits
-5. Claude returns buy/sell/hold decisions with allocation, TP/SL
-6. Risk manager validates each trade (caps allocation, enforces SL)
-7. Executes approved trades (market or limit orders)
 
 ## API Endpoints
 
-When running, serves a local API:
-- `GET /diary` — Recent trade diary entries as JSON
+When running, the agent serves a local HTTP API:
+- `GET /diary` — recent trade diary entries
 - `GET /logs` — LLM request logs
-
-## Dashboard
-
-A separate Next.js dashboard is available for real-time PnL and trade monitoring. See the `dashboard/` directory or deploy to Vercel.
 
 ## License
 
