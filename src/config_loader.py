@@ -87,14 +87,43 @@ CONFIG = {
     "oanda_account_id": _get_env("OANDA_ACCOUNT_ID"),
     "oanda_env": _get_env("OANDA_ENV", "practice"),
 
-    # LLM — Anthropic Claude
-    "anthropic_api_key": _get_env("ANTHROPIC_API_KEY", required=True),
+    # LLM provider selection
+    # Free options: groq | gemini | ollama | openrouter
+    # Paid: anthropic (best quality)
+    "llm_provider": _get_env("LLM_PROVIDER", "anthropic"),
     "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-6"),
-    "sanitize_model": _get_env("SANITIZE_MODEL", "claude-haiku-4-5-20251001"),
     "max_tokens": _get_int("MAX_TOKENS", 4096),
     "enable_tool_calling": _get_bool("ENABLE_TOOL_CALLING", False),
     "thinking_enabled": _get_bool("THINKING_ENABLED", False),
     "thinking_budget_tokens": _get_int("THINKING_BUDGET_TOKENS", 10000),
+
+    # Anthropic (llm_provider=anthropic)
+    "anthropic_api_key": _get_env("ANTHROPIC_API_KEY"),
+    "sanitize_model": _get_env("SANITIZE_MODEL", "claude-haiku-4-5-20251001"),
+
+    # Groq — FREE (llm_provider=groq)
+    # Sign up at console.groq.com — no credit card needed
+    # Models: llama-3.3-70b-versatile | llama-3.1-8b-instant | gemma2-9b-it
+    "groq_api_key": _get_env("GROQ_API_KEY"),
+
+    # Google Gemini — FREE (llm_provider=gemini)
+    # Sign up at aistudio.google.com — no credit card needed
+    # Models: gemini-2.0-flash-exp | gemini-1.5-flash
+    "gemini_api_key": _get_env("GEMINI_API_KEY"),
+
+    # Ollama — FREE local (llm_provider=ollama)
+    # Install: https://ollama.com  then: ollama pull llama3.2
+    "ollama_base_url": _get_env("OLLAMA_BASE_URL", "http://localhost:11434"),
+
+    # OpenRouter — FREE models available (llm_provider=openrouter)
+    # Sign up at openrouter.ai — free models: deepseek/deepseek-r1:free etc.
+    "openrouter_api_key": _get_env("OPENROUTER_API_KEY"),
+
+    # Binance (venue=binance or binance:futures / binance:spot)
+    "binance_api_key": _get_env("BINANCE_API_KEY"),
+    "binance_api_secret": _get_env("BINANCE_API_SECRET"),
+    "binance_market": _get_env("BINANCE_MARKET", "futures"),
+    "binance_sandbox": _get_bool("BINANCE_SANDBOX", True),
 
     # Runtime
     "assets": _get_env("ASSETS"),
@@ -121,5 +150,4 @@ CONFIG = {
 
     # Legacy / optional
     "taapi_api_key": _get_env("TAAPI_API_KEY"),
-    "openrouter_api_key": _get_env("OPENROUTER_API_KEY"),
 }

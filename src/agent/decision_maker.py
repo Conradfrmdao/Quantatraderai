@@ -157,31 +157,19 @@ class TradingAgent:
 
         enable_tools = CONFIG.get("enable_tool_calling", False)
 
-        def _call_claude(msgs, use_tools=True):
-            """Make a Claude API call with optional tool use."""
+        def _call_llm(msgs, use_tools=True):
+            """Call the configured LLM provider."""
             _log_request(self.model, msgs)
-            kwargs = {
-                "model": self.model,
-                "max_tokens": self.max_tokens,
-                "system": system_prompt,
-                "messages": msgs,
-            }
-            if use_tools and enable_tools:
-                kwargs["tools"] = tools
-            if CONFIG.get("thinking_enabled"):
-                kwargs["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": int(CONFIG.get("thinking_budget_tokens") or 10000),
-                }
-                # When thinking is enabled, max_tokens must be larger
-                kwargs["max_tokens"] = max(self.max_tokens, 16000)
-
-            response = self.client.messages.create(**kwargs)
-            logging.info("Claude response: stop_reason=%s, usage=%s",
-                        response.stop_reason, response.usage)
+            tool_list = tools if (use_tools and enable_tools and self.provider.supports_tools) else None
+            response = self.provider.complete(
+                system=system_prompt,
+                messages=msgs,
+                max_tokens=self.max_tokens,
+                tools=tool_list,
+            )
             with open("llm_requests.log", "a", encoding="utf-8") as f:
                 f.write(f"Response stop_reason: {response.stop_reason}\n")
-                f.write(f"Usage: input={response.usage.input_tokens}, output={response.usage.output_tokens}\n")
+                f.write(f"Usage: input={response.input_tokens}, output={response.output_tokens}\n")
             return response
 
         def _handle_tool_call(tool_name, tool_input):
@@ -253,11 +241,9 @@ class TradingAgent:
                 return json.dumps({"error": str(ex)})
 
         def _sanitize_output(raw_content: str, assets_list):
-            """Use a cheap Claude model to normalize malformed output."""
+            """Use a cheap model to normalize malformed JSON output."""
             try:
-                response = self.client.messages.create(
-                    model=self.sanitize_model,
-                    max_tokens=2048,
+                sanitize_resp = self._sanitize_provider.complete(
                     system=(
                         "You are a strict JSON normalizer. Return ONLY a JSON object with two keys: "
                         "\"reasoning\" (string) and \"trade_decisions\" (array). "
@@ -269,12 +255,9 @@ class TradingAgent:
                         "If input is wrapped in markdown or has prose, extract just the JSON. Do not add fields."
                     ),
                     messages=[{"role": "user", "content": raw_content}],
+                    max_tokens=2048,
                 )
-                content = ""
-                for block in response.content:
-                    if block.type == "text":
-                        content += block.text
-                parsed = json.loads(content)
+                parsed = json.loads(sanitize_resp.content)
                 if isinstance(parsed, dict) and "trade_decisions" in parsed:
                     return parsed
                 return {"reasoning": "", "trade_decisions": []}
@@ -285,21 +268,28 @@ class TradingAgent:
         # Main loop: up to 6 iterations to handle tool calls
         for iteration in range(6):
             try:
-                response = _call_claude(messages)
-            except anthropic.APIError as e:
-                logging.error("Claude API error: %s", e)
+                response = _call_llm(messages)
+            except Exception as e:
+                logging.error("LLM provider error: %s", e)
                 with open("llm_requests.log", "a", encoding="utf-8") as f:
                     f.write(f"API Error: {e}\n")
                 break
 
-            # Check if the response contains tool use
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-            text_blocks = [b for b in response.content if b.type == "text"]
+            # Tool-use path: only Anthropic provider returns stop_reason="tool_use"
+            # with structured raw blocks.  Other providers return tool calls embedded
+            # in the text or don't support tools — they fall straight to JSON parsing.
+            raw_resp = response.raw
+            tool_use_blocks = []
+            text_blocks_raw = []
+
+            if raw_resp is not None and hasattr(raw_resp, "content"):
+                # Anthropic response object
+                tool_use_blocks = [b for b in raw_resp.content if b.type == "tool_use"]
+                text_blocks_raw = [b for b in raw_resp.content if b.type == "text"]
 
             if tool_use_blocks and response.stop_reason == "tool_use":
-                # Build assistant message with all content blocks
                 assistant_content = []
-                for block in response.content:
+                for block in raw_resp.content:
                     if block.type == "text":
                         assistant_content.append({"type": "text", "text": block.text})
                     elif block.type == "tool_use":
@@ -316,7 +306,6 @@ class TradingAgent:
                         })
                 messages.append({"role": "assistant", "content": assistant_content})
 
-                # Process each tool call
                 tool_results = []
                 for block in tool_use_blocks:
                     result_str = _handle_tool_call(block.name, block.input)
@@ -328,13 +317,13 @@ class TradingAgent:
                 messages.append({"role": "user", "content": tool_results})
                 continue
 
-            # No tool calls — parse the text response as JSON
-            raw_text = ""
-            for block in text_blocks:
-                raw_text += block.text
+            # No tool calls — use the provider's normalized text content
+            raw_text = response.content
+            if text_blocks_raw:
+                raw_text = "".join(b.text for b in text_blocks_raw)
 
             if not raw_text.strip():
-                logging.error("Empty response from Claude")
+                logging.error("Empty response from LLM provider")
                 break
 
             # Strip markdown code fences if present
