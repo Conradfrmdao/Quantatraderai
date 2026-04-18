@@ -604,10 +604,103 @@ def main():
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    def _cors(response):
+        """Add CORS headers so the Next.js UI can call the API."""
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
+
+    async def handle_status(request):
+        """Agent health — provider, model, venue, uptime, tick count."""
+        uptime_s = (datetime.now(timezone.utc) - start_time).total_seconds()
+        return _cors(web.json_response({
+            "status": "running",
+            "provider": agent.provider.name,
+            "model": agent.model,
+            "venue": args.venue or "hyperliquid",
+            "assets": args.assets,
+            "interval": args.interval,
+            "uptime_seconds": int(uptime_s),
+            "tick_count": invocation_count,
+        }))
+
+    async def handle_account(request):
+        """Current account snapshot — balance, equity, PnL, return."""
+        try:
+            state = await hyperliquid.get_user_state()
+            total_value = state.get("total_value") or (
+                state["balance"] + sum(p.get("pnl", 0) for p in state["positions"])
+            )
+            init = initial_account_value or total_value
+            return _cors(web.json_response({
+                "balance": round(state["balance"], 4),
+                "equity": round(total_value, 4),
+                "initial_equity": round(init, 4),
+                "total_return_pct": round((total_value - init) / init * 100, 4) if init else 0,
+                "open_positions": len(state["positions"]),
+                "sharpe": round(calculate_sharpe(trade_log), 4),
+            }))
+        except Exception as e:
+            return _cors(web.json_response({"error": str(e)}, status=500))
+
+    async def handle_positions(request):
+        """Live open positions."""
+        try:
+            state = await hyperliquid.get_user_state()
+            rows = []
+            for pos in state["positions"]:
+                coin = pos.get("coin")
+                px = await hyperliquid.get_current_price(coin) if coin else None
+                rows.append({
+                    "symbol": coin,
+                    "quantity": round_or_none(pos.get("szi"), 6),
+                    "entry_price": round_or_none(pos.get("entryPx"), 2),
+                    "current_price": round_or_none(px, 2),
+                    "liquidation_price": round_or_none(pos.get("liquidationPx") or pos.get("liqPx"), 2),
+                    "unrealized_pnl": round_or_none(pos.get("pnl"), 4),
+                    "leverage": pos.get("leverage"),
+                })
+            return _cors(web.json_response({"positions": rows}))
+        except Exception as e:
+            return _cors(web.json_response({"error": str(e)}, status=500))
+
+    async def handle_risk(request):
+        """Active risk configuration."""
+        from src.config_loader import CONFIG as CFG
+        return _cors(web.json_response({
+            "max_position_pct": CFG.get("max_position_pct"),
+            "max_leverage": CFG.get("max_leverage"),
+            "mandatory_sl_pct": CFG.get("mandatory_sl_pct"),
+            "max_loss_per_position_pct": CFG.get("max_loss_per_position_pct"),
+            "daily_loss_circuit_breaker_pct": CFG.get("daily_loss_circuit_breaker_pct"),
+            "max_total_exposure_pct": CFG.get("max_total_exposure_pct"),
+            "max_concurrent_positions": CFG.get("max_concurrent_positions"),
+            "min_balance_reserve_pct": CFG.get("min_balance_reserve_pct"),
+        }))
+
+    async def handle_decisions(request):
+        """Last N AI trade decisions from the diary."""
+        try:
+            limit = int(request.query.get("limit", "20"))
+            if not os.path.exists(diary_path):
+                return _cors(web.json_response({"decisions": []}))
+            with open(diary_path) as f:
+                lines = f.readlines()
+            start = max(0, len(lines) - limit)
+            entries = [json.loads(l) for l in lines[start:]]
+            return _cors(web.json_response({"decisions": entries}))
+        except Exception as e:
+            return _cors(web.json_response({"error": str(e)}, status=500))
+
     async def start_api(app):
-        """Register HTTP endpoints for observing diary entries and logs."""
-        app.router.add_get('/diary', handle_diary)
-        app.router.add_get('/logs', handle_logs)
+        """Register HTTP endpoints."""
+        app.router.add_get("/diary", handle_diary)
+        app.router.add_get("/logs", handle_logs)
+        app.router.add_get("/api/status", handle_status)
+        app.router.add_get("/api/account", handle_account)
+        app.router.add_get("/api/positions", handle_positions)
+        app.router.add_get("/api/risk", handle_risk)
+        app.router.add_get("/api/decisions", handle_decisions)
 
     async def main_async():
         """Start the aiohttp server and kick off the trading loop."""
