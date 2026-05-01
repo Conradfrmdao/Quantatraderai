@@ -1,3 +1,4 @@
+import { sendWelcomeEmail } from "@/lib/email";
 import { Webhook } from "svix";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
@@ -48,6 +49,11 @@ export async function POST(req: Request) {
       },
       update: {},
     });
+    // Fire welcome email (non-blocking — failure never breaks the webhook)
+    const emailAddr = data.email_addresses[0]?.email_address;
+    if (emailAddr) {
+      sendWelcomeEmail(emailAddr, data.first_name ?? "Trader").catch(() => {});
+    }
   }
 
   if (payload.type === "user.updated") {

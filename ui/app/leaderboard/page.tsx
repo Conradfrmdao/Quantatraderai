@@ -20,15 +20,33 @@ interface PersonaRow {
   active: boolean;
 }
 
+interface BenchmarkData {
+  persona_id: string; total_return_pct: number; win_rate_pct: number;
+  total_trades: number; max_drawdown_pct: number; sharpe: number;
+  days?: number; symbol?: string; run_at?: string;
+}
+
 function PersonaLeaderboard() {
-  const [rows, setRows]   = useState<PersonaRow[]>([]);
+  const [rows, setRows]       = useState<PersonaRow[]>([]);
+  const [benchmarks, setBench] = useState<Record<string, BenchmarkData>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Load live session stats
     fetch("/api/agent/personas/leaderboard", { credentials: "same-origin" })
       .then(r => r.json())
-      .then(d => { setRows(d.leaderboard ?? []); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(d => { setRows(d.leaderboard ?? []); })
+      .catch(() => {});
+    // Load verified backtest results (pre-computed, served as static JSON)
+    fetch("/persona_benchmarks.json")
+      .then(r => r.json())
+      .then((d: { personas: BenchmarkData[] }) => {
+        const map: Record<string, BenchmarkData> = {};
+        for (const p of (d.personas ?? [])) map[p.persona_id] = p;
+        setBench(map);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const STYLE_COLOR: Record<string, string> = {
@@ -77,15 +95,32 @@ function PersonaLeaderboard() {
                     <span style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>{row.riskProfile} risk</span>
                   </div>
                 </div>
-                {[
-                  { label: "Win Rate", value: row.win_rate_pct !== null ? `${row.win_rate_pct}%` : row.winRateRange, positive: (row.win_rate_pct ?? 50) >= 50 },
-                  { label: "P&L", value: row.gross_pnl !== 0 ? `${row.gross_pnl >= 0 ? "+" : ""}$${row.gross_pnl.toFixed(2)}` : "—", positive: row.gross_pnl >= 0 },
-                  { label: "Trades", value: row.total_trades > 0 ? row.total_trades.toString() : "—", positive: true },
-                ].map(m => (
+                {(() => {
+                  const b = benchmarks[row.id];
+                  return [
+                    {
+                      label: b ? "90d Return" : "Win Rate",
+                      value: b ? `${b.total_return_pct >= 0 ? "+" : ""}${b.total_return_pct.toFixed(1)}%` : (row.win_rate_pct !== null ? `${row.win_rate_pct}%` : row.winRateRange),
+                      positive: b ? b.total_return_pct >= 0 : (row.win_rate_pct ?? 50) >= 50,
+                      sub: b ? `Verified Backtest` : undefined,
+                    },
+                    {
+                      label: b ? "Win Rate" : "P&L",
+                      value: b ? `${b.win_rate_pct.toFixed(1)}%` : (row.gross_pnl !== 0 ? `${row.gross_pnl >= 0 ? "+" : ""}$${row.gross_pnl.toFixed(2)}` : "—"),
+                      positive: b ? b.win_rate_pct >= 50 : row.gross_pnl >= 0,
+                    },
+                    {
+                      label: b ? "Sharpe" : "Trades",
+                      value: b ? b.sharpe.toFixed(2) : (row.total_trades > 0 ? row.total_trades.toString() : "—"),
+                      positive: b ? b.sharpe > 0 : true,
+                    },
+                  ];
+                })().map((m: { label: string; value: string; positive: boolean; sub?: string }) => (
                   <div key={m.label} style={{ textAlign: "right" }}>
                     <p style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}>{m.label}</p>
                     <p style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums",
                       color: m.positive ? "var(--green)" : "var(--red)" }}>{m.value}</p>
+                    {m.sub && <p style={{ fontSize: 8, color: "rgba(74,222,128,0.6)", marginTop: 1, letterSpacing: "0.06em" }}>{m.sub}</p>}
                   </div>
                 ))}
                 <Link href="/dashboard"

@@ -452,20 +452,47 @@ export default function OnboardingPage() {
                         </p>
                       </div>
                     )}
-                    {["BINANCE", "HYPERLIQUID", "BYBIT", "OANDA", "ALPACA"].map(v => (
-                      <button key={v} onClick={() => setVenueType(v)}
-                        style={{ padding: "12px 16px", borderRadius: 10, cursor: "pointer", textAlign: "left",
-                          background: venueType === v ? "rgba(74,222,128,0.08)" : "rgba(255,255,255,0.02)",
-                          border: `1px solid ${venueType === v ? "rgba(74,222,128,0.3)" : "rgba(255,255,255,0.07)"}`,
-                          color: venueType === v ? "#4ade80" : "rgba(255,255,255,0.7)",
-                          fontSize: 13, fontWeight: venueType === v ? 600 : 400,
-                          display: "flex", alignItems: "center", gap: 10 }}>
-                        {venueType === v && <Check size={12} />}
-                        {v.charAt(0) + v.slice(1).toLowerCase()}
-                      </button>
+                    {[
+                      { id: "BINANCE",     label: "Binance",      sub: "Crypto futures + spot",  url: "https://www.binance.com/en/my/settings/api-management",   perms: 'Enable Spot & Margin Trading — DISABLE Withdrawals' },
+                      { id: "HYPERLIQUID", label: "Hyperliquid",  sub: "Crypto perpetuals",       url: "https://app.hyperliquid.xyz/settings/api",                 perms: 'API wallet only — never paste your main wallet key' },
+                      { id: "BYBIT",       label: "Bybit",        sub: "Crypto spot + perps",    url: "https://www.bybit.com/app/user/api-management",            perms: 'Trade permission — disable withdrawals + IP whitelist' },
+                      { id: "OANDA",       label: "OANDA",        sub: "Forex + CFDs",            url: "https://www.oanda.com/us-en/trading/accounts/",            perms: 'Personal access token from My Account → API Access' },
+                      { id: "ALPACA",      label: "Alpaca",       sub: "US Stocks + Crypto",      url: "https://app.alpaca.markets/paper-trading/overview",        perms: 'Paper: paper.alpaca.markets — Live: app.alpaca.markets' },
+                    ].map(v => (
+                      <div key={v.id} style={{ marginBottom: 6 }}>
+                        <button onClick={() => setVenueType(v.id)}
+                          style={{ padding: '10px 14px', borderRadius: 10, cursor: 'pointer',
+                            textAlign: 'left', width: '100%',
+                            background: venueType === v.id ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.02)',
+                            border: `1px solid ${venueType === v.id ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.07)'}`,
+                            display: 'flex', alignItems: 'center', gap: 10 }}>
+                          {venueType === v.id && <Check size={11} style={{ color: '#4ade80', flexShrink: 0 }} />}
+                          <div>
+                            <span style={{ fontSize: 13, fontWeight: venueType === v.id ? 700 : 400,
+                              color: venueType === v.id ? '#4ade80' : '#fff' }}>{v.label}</span>
+                            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginLeft: 8 }}>{v.sub}</span>
+                          </div>
+                        </button>
+                        {venueType === v.id && (
+                          <div style={{ marginTop: 4, padding: '10px 14px',
+                            background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.12)',
+                            borderRadius: '0 0 10px 10px', borderTop: 'none' }}>
+                            <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.5 }}>
+                              <strong style={{ color: 'rgba(255,255,255,0.75)' }}>Required permission:</strong> {v.perms}
+                            </p>
+                            <a href={v.url} target='_blank' rel='noopener noreferrer'
+                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                                fontSize: 11, color: '#4ade80', textDecoration: 'none',
+                                background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)',
+                                padding: '5px 12px', borderRadius: 6, fontWeight: 600 }}>
+                              Open {v.label} API settings ↗
+                            </a>
+                          </div>
+                        )}
+                      </div>
                     ))}
-                    <p style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", marginTop: 4 }}>
-                      You&apos;ll enter your API key on the next screen.
+                    <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 4 }}>
+                      Click your exchange to see the exact permission needed and a direct link.
                     </p>
                   </div>
                 )}

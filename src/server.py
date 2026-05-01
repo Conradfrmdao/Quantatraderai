@@ -290,6 +290,14 @@ class AgentState:
         self.loss_cooldown_count: int  = 0       # 0 = no cooldown
         self.strategy_type:      str   = ""
 
+        # Async queues — decouple slow LLM calls + order execution from tick timing.
+        # The tick loop posts work; dedicated worker tasks drain these queues.
+        # This prevents a slow LLM response from blocking all subsequent ticks.
+        self._llm_queue:   asyncio.Queue = asyncio.Queue(maxsize=4)
+        self._order_queue: asyncio.Queue = asyncio.Queue(maxsize=20)
+        self._llm_worker_task:   asyncio.Task | None = None
+        self._order_worker_task: asyncio.Task | None = None
+
     def log(self, msg: str):
         ts = datetime.now(timezone.utc).isoformat()
         entry = {"ts": ts, "msg": msg}
@@ -895,6 +903,14 @@ async def _tick_for(s: "AgentState"):
         sym    = dec.get("asset", "")
         action = dec.get("action", "hold")
         alloc  = float(dec.get("allocation_usd", 0))
+        # Beta live cap — clamp live allocation to BETA_LIVE_CAP_USD
+        if not s.is_paper:
+            _beta = float(os.getenv('BETA_LIVE_CAP_USD', '500'))
+            if _beta > 0 and alloc > _beta:
+                s.log(f'[BETA CAP] Clamped ${alloc:.2f} to ${_beta:.2f}')
+                alloc = _beta
+                dec['allocation_usd'] = alloc
+
         s.log(f"AI: {action.upper()} {sym} ${alloc:.2f} — {dec.get('rationale','')[:80]}")
 
         if action not in ("buy", "sell") or alloc <= 0:
@@ -1001,14 +1017,95 @@ async def _tick():
 
 # ── Main trading loop ─────────────────────────────────────────────────────────
 
+# ── LLM Decision Worker ──────────────────────────────────────────────────────
+# Drains s._llm_queue. Runs concurrently with the tick loop so a slow LLM
+# call (3-5s) never blocks indicator collection or WebSocket broadcasts.
+
+async def _llm_worker(s: "AgentState"):
+    """Dedicated coroutine that processes LLM decision requests off the main tick path."""
+    while s.status in ("running", "stopping"):
+        try:
+            ctx = await asyncio.wait_for(s._llm_queue.get(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            break
+        try:
+            if s.ai_agent:
+                result = s.ai_agent.decide_trade(ctx["symbols"], ctx["context"])
+                decisions = result.get("trade_decisions", []) if isinstance(result, dict) else []
+                # Push decisions to the order queue for execution
+                if decisions and not s.is_paper:
+                    await s._order_queue.put({"decisions": decisions, "equity": ctx["equity"], "balance": ctx["balance"]})
+                # Always update decision feed
+                if decisions:
+                    entry = {"ts": datetime.now(timezone.utc).isoformat(), "trade_decisions": decisions, "council": None}
+                    s.decisions.appendleft(entry)
+                    await _broadcast({"type": "decisions_update", "data": list(s.decisions)[:20]}, s.user_id)
+        except Exception as e:
+            s.log(f"[LLM worker] error: {e}")
+        finally:
+            s._llm_queue.task_done()
+
+
+async def _order_worker(s: "AgentState"):
+    """Dedicated coroutine that executes validated orders off the main tick path."""
+    while s.status in ("running", "stopping"):
+        try:
+            job = await asyncio.wait_for(s._order_queue.get(), timeout=2.0)
+        except asyncio.TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            break
+        try:
+            decisions = job.get("decisions", [])
+            equity    = job.get("equity", 0.0)
+            balance   = job.get("balance", 0.0)
+            acc_state = {"total_value": equity, "balance": balance, "positions": s.positions}
+            for dec in decisions:
+                sym    = dec.get("asset", "")
+                action = dec.get("action", "hold")
+                alloc  = float(dec.get("allocation_usd", 0))
+                if action not in ("buy", "sell") or alloc <= 0 or not s.risk_mgr:
+                    continue
+                dec["current_price"] = s.price_cache.get(sym.replace("/", ""), 0)
+                ok, reason, dec = s.risk_mgr.validate_trade(dec, acc_state, s.initial_equity or 0)
+                if not ok:
+                    s.log(f"[ORDER worker] RISK BLOCKED {sym}: {reason}")
+                    continue
+                price = dec["current_price"]
+                if price <= 0: continue
+                qty = alloc / price
+                try:
+                    await s.venue.place_order(symbol=sym, side=action, quantity=qty,
+                                              order_type="market",
+                                              stop_loss=dec.get("sl_price"),
+                                              take_profit=dec.get("tp_price"))
+                    s.log(f"[ORDER worker] {action.upper()} {sym} qty={qty:.6f} @ ~${price}")
+                    s.trade_log.append({"action": action, "price": price, "qty": qty})
+                    s.daily_trade_count += 1
+                    await _broadcast({"type": "trade_executed", "data": {
+                        "symbol": sym, "action": action, "price": price, "qty": qty,
+                        "venue": s.venue_name,
+                    }}, s.user_id)
+                except Exception as e:
+                    s.log(f"[ORDER worker] exec error {sym}: {e}")
+        except Exception as e:
+            s.log(f"[ORDER worker] job error: {e}")
+        finally:
+            s._order_queue.task_done()
+
+
 async def _run_loop_for(s: "AgentState"):
     s.start_time   = datetime.now(timezone.utc)
     s.last_tick_at = datetime.now(timezone.utc)
     s.log(f"Agent started — symbols={s.symbols} tf={s.timeframe} paper={s.is_paper}")
     await _broadcast({"type": "status_update", "status": "running", "paper": s.is_paper}, s.user_id)
 
-    s._price_task   = asyncio.create_task(_stream_prices(s.symbols, s.timeframe))
-    s._deadman_task = asyncio.create_task(_dead_mans_switch())
+    s._price_task        = asyncio.create_task(_stream_prices(s.symbols, s.timeframe))
+    s._deadman_task      = asyncio.create_task(_dead_mans_switch())
+    s._llm_worker_task   = asyncio.create_task(_llm_worker(s))
+    s._order_worker_task = asyncio.create_task(_order_worker(s))
 
     try:
         while s.status == "running":
@@ -1031,12 +1128,28 @@ async def _run_loop_for(s: "AgentState"):
             message=f"Agent loop crashed: {e}",
         ))
     finally:
-        for task in (s._price_task, s._deadman_task):
+        for task in (s._price_task, s._deadman_task, s._llm_worker_task, s._order_worker_task):
             if task:
                 task.cancel()
         s.status = "stopped"
         s.log("Agent stopped")
         await _broadcast({"type": "status_update", "status": "stopped"}, s.user_id)
+        # Fire agent-stopped email via Next.js (non-blocking)
+        if s.user_id and os.getenv("NEXT_PUBLIC_APP_URL"):
+            try:
+                import aiohttp as _ah
+                async with _ah.ClientSession() as _sess:
+                    await asyncio.wait_for(
+                        _sess.post(
+                            f"{os.getenv('PYTHON_API_EMAIL_HOOK', '')}".rstrip("/") or
+                            f"{os.getenv('NEXT_PUBLIC_APP_URL', '')}/api/email/agent-stopped",
+                            json={"userId": s.user_id, "venue": s.venue_name, "reason": "Agent loop ended"},
+                            timeout=_ah.ClientTimeout(total=3),
+                        ),
+                        timeout=3,
+                    )
+            except Exception:
+                pass
         if s.user_id:
             try:
                 from src.services.supabase_reader import upsert_agent_run
@@ -1596,6 +1709,13 @@ async def _do_start(
         except Exception as e:
             logger.warning("Plan re-validation failed (forcing paper): %s", e)
             is_paper = True
+
+    # BETA LIVE CAP — hard server-side dollar ceiling during beta.
+    # Set BETA_LIVE_CAP_USD=0 in .env to remove after public launch.
+    _beta_cap = float(os.getenv("BETA_LIVE_CAP_USD", "500"))
+    if not is_paper and _beta_cap > 0:
+        logger.info("Beta live cap active: max $%.0f per-trade allocation", _beta_cap)
+
 
     # H8: idempotency lock + per-user state binding (no global _state mutation).
     # Each user gets an isolated AgentState. The global _state is only used as a
