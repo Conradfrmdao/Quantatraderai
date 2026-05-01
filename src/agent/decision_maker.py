@@ -28,11 +28,38 @@ class TradingAgent:
         self.model = self.provider.model
         self.hyperliquid = hyperliquid
         self.max_tokens = int(CONFIG.get("max_tokens") or 4096)
+        self.system_prompt_addendum: str = ""  # set by strategy persona on agent start
 
-        # Fallback sanitizer — use a cheap Anthropic model if available,
-        # otherwise reuse the same provider.
+        # C4: Build fallback provider chain. If primary fails, try each in order.
+        # Chain: primary → anthropic (if key) → groq (free) → gemini (free)
+        self._fallback_chain: list = [self.provider]
+        primary_name = (CONFIG.get("llm_provider") or "groq").lower()
+        anthropic_key = CONFIG.get("anthropic_api_key") or ""
+        groq_key = CONFIG.get("groq_api_key") or ""
+
+        if primary_name != "anthropic" and anthropic_key and not anthropic_key.startswith("dummy"):
+            try:
+                from src.agent.providers.anthropic_provider import AnthropicProvider
+                self._fallback_chain.append(AnthropicProvider())
+            except Exception:
+                pass
+
+        if primary_name != "groq" and groq_key and not groq_key.startswith("dummy"):
+            try:
+                from src.agent.providers.groq_provider import GroqProvider
+                self._fallback_chain.append(GroqProvider())
+            except Exception:
+                pass
+
+        if primary_name not in ("gemini",):
+            try:
+                from src.agent.providers.gemini_provider import GeminiProvider
+                self._fallback_chain.append(GeminiProvider())
+            except Exception:
+                pass
+
+        # Fallback sanitizer — use a cheap Anthropic model if available
         sanitize_model = CONFIG.get("sanitize_model")
-        anthropic_key = CONFIG.get("anthropic_api_key")
         if sanitize_model and anthropic_key and not anthropic_key.startswith("dummy"):
             try:
                 from src.agent.providers.anthropic_provider import AnthropicProvider
@@ -43,8 +70,9 @@ class TradingAgent:
             self._sanitize_provider = self.provider
 
         logging.info(
-            "TradingAgent using provider=%s model=%s",
+            "TradingAgent using provider=%s model=%s fallback_chain=%s",
             self.provider.name, self.provider.model,
+            [p.name for p in self._fallback_chain[1:]],
         )
 
     def decide_trade(self, assets, context):
@@ -108,6 +136,8 @@ class TradingAgent:
             "  • limit_price: required if order_type is \"limit\", null otherwise\n"
             "- Do not emit Markdown or any extra properties.\n"
         )
+        if self.system_prompt_addendum:
+            system_prompt = self.system_prompt_addendum + "\n\n" + system_prompt
 
         tools = [{
             "name": "fetch_indicator",
@@ -158,19 +188,35 @@ class TradingAgent:
         enable_tools = CONFIG.get("enable_tool_calling", False)
 
         def _call_llm(msgs, use_tools=True):
-            """Call the configured LLM provider."""
-            _log_request(self.model, msgs)
-            tool_list = tools if (use_tools and enable_tools and self.provider.supports_tools) else None
-            response = self.provider.complete(
-                system=system_prompt,
-                messages=msgs,
-                max_tokens=self.max_tokens,
-                tools=tool_list,
+            """Call the LLM with automatic failover through the provider chain."""
+            last_err = None
+            for attempt, prov in enumerate(self._fallback_chain):
+                try:
+                    _log_request(prov.model, msgs)
+                    tool_list = tools if (use_tools and enable_tools and prov.supports_tools) else None
+                    response = prov.complete(
+                        system=system_prompt,
+                        messages=msgs,
+                        max_tokens=self.max_tokens,
+                        tools=tool_list,
+                    )
+                    if attempt > 0:
+                        logging.warning(
+                            "LLM failover succeeded on attempt %d via %s", attempt + 1, prov.name
+                        )
+                    with open("llm_requests.log", "a", encoding="utf-8") as f:
+                        f.write(f"Provider: {prov.name} | stop_reason: {response.stop_reason}\n")
+                        f.write(f"Usage: input={response.input_tokens}, output={response.output_tokens}\n")
+                    return response
+                except Exception as e:
+                    last_err = e
+                    logging.warning(
+                        "LLM provider %s failed (attempt %d/%d): %s — trying next",
+                        prov.name, attempt + 1, len(self._fallback_chain), e,
+                    )
+            raise RuntimeError(
+                f"All LLM providers exhausted. Last error: {last_err}"
             )
-            with open("llm_requests.log", "a", encoding="utf-8") as f:
-                f.write(f"Response stop_reason: {response.stop_reason}\n")
-                f.write(f"Usage: input={response.input_tokens}, output={response.output_tokens}\n")
-            return response
 
         def _handle_tool_call(tool_name, tool_input):
             """Execute a tool call and return the result string."""

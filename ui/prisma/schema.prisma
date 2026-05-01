@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // ⚠️ NO url field — injected by prisma.config.ts via the pg adapter
+}
+
+enum Plan {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum VenueType {
+  HYPERLIQUID
+  BINANCE
+  OANDA
+  POLYMARKET
+  CCXT
+  METATRADER
+  BYBIT
+  OKX
+  KRAKEN
+  COINBASE
+  ALPACA
+  IBKR
+}
+
+model User {
+  id              String   @id @default(cuid())
+  clerkId         String   @unique
+  email           String   @unique
+  name            String?
+  plan            Plan     @default(FREE)
+  stripeCustomerId String?
+  stripeSubId      String?
+  planExpiresAt    DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  venues            Venue[]
+  settings          UserSettings?
+  agentRun          AgentRun?
+  equityPoints      EquityPoint[]
+  tradeLogs         TradeLog[]
+  strategyListings  StrategyListing[]
+  auditLogs         AuditLog[]
+  copyLeading       CopyRelationship[] @relation("CopyLeader")
+  copyFollowing     CopyRelationship[] @relation("CopyFollower")
+
+  @@index([clerkId])
+}
+
+model Venue {
+  id             String       @id @default(cuid())
+  userId         String
+  displayName    String
+  type           VenueType
+  apiKey         String
+  apiSecret      String
+  apiPassphrase  String?
+  accountId         String?
+  ccxtExchangeId    String?
+  network           String?
+  metaApiToken      String?   // encrypted MetaAPI cloud token for MT4/MT5
+  metaApiAccountId  String?   // MT4/MT5 account ID on MetaAPI
+  webhookSecret     String?   // per-venue secret for TradingView webhooks
+  isPaper        Boolean      @default(true)
+  isActive       Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  riskProfile    RiskProfile?
+
+  @@index([userId])
+}
+
+model RiskProfile {
+  id                      String   @id @default(cuid())
+  venueId                 String   @unique
+  maxPositionPct          Float    @default(3)
+  maxLeverage             Float    @default(2)
+  mandatorySlPct          Float    @default(2.5)
+  maxLossPerPositionPct   Float    @default(8)
+  dailyLossCircuitBreaker Float    @default(4)
+  maxTotalExposurePct     Float    @default(30)
+  maxConcurrentPositions  Int      @default(5)
+  updatedAt               DateTime @updatedAt
+  venue                   Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+}
+
+model UserSettings {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  telegramToken      String?
+  telegramChatId     String?
+  emailNotifications Boolean  @default(true)
+  timezone           String   @default("UTC")
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model EquityPoint {
+  id        String   @id @default(cuid())
+  userId    String
+  equity    Float
+  balance   Float
+  pnl       Float    @default(0)
+  tickCount Int      @default(0)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model TradeLog {
+  id          String   @id @default(cuid())
+  userId      String
+  symbol      String
+  action      String   // buy | sell | close
+  quantity    Float
+  price       Float
+  allocationUsd Float  @default(0)
+  pnl         Float    @default(0)
+  source      String   @default("agent") // agent | tradingview | manual
+  rationale   String?
+  tpPrice     Float?
+  slPrice     Float?
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, symbol])
+}
+
+model CopyRelationship {
+  id           String   @id @default(cuid())
+  leaderId     String
+  followerId   String
+  maxAllocPct  Float    @default(3.0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  leader       User     @relation("CopyLeader",   fields: [leaderId],   references: [id], onDelete: Cascade)
+  follower     User     @relation("CopyFollower",  fields: [followerId], references: [id], onDelete: Cascade)
+
+  @@unique([leaderId, followerId])
+  @@index([leaderId, isActive])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  event     String   // decision | order | risk_block | agent_start | agent_stop | kill_switch
+  symbol    String?
+  action    String?
+  data      String   // JSON payload
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([event])
+}
+
+model StrategyListing {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  description  String?
+  config       String   // JSON serialised agent config
+  sharpe       Float    @default(0)
+  totalReturn  Float    @default(0)
+  maxDrawdown  Float    @default(0)
+  isPublic     Boolean  @default(false)
+  price        Float    @default(0)  // monthly USD; 0 = free
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([isPublic, sharpe])
+}
+
+model AgentRun {
+  id        String    @id @default(cuid())
+  userId    String    @unique
+  venue     String    @default("binance")
+  symbols   String[]
+  timeframe String    @default("1h")
+  isPaper   Boolean   @default(true)
+  market    String    @default("futures")
+  isRunning Boolean   @default(true)
+  startedAt DateTime  @default(now())
+  stoppedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([isRunning])
+}

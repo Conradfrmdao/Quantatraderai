@@ -1,0 +1,674 @@
+
+<h2 class="sr-only">QuntaTradeAI God Mode War Room — full gap analysis, MetaTrader integration, and world-class roadmap</h2>
+<style>
+:root{--c1:var(--color-text-primary);--c2:var(--color-text-secondary);--c3:var(--color-text-tertiary);--bg1:var(--color-background-primary);--bg2:var(--color-background-secondary);--bg3:var(--color-background-tertiary);--bdr:var(--color-border-tertiary);--bdr2:var(--color-border-secondary);--ok:var(--color-text-success);--warn:var(--color-text-warning);--danger:var(--color-text-danger);--info:var(--color-text-info)}
+*{box-sizing:border-box;margin:0;padding:0}
+.wr{font-family:var(--font-sans);padding:0 0 2rem}
+.tabs{display:flex;gap:2px;border-bottom:0.5px solid var(--bdr);margin-bottom:1.5rem;overflow-x:auto}
+.tab{padding:8px 14px;font-size:12px;font-weight:500;color:var(--c2);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s;background:none;border-top:none;border-left:none;border-right:none}
+.tab.on{color:var(--c1);border-bottom-color:var(--c1)}
+.tab:hover{color:var(--c1)}
+.pane{display:none}.pane.on{display:block}
+.sec-title{font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--c3);text-transform:uppercase;margin:0 0 12px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:1.5rem}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:1.5rem}
+.card{background:var(--bg2);border:0.5px solid var(--bdr);border-radius:var(--border-radius-lg);padding:14px 16px}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.card-title{font-size:13px;font-weight:500;color:var(--c1)}
+.card-sub{font-size:12px;color:var(--c2);line-height:1.5;margin-top:4px}
+.badge{font-size:10px;font-weight:500;padding:2px 8px;border-radius:20px;white-space:nowrap}
+.b-ok{background:var(--color-background-success);color:var(--ok)}
+.b-warn{background:var(--color-background-warning);color:var(--warn)}
+.b-danger{background:var(--color-background-danger);color:var(--danger)}
+.b-info{background:var(--color-background-info);color:var(--info)}
+.b-purple{background:#EEEDFE;color:#3C3489}
+@media(prefers-color-scheme:dark){.b-purple{background:#26215C;color:#AFA9EC}}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px;flex-shrink:0}
+.dot-ok{background:var(--ok)}.dot-warn{background:var(--warn)}.dot-danger{background:var(--danger)}.dot-info{background:var(--info)}
+.row{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:0.5px solid var(--bdr)}
+.row:last-child{border-bottom:none}
+.row-label{font-size:12px;color:var(--c1);flex:1;font-weight:500}
+.row-sub{font-size:11px;color:var(--c2);margin-top:2px}
+.code-block{background:var(--bg3);border:0.5px solid var(--bdr);border-radius:var(--border-radius-md);padding:12px 14px;font-family:var(--font-mono);font-size:11px;color:var(--c1);line-height:1.7;margin:10px 0;overflow-x:auto;white-space:pre}
+.tier{margin-bottom:1.5rem}
+.tier-label{font-size:10px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--c3);margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.tier-label::after{content:'';flex:1;height:0.5px;background:var(--bdr)}
+.feat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px}
+.feat{background:var(--bg1);border:0.5px solid var(--bdr);border-radius:var(--border-radius-md);padding:10px 12px;cursor:pointer;transition:border-color .15s}
+.feat:hover{border-color:var(--bdr2)}
+.feat-title{font-size:12px;font-weight:500;color:var(--c1);display:flex;align-items:center;gap:6px}
+.feat-sub{font-size:11px;color:var(--c2);margin-top:3px;line-height:1.4}
+.feat-tag{font-size:9px;font-weight:500;padding:1px 6px;border-radius:10px;margin-left:auto}
+.stack{display:flex;flex-direction:column;gap:8px;margin-bottom:1.5rem}
+.week{background:var(--bg2);border:0.5px solid var(--bdr);border-radius:var(--border-radius-lg);padding:12px 16px}
+.week-head{font-size:12px;font-weight:500;color:var(--c1);display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.task-list{display:flex;flex-direction:column;gap:5px}
+.task{font-size:11px;color:var(--c2);display:flex;align-items:flex-start;gap:8px;line-height:1.4}
+.task::before{content:'→';color:var(--c3);font-size:10px;margin-top:1px;flex-shrink:0}
+.venue-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:1rem}
+.venue{background:var(--bg1);border:0.5px solid var(--bdr);border-radius:var(--border-radius-md);padding:10px;cursor:pointer;transition:border-color .15s}
+.venue:hover{border-color:var(--bdr2)}
+.venue-name{font-size:12px;font-weight:500;color:var(--c1)}
+.venue-type{font-size:10px;color:var(--c2);margin-top:2px}
+.stat-row{display:flex;gap:10px;margin-bottom:1.5rem;flex-wrap:wrap}
+.stat{background:var(--bg2);border:0.5px solid var(--bdr);border-radius:var(--border-radius-md);padding:10px 14px;flex:1;min-width:100px}
+.stat-val{font-size:20px;font-weight:500;color:var(--c1);font-family:var(--font-mono)}
+.stat-label{font-size:10px;color:var(--c3);text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+.arch-row{display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:0.5px solid var(--bdr)}
+.arch-row:last-child{border-bottom:none}
+.arch-icon{width:32px;height:32px;border-radius:var(--border-radius-md);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0}
+.arch-body{flex:1}
+.arch-title{font-size:12px;font-weight:500;color:var(--c1)}
+.arch-desc{font-size:11px;color:var(--c2);line-height:1.5;margin-top:3px}
+.arch-fix{font-family:var(--font-mono);font-size:10px;color:var(--info);margin-top:4px}
+.divider{height:0.5px;background:var(--bdr);margin:1.25rem 0}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.live-dot{width:6px;height:6px;border-radius:50%;background:var(--ok);display:inline-block;animation:pulse 2s ease-in-out infinite}
+</style>
+
+<div class="wr">
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+  <div>
+    <div style="font-size:18px;font-weight:500;color:var(--c1)">QuntaTradeAI — god mode</div>
+    <div style="font-size:12px;color:var(--c2);margin-top:2px">Full gap analysis · MetaTrader bridge · path to world-class</div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--c2)">
+    <span class="live-dot"></span> OODA L99
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat"><div class="stat-val">17</div><div class="stat-label">features complete</div></div>
+  <div class="stat"><div class="stat-val">4</div><div class="stat-label">critical gaps</div></div>
+  <div class="stat"><div class="stat-val">31</div><div class="stat-label">world-class additions</div></div>
+  <div class="stat"><div class="stat-val">14</div><div class="stat-label">new venues</div></div>
+</div>
+
+<div class="tabs">
+  <button class="tab on" onclick="show('sitrep',this)">Sitrep</button>
+  <button class="tab" onclick="show('mt',this)">MetaTrader bridge</button>
+  <button class="tab" onclick="show('gaps',this)">World-class gaps</button>
+  <button class="tab" onclick="show('venues',this)">New venues</button>
+  <button class="tab" onclick="show('arch',this)">Architecture</button>
+  <button class="tab" onclick="show('roadmap',this)">Roadmap</button>
+</div>
+
+<div id="sitrep" class="pane on">
+  <p class="sec-title">Current state — feature by feature</p>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-head"><span class="card-title">Auth + onboarding</span><span class="badge b-ok">complete</span></div>
+      <div class="card-sub">Clerk auth, OAuth, onboarding flow, name collection, session guard on all protected routes. Zero custom auth code.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Live dashboard</span><span class="badge b-ok">complete</span></div>
+      <div class="card-sub">Real-time Binance WebSocket chart, equity/PnL cards, AI decisions feed, open positions table, status bar.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Python agent loop</span><span class="badge b-ok">complete</span></div>
+      <div class="card-sub">FastAPI server, 5-min tick cycle, RSI/EMA/MACD/ATR/BB indicators, Groq LLaMA 3.3 70B decisions, risk validation, paper/live toggle.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Credential encryption</span><span class="badge b-ok">complete</span></div>
+      <div class="card-sub">AES-256-GCM browser-side encryption before transmission. Zero plaintext at rest. Supabase stores only ciphertext.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Live order execution</span><span class="badge b-warn">needs keys</span></div>
+      <div class="card-sub">Code path fully implemented. CCXT adapter wired. Blocked only by missing Hyperliquid private key in .env — not a code problem.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Multi-AI council</span><span class="badge b-warn">partial</span></div>
+      <div class="card-sub">Groq active every tick. Anthropic Claude and Gemini SDKs installed but dormant. Need API keys + consensus voting logic.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Telegram alerts</span><span class="badge b-danger">missing</span></div>
+      <div class="card-sub">Settings UI saves token + chat ID to Supabase. Python notifier not instantiated. No event hooks wired. Critical for production.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Backtesting UI</span><span class="badge b-danger">missing</span></div>
+      <div class="card-sub">Backend scaffold (endpoints + data loading) exists. No frontend page. Users can't validate strategies before going live.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Agent persistence</span><span class="badge b-danger">missing</span></div>
+      <div class="card-sub">Server restart kills running agent silently. No restart-recovery mechanism. No way for user to know agent died.</div>
+    </div>
+    <div class="card">
+      <div class="card-head"><span class="card-title">Stripe / payments</span><span class="badge b-danger">missing</span></div>
+      <div class="card-sub">Pricing tiers exist in landing page UI. No Stripe webhook. No backend enforcement of plan limits. Anyone can use Pro features on Free.</div>
+    </div>
+  </div>
+</div>
+
+<div id="mt" class="pane">
+  <p class="sec-title">MetaTrader 4 / 5 integration — three paths</p>
+
+  <div class="grid2" style="margin-bottom:1rem">
+    <div class="card" style="border-color:var(--color-border-success)">
+      <div class="card-head"><span class="card-title">Option 1 — MetaAPI (recommended)</span><span class="badge b-ok">easiest</span></div>
+      <div class="card-sub" style="margin-bottom:8px">Cloud-based MT4/MT5 REST + WebSocket API. Works on Linux/Mac/Windows. No EA coding required. Supports streaming quotes, order placement, account data.</div>
+      <div class="code-block">pip install metaapi-cloud-sdk
+
+from metaapi_cloud_sdk import MetaApi
+api = MetaApi(token='YOUR_METAAPI_TOKEN')
+account = await api.metatrader_account_api\
+    .get_account('YOUR_ACCOUNT_ID')
+connection = account.get_rpc_connection()
+await connection.connect()
+
+# Get balance
+info = await connection.get_account_information()
+equity = info['equity']
+
+# Place order (same interface as CCXT adapter)
+result = await connection.create_market_buy_order(
+    'EURUSD', 0.1, sl=1.0800, tp=1.1050)</div>
+      <div class="card-sub">Cost: ~$30/mo production. Free tier for dev. Supports 600+ brokers, MT4 + MT5.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><span class="card-title">Option 2 — DWX Connect (free/self-hosted)</span><span class="badge b-info">open source</span></div>
+      <div class="card-sub" style="margin-bottom:8px">Open-source bridge: MQL4/5 Expert Advisor on the MT side + ZeroMQ Python subscriber. Self-hosted, no cloud dependency, free forever.</div>
+      <div class="code-block">pip install pyzmq dwx-connect
+
+from api.dwx_client import dwx_client
+
+dwx = dwx_client(
+    _broker='ICMarkets-Live',
+    _port=32768
+)
+
+# Receives real-time tick data
+# Places orders via ZeroMQ messages
+# Requires EA installed on MT4/MT5</div>
+      <div class="card-sub">Best for: traders with a specific broker. Requires Windows MT4/MT5 instance running. More setup but zero recurring cost.</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:1.5rem">
+    <div class="card-head"><span class="card-title">Option 3 — MT5 native Python (Windows-only)</span><span class="badge b-warn">limited</span></div>
+    <div class="card-sub" style="margin-bottom:8px">MetaQuotes' official Python package. Direct C++ bindings. Fastest execution but requires MT5 installed on the same Windows machine — breaks your Linux server setup.</div>
+    <div class="code-block">pip install MetaTrader5   # Windows only
+
+import MetaTrader5 as mt5
+mt5.initialize()
+mt5.login(12345678, password='...', server='ICMarkets-Live')
+
+info = mt5.account_info()
+request = {
+    "action": mt5.TRADE_ACTION_DEAL,
+    "symbol": "EURUSD",
+    "volume": 0.1,
+    "type": mt5.ORDER_TYPE_BUY,
+    "sl": 1.0800, "tp": 1.1050,
+    "comment": "QuntaTradeAI"
+}
+result = mt5.order_send(request)</div>
+  </div>
+
+  <p class="sec-title">New venue adapter to build — MetaTraderVenue</p>
+  <div class="code-block">class MetaTraderVenue(BaseVenue):
+    """
+    Wraps MetaAPI to give QuntaTradeAI uniform interface.
+    Drop-in replacement for BinanceVenue.
+    """
+    def __init__(self, metaapi_token, account_id, paper=True):
+        self.api = MetaApi(metaapi_token)
+        self.account_id = account_id
+        self.paper = paper
+
+    async def get_balance(self) -> dict:
+        conn = await self._get_connection()
+        info = await conn.get_account_information()
+        return {"equity": info["equity"], "balance": info["balance"]}
+
+    async def get_positions(self) -> list:
+        conn = await self._get_connection()
+        positions = await conn.get_positions()
+        return self._normalise_positions(positions)
+
+    async def place_order(self, symbol, side, qty, tp, sl) -> dict:
+        if self.paper:
+            return {"status": "paper", "symbol": symbol, "side": side}
+        conn = await self._get_connection()
+        if side == "BUY":
+            return await conn.create_market_buy_order(symbol, qty, sl=sl, tp=tp)
+        return await conn.create_market_sell_order(symbol, qty, sl=sl, tp=tp)
+
+    async def stream_prices(self, symbol, callback):
+        conn = await self._get_streaming_connection()
+        await conn.subscribe_to_market_data(symbol)
+        conn.add_synchronization_listener(
+            PriceListener(callback)
+        )</div>
+
+  <div class="card" style="margin-top:1rem">
+    <div class="card-head"><span class="card-title">Forex pairs this unlocks</span><span class="badge b-ok">+28 major pairs</span></div>
+    <div class="card-sub">EURUSD · GBPUSD · USDJPY · USDCHF · AUDUSD · USDCAD · NZDUSD · EURGBP · EURJPY · GBPJPY · XAUUSD (Gold) · XAGUSD (Silver) · US30 · SPX500 · NAS100 · DE40 · UK100 · and all crosses. Any symbol your MT4/MT5 broker offers — hundreds of instruments.</div>
+  </div>
+</div>
+
+<div id="gaps" class="pane">
+  <p class="sec-title">What separates good from world-class</p>
+
+  <div class="tier">
+    <div class="tier-label">Tier 1 — intelligence engine (highest alpha)</div>
+    <div class="feat-grid">
+      <div class="feat" onclick="sendPrompt('How do I add order flow and Level 2 data to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-danger"></span>Order flow / DOM<span class="feat-tag badge b-danger">critical</span></div>
+        <div class="feat-sub">Level 2 depth-of-market, tape reading, bid/ask imbalance. Institutional traders live here.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add an economic calendar auto-pause to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-danger"></span>Economic calendar<span class="feat-tag badge b-danger">critical</span></div>
+        <div class="feat-sub">Auto-pause agent before NFP, CPI, FOMC. News events destroy algos that ignore them.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add news sentiment NLP to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>News sentiment NLP<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Real-time news feed analysis. Feed headlines into LLM context before each decision tick.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add on-chain analytics to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>On-chain analytics<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Exchange inflows/outflows, whale wallet tracking, funding rates. Glassnode/Nansen APIs.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add a cross-asset correlation matrix to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Correlation matrix<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Cross-asset correlation rolling window. Avoid stacking correlated positions that amplify drawdown.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add multi-timeframe confluence analysis to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>MTF confluence<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Indicators on 1h + 4h + 1D must align. Single-timeframe analysis misses the bigger picture.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add a fear and greed index to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Fear/greed index<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Crypto F&G, VIX, put/call ratio. Macro sentiment injected into LLM context every tick.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add funding rate monitoring to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Funding rate monitor<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">High positive funding = crowded longs = squeeze risk. Auto-reduce position or flip short.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Tier 2 — AI architecture (the real moat)</div>
+    <div class="feat-grid">
+      <div class="feat" onclick="sendPrompt('How do I add RAG memory so QuntaTradeAI remembers past trades?')">
+        <div class="feat-title"><span class="dot dot-danger"></span>RAG trade memory<span class="feat-tag badge b-danger">critical</span></div>
+        <div class="feat-sub">Vector DB (Pinecone/pgvector) stores every decision + outcome. Agent learns what worked. True learning loop.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I implement multi-AI council consensus voting in QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-danger"></span>Council consensus<span class="feat-tag badge b-danger">critical</span></div>
+        <div class="feat-sub">Groq + Claude + Gemini vote in parallel. Only execute if 2/3 agree. Eliminates single-LLM hallucination risk.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add reinforcement learning to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>RL feedback loop<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Reward signal from actual PnL. Update system prompt weights based on which decisions made money.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add natural language trade commands to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Natural language commands<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">"Buy 1 BTC when RSI drops below 30." Chat-based strategy authoring. No code required for users.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add explainable AI to QuntaTradeAI so users understand every decision?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Explainable AI<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Visual confidence breakdown, indicator weights, "which factor drove this BUY?" — builds user trust fast.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add ML-powered backtesting optimization to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>ML backtest optimizer<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Walk-forward optimization, Bayesian parameter search. Find best RSI/EMA params per market regime.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Tier 3 — execution quality</div>
+    <div class="feat-grid">
+      <div class="feat" onclick="sendPrompt('How do I add smart order routing to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Smart order routing<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">VWAP/TWAP execution algos. Split large orders to minimise slippage. Iceberg orders for institutional size.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add TradingView webhook support to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-danger"></span>TradingView webhooks<span class="feat-tag badge b-danger">critical</span></div>
+        <div class="feat-sub">POST /api/webhook/tradingview. TV Pine Script alert → instant execution. Every retail trader already uses TV.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add MEV protection for DeFi trades in QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>MEV protection (DeFi)<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Flashbots / MEV Blocker for on-chain orders. Prevents front-running on Ethereum/Arbitrum swaps.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add order book visualisation to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Order book heatmap<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Live bid/ask depth visualised as a heatmap. Spot walls, spoofing, large limit orders before entry.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Tier 4 — platform (the moat that compounds)</div>
+    <div class="feat-grid">
+      <div class="feat" onclick="sendPrompt('How do I add copy trading and social features to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Copy / social trading<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Follow top-performing agents. Revenue split for strategy creators. Virality engine — every winner brings 10 followers.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I build a strategy marketplace for QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Strategy marketplace<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">Buy/sell trading strategies. Verified backtested returns. Monthly subscription model. 30% platform cut.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I build a mobile app for QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Mobile app<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">React Native or Expo. Push notifications, quick start/stop, real-time PnL. App store distribution = credibility.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add portfolio optimization with Kelly Criterion to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Portfolio optimizer<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Kelly Criterion sizing, Modern Portfolio Theory, Sharpe-maximising allocation across multiple positions.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add tax reporting to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Tax reporting<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">FIFO/LIFO cost basis, realized PnL export, CSV for CPA. HMRC / IRS compatible. Traders will pay for this alone.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add a public leaderboard to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Public leaderboard<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Anonymous verified returns ranking. Top 100 agents by Sharpe. Organic virality — traders want bragging rights.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Tier 5 — risk & compliance (institutional grade)</div>
+    <div class="feat-grid">
+      <div class="feat" onclick="sendPrompt('How do I add Value at Risk calculations to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>VaR calculations<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">95%/99% Value at Risk. Monte Carlo simulations. Institutional risk reporting. Unlocks hedge fund clients.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add a kill switch with dead mans switch to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-warn"></span>Kill switch + dead man<span class="feat-tag badge b-warn">high</span></div>
+        <div class="feat-sub">One-click close all positions. If server goes silent for 30min, auto-close everything. Non-negotiable for live trading.</div>
+      </div>
+      <div class="feat" onclick="sendPrompt('How do I add a compliance audit trail to QuntaTradeAI?')">
+        <div class="feat-title"><span class="dot dot-info"></span>Audit trail<span class="feat-tag badge b-info">medium</span></div>
+        <div class="feat-sub">Immutable log of every decision, order, rejection. Required for regulated venues and enterprise clients.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="venues" class="pane">
+  <p class="sec-title">Current venues</p>
+  <div class="venue-grid">
+    <div class="venue"><div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-ok"></span>Binance</div><div class="venue-type">Crypto spot + futures</div></div>
+    <div class="venue"><div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-ok"></span>Hyperliquid</div><div class="venue-type">DEX perps</div></div>
+    <div class="venue"><div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-ok"></span>OANDA</div><div class="venue-type">Forex / CFDs</div></div>
+    <div class="venue"><div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-ok"></span>CCXT (100+)</div><div class="venue-type">All CEX venues</div></div>
+  </div>
+
+  <div class="divider"></div>
+  <p class="sec-title">Add these — unlocks every market on earth</p>
+
+  <div class="tier">
+    <div class="tier-label">Forex + CFDs + stocks (MetaTrader ecosystem)</div>
+    <div class="venue-grid">
+      <div class="venue" onclick="sendPrompt('How do I add MetaTrader 4 and 5 support to QuntaTradeAI via MetaAPI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-danger"></span>MetaTrader 4/5</div>
+        <div class="venue-type">Forex · metals · CFDs</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via MetaAPI SDK</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add Interactive Brokers IBKR to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-danger"></span>Interactive Brokers</div>
+        <div class="venue-type">Stocks · options · futures · FX</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via IBKR TWS API / ibapi</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add Alpaca to QuntaTradeAI for US stocks?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Alpaca</div>
+        <div class="venue-type">US stocks · options</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via alpaca-trade-api</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add FXCM forex broker to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>FXCM</div>
+        <div class="venue-type">Forex · indices · CFDs</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via fxcmpy SDK</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Crypto — perps + spot</div>
+    <div class="venue-grid">
+      <div class="venue" onclick="sendPrompt('How do I add Bybit to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Bybit</div>
+        <div class="venue-type">Crypto perps · spot</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add OKX to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>OKX</div>
+        <div class="venue-type">Crypto · DeFi bridge</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add dYdX v4 to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>dYdX v4</div>
+        <div class="venue-type">DEX perps (Cosmos)</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via dydx-v4-client SDK</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add GMX to QuntaTradeAI for Arbitrum trading?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>GMX</div>
+        <div class="venue-type">DEX perps (Arbitrum)</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via Web3.py + GMX SDK</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add Kraken futures to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Kraken</div>
+        <div class="venue-type">Crypto spot + futures</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add Coinbase Advanced Trade to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Coinbase Advanced</div>
+        <div class="venue-type">Crypto spot</div>
+        <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tier">
+    <div class="tier-label">Data only — feeds that make your LLM smarter</div>
+    <div class="venue-grid">
+      <div class="venue" onclick="sendPrompt('How do I add Glassnode on-chain data to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Glassnode</div>
+        <div class="venue-type">On-chain analytics API</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add CryptoCompare news sentiment to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>CryptoCompare</div>
+        <div class="venue-type">News · social sentiment</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add TwelveData economic calendar to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>TwelveData</div>
+        <div class="venue-type">Stocks · forex · economic calendar</div>
+      </div>
+      <div class="venue" onclick="sendPrompt('How do I add Alternative.me fear greed index to QuntaTradeAI?')">
+        <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Alternative.me</div>
+        <div class="venue-type">Fear/greed index (free)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="arch" class="pane">
+  <p class="sec-title">Technical debt + architecture upgrades</p>
+  <div class="card" style="margin-bottom:1.5rem">
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-danger)"><span style="font-size:11px;font-weight:500;color:var(--danger)">KMS</span></div>
+      <div class="arch-body">
+        <div class="arch-title">Shared ENCRYPTION_KEY — single point of failure</div>
+        <div class="arch-desc">Both Next.js and Python share one key in .env files. If either leaks, every user's API credentials are compromised.</div>
+        <div class="arch-fix">→ Migrate to AWS KMS or Supabase Vault. Separate keys per user, rotatable on demand.</div>
+      </div>
+      <span class="badge b-danger">critical</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-danger)"><span style="font-size:11px;font-weight:500;color:var(--danger)">WS</span></div>
+      <div class="arch-body">
+        <div class="arch-title">Browser WebSocket has no auth</div>
+        <div class="arch-desc">Any client can connect to ws://localhost:8001 and receive all trade decisions and account data.</div>
+        <div class="arch-fix">→ Add JWT validation on WebSocket handshake. Validate Clerk token on ws:// upgrade request.</div>
+      </div>
+      <span class="badge b-danger">critical</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-warning)"><span style="font-size:11px;font-weight:500;color:var(--warn)">DB</span></div>
+      <div class="arch-body">
+        <div class="arch-title">psycopg2 sync calls in async FastAPI</div>
+        <div class="arch-desc">Synchronous database calls block the entire event loop. Under load, all WebSocket updates freeze until DB responds.</div>
+        <div class="arch-fix">→ Replace with asyncpg or encode/databases. Async DB = 10× throughput under real user load.</div>
+      </div>
+      <span class="badge b-warn">high</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-warning)"><span style="font-size:11px;font-weight:500;color:var(--warn)">WS</span></div>
+      <div class="arch-body">
+        <div class="arch-title">No WebSocket reconnect (Binance 24h limit)</div>
+        <div class="arch-desc">Binance forcibly closes streams every 24 hours. Python side has no reconnect logic — agent silently stops receiving data.</div>
+        <div class="arch-fix">→ Exponential backoff reconnect loop. Max 5 retries. Alert user via Telegram on reconnect failure.</div>
+      </div>
+      <span class="badge b-warn">high</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-warning)"><span style="font-size:11px;font-weight:500;color:var(--warn)">LOG</span></div>
+      <div class="arch-body">
+        <div class="arch-title">Decisions feed unbounded in memory</div>
+        <div class="arch-desc">AI decisions array grows forever in Python memory. After 12+ hours, process memory balloons until crash.</div>
+        <div class="arch-fix">→ Cap in-memory buffer at 100 entries. Persist all to Supabase decisions table asynchronously.</div>
+      </div>
+      <span class="badge b-warn">high</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-info)"><span style="font-size:11px;font-weight:500;color:var(--info)">TEST</span></div>
+      <div class="arch-body">
+        <div class="arch-title">Zero test suite</div>
+        <div class="arch-desc">No pytest. No regression detection. A RiskManager bug or IndicatorEngine error is invisible until it costs real money.</div>
+        <div class="arch-fix">→ pytest for RiskManager (validate every edge case), IndicatorEngine (known OHLCV → known RSI), VenueAdapter mocks.</div>
+      </div>
+      <span class="badge b-info">medium</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-info)"><span style="font-size:11px;font-weight:500;color:var(--info)">CDN</span></div>
+      <div class="arch-body">
+        <div class="arch-title">No CDN / edge caching</div>
+        <div class="arch-desc">All requests hit origin. Under 1000+ concurrent users, API routes will be slow. Static assets not edge-cached.</div>
+        <div class="arch-fix">→ Vercel Edge for Next.js (already built-in). CloudFront or Cloudflare for Python API. Redis for indicator cache.</div>
+      </div>
+      <span class="badge b-info">medium</span>
+    </div>
+    <div class="arch-row">
+      <div class="arch-icon" style="background:var(--color-background-info)"><span style="font-size:11px;font-weight:500;color:var(--info)">OBS</span></div>
+      <div class="arch-body">
+        <div class="arch-title">No observability</div>
+        <div class="arch-desc">No Sentry, no structured logging, no Prometheus metrics. When the agent crashes at 3am, you'll never know why.</div>
+        <div class="arch-fix">→ Sentry (Next.js + Python). Structured JSON logs. Prometheus + Grafana for agent latency, tick time, LLM response time.</div>
+      </div>
+      <span class="badge b-info">medium</span>
+    </div>
+  </div>
+</div>
+
+<div id="roadmap" class="pane">
+  <p class="sec-title">OODA execution plan — 8 weeks to world-class</p>
+
+  <div class="stack">
+    <div class="week">
+      <div class="week-head"><span>Week 1 — close the critical gaps</span><span class="badge b-danger">now</span></div>
+      <div class="task-list">
+        <div class="task">Wire Telegram notifier in Python: on_fill, on_sl_trigger, on_risk_block, on_agent_crash events</div>
+        <div class="task">Add JWT auth to WebSocket handshake — security hole is wide open</div>
+        <div class="task">Agent persistence: check Supabase for agent_running=true on server restart, auto-resume</div>
+        <div class="task">Dead man's switch: if no tick for 30 min, close all positions + alert user</div>
+        <div class="task">Fix: psycopg2 → asyncpg. Binance WS reconnect loop. Cap decisions buffer at 100</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 2 — MetaTrader + new venues</span><span class="badge b-warn">high priority</span></div>
+      <div class="task-list">
+        <div class="task">Build MetaTraderVenue adapter using MetaAPI SDK. Test with EURUSD paper trading</div>
+        <div class="task">Add MetaTrader venue type to Settings UI: MetaAPI token + account ID fields</div>
+        <div class="task">Enable Bybit, OKX, Kraken — already in CCXT, just add to venue dropdown</div>
+        <div class="task">Add TwelveData economic calendar: auto-pause agent 5 min before high-impact events</div>
+        <div class="task">Add Alternative.me fear/greed to LLM context (free API, 1 line of code)</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 3 — TradingView webhooks + backtesting</span><span class="badge b-warn">high priority</span></div>
+      <div class="task-list">
+        <div class="task">POST /api/webhook/tradingview — receive TV alerts, validate signature, execute order</div>
+        <div class="task">Build Backtesting UI: date range picker + symbol selector + results display</div>
+        <div class="task">Backtest metrics: equity curve, win rate, max drawdown, Sharpe, Calmar, total trades</div>
+        <div class="task">Trade journal page: filter by asset/date/action, export CSV for tax reporting</div>
+        <div class="task">Equity curve persistence — save to Supabase every tick, not just in-memory</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 4 — AI council + RAG memory</span><span class="badge b-warn">high priority</span></div>
+      <div class="task-list">
+        <div class="task">Parallel LLM query: Groq + Claude + Gemini per tick. 2/3 vote required to execute</div>
+        <div class="task">Show all 3 opinions in AI Decisions feed with confidence breakdown</div>
+        <div class="task">Add pgvector to Supabase. Store every decision + outcome as embedding</div>
+        <div class="task">RAG retrieval: find top 5 similar past decisions before each LLM call, inject into context</div>
+        <div class="task">Reinforcement signal: closed trade PnL updates decision quality score in vector DB</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 5 — intelligence engine</span><span class="badge b-info">medium</span></div>
+      <div class="task-list">
+        <div class="task">Multi-timeframe confluence: compute indicators on 3 timeframes, all must agree</div>
+        <div class="task">News sentiment: CryptoCompare news API → summarise headlines → inject into LLM prompt</div>
+        <div class="task">Correlation matrix: rolling 30-day correlation, block trade if too correlated with existing position</div>
+        <div class="task">Funding rate monitor: auto-reduce or flip on extreme positive/negative funding</div>
+        <div class="task">On-chain basics: exchange netflow from Glassnode API → large inflows = sell pressure signal</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 6 — platform growth features</span><span class="badge b-info">medium</span></div>
+      <div class="task-list">
+        <div class="task">Natural language commands: chat box in dashboard → "when BTC RSI 30 buy 5%" → parsed to strategy rule</div>
+        <div class="task">Strategy marketplace MVP: publish agent config, set price, receive Stripe splits</div>
+        <div class="task">Public leaderboard: anonymous Sharpe ranking, verified by platform (not self-reported)</div>
+        <div class="task">Interactive Brokers adapter: ibapi Python wrapper, stocks + options + futures</div>
+        <div class="task">Alpaca adapter: US stocks/options for non-crypto traders</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 7 — stripe + mobile</span><span class="badge b-info">medium</span></div>
+      <div class="task-list">
+        <div class="task">Stripe integration: webhook → update plan in Supabase → enforce limits in backend</div>
+        <div class="task">Free: paper only, 1 venue, 1 asset. Starter: 2 venues, 3 assets. Pro: unlimited. Enterprise: white-label</div>
+        <div class="task">React Native / Expo mobile app: agent start/stop, real-time PnL, push notifications via Expo Push</div>
+        <div class="task">VaR calculations: 95%/99% confidence, Monte Carlo 10k simulations, shown in Risk tab</div>
+        <div class="task">Tax reporting: FIFO cost basis, realized PnL export, PDF summary for accountant</div>
+      </div>
+    </div>
+
+    <div class="week">
+      <div class="week-head"><span>Week 8 — observability + institutional</span><span class="badge b-purple">enterprise</span></div>
+      <div class="task-list">
+        <div class="task">Sentry error tracking in Next.js and Python. Structured JSON logging. PagerDuty for critical failures</div>
+        <div class="task">Prometheus metrics: tick latency, LLM response time, order fill time, WebSocket uptime</div>
+        <div class="task">Migrate ENCRYPTION_KEY to AWS KMS or Supabase Vault. Per-user key rotation</div>
+        <div class="task">Copy trading: follow any public agent, auto-mirror positions proportionally</div>
+        <div class="task">White-label API: enterprise plan gets their own subdomain, custom logo, API access</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="border-color:var(--color-border-success)">
+    <div class="card-head"><span class="card-title">What you have after 8 weeks</span><span class="badge b-ok">world-class</span></div>
+    <div class="card-sub">A multi-venue AI trading platform covering crypto, forex, stocks, and DeFi — with MetaTrader support for the 9 million MT4/MT5 traders worldwide. RAG memory that learns from every trade. A council of 3 LLMs that must agree before touching real money. TradingView webhook execution that every retail trader already knows how to use. Social copy trading for viral growth. And the institutional-grade risk and observability layer that hedge funds require. That's not a hobby project — that's a company.</div>
+  </div>
+</div>
+</div>
+
+<script>
+function show(id,btn){
+  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));
+  document.getElementById(id).classList.add('on');
+  btn.classList.add('on');
+}
+</script>

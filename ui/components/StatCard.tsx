@@ -30,7 +30,8 @@ export function StatCard({
 
   return (
     <motion.div
-      className="card p-6"
+      className="card"
+      style={{ padding: "24px 26px" }}
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6, ease: "easeOut", delay }}
@@ -54,8 +55,8 @@ export function StatCard({
             style={{
               fontSize: 28,
               fontWeight: 700,
-              color: glow ? "var(--accent)" : "var(--text)",
-              textShadow: glow ? "0 0 30px var(--accent-glow)" : undefined,
+              color: "var(--text)",
+              textShadow: glow ? "0 0 24px rgba(255,255,255,0.15)" : undefined,
               letterSpacing: "-0.03em",
               lineHeight: 1,
             }}
@@ -83,7 +84,7 @@ export function StatCard({
             flexShrink: 0,
           }}
         >
-          <Icon size={18} style={{ color: glow ? "var(--accent)" : "rgba(255,255,255,0.5)" }} />
+          <Icon size={18} style={{ color: "rgba(255,255,255,0.45)" }} />
         </div>
       </div>
     </motion.div>

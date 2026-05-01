@@ -4,7 +4,7 @@
 # when no matching override is found. Env vars in .env are the outermost
 # fallback (see src/config_loader.py).
 #
-# asset_class values: crypto_perp | crypto_spot | forex
+# asset_class values: crypto_perp | crypto_spot | forex | prediction
 #
 # Bump these numbers only after backtesting and a successful testnet/practice run.
 
@@ -41,3 +41,13 @@ overrides:
     max_leverage: 10.0
     mandatory_sl_pct: 0.5
     max_loss_per_position_pct: 2.0
+
+  - venue: polymarket
+    asset_class: prediction
+    # Prediction markets are binary outcomes; cap exposure tightly
+    max_position_pct: 2.0
+    max_leverage: 1.0           # no leverage on Polymarket
+    mandatory_sl_pct: 50.0      # binary outcomes: SL ≈ wide; effectively no SL
+    max_loss_per_position_pct: 100.0  # full loss is possible per market
+    max_concurrent_positions: 3
+    max_total_exposure_pct: 10.0

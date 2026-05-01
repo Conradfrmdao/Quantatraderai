@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Optional
 
-AssetClass = Literal["crypto_perp", "crypto_spot", "forex"]
+AssetClass = Literal["crypto_perp", "crypto_spot", "forex", "prediction"]
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop", "take_profit"]
 

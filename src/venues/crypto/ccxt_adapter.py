@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from src.config_loader import CONFIG
 from src.venues.base import Venue
@@ -42,17 +43,19 @@ class CcxtVenue(Venue):
             ) from e
 
         self._ccxt = ccxt
-        exchange_id = (exchange_name or CONFIG.get("ccxt_exchange") or "binance").lower()
+        exchange_id = (exchange_name or os.environ.get("CCXT_EXCHANGE") or CONFIG.get("ccxt_exchange") or "binance").lower()
         if not hasattr(ccxt, exchange_id):
             raise ValueError(f"CCXT has no exchange named {exchange_id!r}")
 
         exchange_cls = getattr(ccxt, exchange_id)
         self.client = exchange_cls({
-            "apiKey": CONFIG.get("ccxt_api_key") or "",
-            "secret": CONFIG.get("ccxt_api_secret") or "",
+            "apiKey": os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or "",
+            "secret": os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or "",
             "enableRateLimit": True,
         })
-        if CONFIG.get("ccxt_sandbox") and hasattr(self.client, "set_sandbox_mode"):
+        sandbox_val = os.environ.get("CCXT_SANDBOX") or str(CONFIG.get("ccxt_sandbox", "true"))
+        sandbox = sandbox_val.lower() in {"1", "true", "yes"}
+        if sandbox and hasattr(self.client, "set_sandbox_mode"):
             try:
                 self.client.set_sandbox_mode(True)
             except Exception as e:

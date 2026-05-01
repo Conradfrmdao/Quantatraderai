@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any
 
 from src.config_loader import CONFIG
@@ -53,18 +54,19 @@ class BinanceVenue(Venue):
                 "ccxt is required for BinanceVenue. Run `poetry install`."
             ) from e
 
-        market = (market or CONFIG.get("binance_market") or "futures").lower()
+        # Read live from os.environ so _inject_venue_env changes are picked up.
+        # CONFIG is a static snapshot from startup; os.environ reflects injected creds.
+        market = (market or os.environ.get("BINANCE_MARKET") or CONFIG.get("binance_market") or "futures").lower()
         self._market = market
 
         cfg: dict[str, Any] = {
-            "apiKey": CONFIG.get("binance_api_key") or "",
-            "secret": CONFIG.get("binance_api_secret") or "",
+            "apiKey": os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or "",
+            "secret": os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or "",
             "enableRateLimit": True,
         }
 
-        sandbox = CONFIG.get("binance_sandbox", False)
-        if isinstance(sandbox, str):
-            sandbox = sandbox.lower() in {"1", "true", "yes"}
+        sandbox_raw = os.environ.get("BINANCE_SANDBOX") or str(CONFIG.get("binance_sandbox", "true"))
+        sandbox = sandbox_raw.lower() in {"1", "true", "yes"}
 
         if market == "futures":
             self.client = ccxt.binanceusdm(cfg)  # USD-M perpetuals

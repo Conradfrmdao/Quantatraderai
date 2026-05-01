@@ -45,22 +45,29 @@ class ConsoleBackend:
 
 
 class TelegramBackend:
+    """H12: Fully async Telegram notifier — never blocks the event loop."""
+
     def __init__(self, token: str, chat_id: str):
-        self.token = token
+        self.token   = token
         self.chat_id = chat_id
+        self._url    = f"https://api.telegram.org/bot{self.token}/sendMessage"
 
     async def send(self, event: TradingEvent) -> None:
-        import requests
-        text = f"[{event.venue}][{event.kind}] {event.symbol or ''} {event.message}".strip()
-        url = f"https://api.telegram.org/bot{self.token}/sendMessage"
-
-        def _do():
-            try:
-                requests.post(url, json={"chat_id": self.chat_id, "text": text}, timeout=10)
-            except Exception as e:
-                logging.warning("Telegram send failed: %s", e)
-
-        await asyncio.to_thread(_do)
+        text = f"[{event.venue}][{event.kind}] {event.symbol or ''} {event.message}".strip()[:4096]
+        try:
+            import aiohttp as ah
+            async with ah.ClientSession() as session:
+                async with session.post(
+                    self._url,
+                    json={"chat_id": self.chat_id, "text": text, "parse_mode": "HTML"},
+                    timeout=ah.ClientTimeout(total=3),  # 3s max — never blocks trading
+                ) as resp:
+                    if resp.status not in (200, 400):  # 400 = bad chat_id, not transient
+                        logging.warning("Telegram returned %d", resp.status)
+        except asyncio.TimeoutError:
+            logging.warning("Telegram send timed out — skipping")
+        except Exception as e:
+            logging.warning("Telegram send failed: %s", e)
 
 
 class Notifier:

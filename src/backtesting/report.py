@@ -15,6 +15,7 @@ class BacktestReport:
     win_rate_pct: float
     trade_count: int
     sharpe: float
+    equity_curve: list = None  # type: ignore[assignment]  — (ts, equity) pairs
 
     def pretty(self) -> str:
         return (
@@ -74,6 +75,7 @@ def build_report(
         win_rate_pct=win_rate_pct,
         trade_count=trade_count,
         sharpe=sharpe,
+        equity_curve=equity_curve,
     )
 
 

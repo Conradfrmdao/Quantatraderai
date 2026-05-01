@@ -1,29 +1,103 @@
 @import "tailwindcss";
 
+/* ── CSS variables ──────────────────────────────────────────────── */
 :root {
-  /* 21st.dev dark theme */
-  --bg: #000000;
-  --surface: #0a0a0a;
-  --surface-2: #111111;
-  --surface-glass: rgba(255,255,255,0.04);
-  --border: rgba(255,255,255,0.07);
-  --border-bright: rgba(255,255,255,0.15);
-  --text: #ffffff;
-  --muted: #868f97;
-  --accent: #3b82f6;
-  --accent-glow: rgba(59,130,246,0.25);
-  --green: #22c55e;
-  --green-dim: #16a34a;
-  --green-glow: rgba(34,197,94,0.15);
-  --red: #ef4444;
-  --red-dim: #dc2626;
-  --red-glow: rgba(239,68,68,0.15);
-  --yellow: #f59e0b;
-  --purple: #8b5cf6;
-  --cyan: #06b6d4;
+  /* Pure black/white palette */
+  --bg:              #000000;
+  --surface:         #0a0a0a;
+  --surface-2:       #111111;
+  --surface-glass:   rgba(255,255,255,0.03);
+  --border:          rgba(255,255,255,0.07);
+  --border-bright:   rgba(255,255,255,0.15);
+  --text:            #ffffff;
+  --muted:           #666e77;
+
+  /* Functional colours — kept minimal for trading indicators only */
+  --green:           #4ade80;
+  --green-dim:       #166534;
+  --green-glow:      rgba(74,222,128,0.12);
+  --red:             #f87171;
+  --red-dim:         #991b1b;
+  --red-glow:        rgba(248,113,113,0.12);
+  --yellow:          #fbbf24;
+
+  /* shadcn/ui compatibility */
+  --background:      #000000;
+  --foreground:      #ffffff;
+  --card:            #0a0a0a;
+  --card-foreground: #ffffff;
+  --primary:         #ffffff;
+  --primary-foreground: #000000;
+  --secondary:       rgba(255,255,255,0.06);
+  --secondary-foreground: rgba(255,255,255,0.8);
+  --muted-bg:        rgba(255,255,255,0.04);
+  --muted-foreground: #666e77;
+  --ring:            rgba(255,255,255,0.3);
+  --radius:          0.75rem;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* ── Dark-mode color scheme (fixes white native selects/inputs) ── */
+:root { color-scheme: dark; }
+
+/* ── Reset ──────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* ── Form controls ──────────────────────────────────────────────── */
+select {
+  color-scheme: dark;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+select:focus {
+  border-color: rgba(255,255,255,0.25);
+  background: rgba(255,255,255,0.09);
+}
+option {
+  background: #111 !important;
+  color: #fff !important;
+}
+option:checked {
+  background: #222 !important;
+}
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="date"],
+textarea {
+  color-scheme: dark;
+  color: #fff;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  outline: none;
+}
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+textarea:focus {
+  border-color: rgba(255,255,255,0.25);
+  background: rgba(255,255,255,0.06);
+}
+input::placeholder,
+textarea::placeholder {
+  color: rgba(255,255,255,0.25);
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+}
+input[type="checkbox"] {
+  accent-color: #fff;
+}
 
 body {
   background: var(--bg);
@@ -31,32 +105,28 @@ body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+/* ── Scrollbar ──────────────────────────────────────────────────── */
+::-webkit-scrollbar             { width: 4px; height: 4px; }
+::-webkit-scrollbar-track       { background: transparent; }
+::-webkit-scrollbar-thumb       { background: rgba(255,255,255,0.08); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
 
-/* Gradient text — matches 21st.dev brand */
+/* ── Typography helpers ─────────────────────────────────────────── */
 .gradient-text {
-  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.gradient-text-blue {
-  background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 50%, #06b6d4 100%);
+  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.55) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
-/* Glassmorphism card — 21st.dev style */
+/* ── Glass card ─────────────────────────────────────────────────── */
 .card {
   background: var(--surface-glass);
   border: 1px solid var(--border);
-  border-radius: 24px;
+  border-radius: 20px;
   position: relative;
   overflow: hidden;
   backdrop-filter: blur(12px);
@@ -67,20 +137,20 @@ body {
   position: absolute;
   top: 0; left: 0; right: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.09), transparent);
   pointer-events: none;
 }
 
-/* Solid card for denser sections */
+/* Solid card variant */
 .card-solid {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 18px;
   position: relative;
   overflow: hidden;
 }
 
-/* Tables */
+/* ── Tables ─────────────────────────────────────────────────────── */
 table { width: 100%; border-collapse: collapse; }
 th {
   color: var(--muted);
@@ -92,33 +162,43 @@ th {
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
-td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--border); color: rgba(255,255,255,0.85); }
+td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--border); color: rgba(255,255,255,0.8); }
 tr:last-child td { border-bottom: none; }
-tr:hover td { background: rgba(255,255,255,0.02); }
+tr:hover td { background: rgba(255,255,255,0.018); }
 
-/* Animations */
+/* ── Animations ─────────────────────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.75); }
+  0%, 100% { opacity: 1;   transform: scale(1); }
+  50%       { opacity: 0.3; transform: scale(0.7); }
 }
 .pulse { animation: pulse-dot 2s ease-in-out infinite; }
 
 @keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(16px); }
+  from { opacity: 0; transform: translateY(14px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.fade-in { animation: fadeInUp 0.5s ease forwards; }
+.fade-in { animation: fadeInUp 0.45s ease forwards; }
 
-/* Glow effects */
-.glow-blue { box-shadow: 0 0 30px var(--accent-glow); }
-.glow-green { box-shadow: 0 0 20px var(--green-glow); }
+/* ── Spotlight animation (Aceternity) ──────────────────────────── */
+@keyframes spotlight {
+  0%   { opacity: 0;    transform: translate(-72%, -62%) scale(0.5); }
+  100% { opacity: 1;    transform: translate(-50%,-40%) scale(1); }
+}
+.animate-spotlight {
+  animation: spotlight 2s ease forwards 0.2s;
+}
 
-/* Noise texture overlay (optional) */
+/* ── Noise texture overlay ──────────────────────────────────────── */
 .noise::after {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.025'/%3E%3C/svg%3E");
   pointer-events: none;
   border-radius: inherit;
 }

@@ -69,8 +69,8 @@ export function EquityChart({ data }: { data: Point[] }) {
         <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id="eqGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%"  stopColor="#3b82f6" stopOpacity={0.25} />
-              <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}    />
+              <stop offset="5%"  stopColor="rgba(255,255,255,0.7)" stopOpacity={0.25} />
+              <stop offset="95%" stopColor="rgba(255,255,255,0.7)" stopOpacity={0}    />
             </linearGradient>
           </defs>
           <XAxis dataKey="t" hide />
@@ -79,11 +79,11 @@ export function EquityChart({ data }: { data: Point[] }) {
           <Area
             type="monotone"
             dataKey="equity"
-            stroke="#3b82f6"
+            stroke="rgba(255,255,255,0.7)"
             strokeWidth={1.5}
             fill="url(#eqGrad)"
             dot={false}
-            activeDot={{ r: 4, fill: "#3b82f6", stroke: "#000", strokeWidth: 2 }}
+            activeDot={{ r: 4, fill: "rgba(255,255,255,0.7)", stroke: "#000", strokeWidth: 2 }}
           />
         </AreaChart>
       </ResponsiveContainer>

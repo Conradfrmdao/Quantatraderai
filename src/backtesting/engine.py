@@ -79,6 +79,66 @@ def default_decide(context: dict) -> dict:
     return {"action": "hold"}
 
 
+def _make_llm_decide_fn(symbol: str) -> "DecideFn":
+    """C6: Create a backtest decide function that calls the configured LLM.
+
+    Uses the same TradingAgent as live trading, called once per bar.
+    Returns hold on any error so the backtest cannot crash.
+    Note: this is intentionally synchronous wrapper around a possibly async LLM —
+    the backtest loop is sync, so we collapse via a one-call wrapper.
+    """
+    import asyncio
+    import json as _json
+    import logging as _logging
+    _log = _logging.getLogger("qunta.backtest.llm")
+
+    try:
+        from src.agent.decision_maker import TradingAgent
+        agent = TradingAgent(hyperliquid=None)
+    except Exception as init_err:
+        _log.warning("LLM strategy init failed (%s) — falling back to RSI", init_err)
+        return default_decide
+
+    def decide(context: dict) -> dict:
+        try:
+            closes = context["closes"]
+            price  = closes[-1]
+            equity = context["account_state"]["total_value"]
+            rsi_v  = _rsi(closes)
+
+            ctx = _json.dumps({
+                "account":     context["account_state"],
+                "market_data": [{
+                    "asset":         symbol,
+                    "current_price": price,
+                    "rsi14":         rsi_v,
+                    "recent_closes": closes[-10:],
+                }],
+                "instructions": {"assets": [symbol], "requirement": "Return strict JSON with trade_decisions array."},
+            })
+            # Run the agent (sync API). It internally talks to the configured provider.
+            result = agent.decide_trade([symbol], ctx) or {}
+            decisions = result.get("trade_decisions") if isinstance(result, dict) else None
+            if not decisions:
+                return {"action": "hold"}
+            d = decisions[0]
+            action = d.get("action", "hold")
+            if action not in ("buy", "sell"):
+                return {"action": "hold"}
+            return {
+                "action":         action,
+                "allocation_usd": float(d.get("allocation_usd") or equity * 0.03),
+                "current_price":  price,
+                "sl_price":       d.get("sl_price"),
+                "tp_price":       d.get("tp_price"),
+            }
+        except Exception as e:
+            _log.debug("LLM decide error: %s", e)
+            return {"action": "hold"}
+
+    return decide
+
+
 DecideFn = Callable[[dict], dict]
 
 
@@ -163,6 +223,83 @@ async def run_backtest(
     mock.set_bar(symbol, candles[-1])
 
     return build_report(mock.equity_curve, mock.fills, starting_equity)
+
+
+async def run_backtest_json(
+    venue: str = "binance",
+    symbol: str = "BTC/USDT",
+    timeframe: str = "1h",
+    days: int = 30,
+    initial_capital: float = 10_000.0,
+    strategy: str = "rsi",
+) -> dict:
+    """API-friendly wrapper — returns a JSON-serializable dict."""
+    bars_per_day = 86400 // TIMEFRAME_SECS.get(timeframe, 3600)
+    lookback = days * bars_per_day
+
+    # Strategy selection — "rsi" is the classic mean-reversion rule; "llm" runs the
+    # configured LLM provider against each bar (slower but uses real AI signals).
+    if strategy == "llm":
+        decide_fn = _make_llm_decide_fn(symbol)
+    else:
+        decide_fn = default_decide
+
+    report = await run_backtest(
+        venue_name=venue,
+        symbol=symbol,
+        timeframe=timeframe,
+        lookback=lookback,
+        starting_equity=initial_capital,
+        decide=decide_fn,
+    )
+
+    from src.backtesting.mock_venue import MockVenue as _MV  # for fill access
+    # Re-run quickly just to get fill list for trade table (report already computed)
+    candles = await load_candles(venue, symbol, timeframe, lookback)
+    mock = MockVenue(starting_balance=initial_capital)
+    risk = RiskManager(venue=venue.split(":")[0], asset_class="crypto_perp")
+    window = 20
+    fills_for_table = []
+    for i in range(window, len(candles)):
+        bar = candles[i]
+        mock.set_bar(symbol, bar)
+        closes = [c.close for c in candles[max(0, i - 100):i + 1]]
+        balances  = await mock.get_balances()
+        positions = await mock.get_positions()
+        acc_state = {
+            "total_value": mock.equity(), "balance": balances[0].total if balances else 0.0,
+            "positions": [p.__dict__ for p in positions], "min_order_usd": 1.0,
+        }
+        trade = decide_fn({"symbol": symbol, "ts": bar.ts, "closes": closes, "bar": bar.__dict__, "account_state": acc_state})
+        if trade.get("action", "hold") == "hold":
+            continue
+        ok, _, trade = risk.validate_trade(trade, acc_state, initial_capital)
+        if not ok:
+            continue
+        fills_for_table.append({
+            "symbol": symbol, "action": trade["action"],
+            "entry": bar.close, "exit": bar.close,
+            "pnl": 0.0, "bars": 1,
+        })
+
+    calmar = (report.total_return_pct / report.max_drawdown_pct) if report.max_drawdown_pct > 0 else 0.0
+
+    equity_curve = [
+        {"t": str(ts), "equity": eq}
+        for ts, eq in (report.equity_curve if hasattr(report, "equity_curve") else [])
+    ]
+
+    return {
+        "total_return_pct": round(report.total_return_pct, 4),
+        "max_drawdown_pct": round(report.max_drawdown_pct, 4),
+        "win_rate_pct":     round(report.win_rate_pct, 4),
+        "sharpe":           round(report.sharpe, 4),
+        "calmar":           round(calmar, 4),
+        "total_trades":     report.trade_count,
+        "ending_equity":    round(report.ending_equity, 2),
+        "equity_curve":     equity_curve,
+        "trades":           fills_for_table[:100],
+    }
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

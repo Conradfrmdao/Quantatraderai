@@ -13,6 +13,7 @@ import asyncio
 import logging
 import uuid
 
+import os
 import requests
 
 from src.config_loader import CONFIG
@@ -44,9 +45,9 @@ class OandaVenue(Venue):
     asset_class = "forex"
 
     def __init__(self):
-        self.token = CONFIG.get("oanda_api_token") or ""
-        self.account_id = CONFIG.get("oanda_account_id") or ""
-        env = (CONFIG.get("oanda_env") or "practice").lower()
+        self.token      = os.environ.get("OANDA_API_TOKEN")  or CONFIG.get("oanda_api_token")  or ""
+        self.account_id = os.environ.get("OANDA_ACCOUNT_ID") or CONFIG.get("oanda_account_id") or ""
+        env = (os.environ.get("OANDA_ENV") or CONFIG.get("oanda_env") or "practice").lower()
         if env == "live":
             self.base_url = "https://api-fxtrade.oanda.com"
         else:
