@@ -1,134 +1,183 @@
 # QuntaTradeAI
 
-A Claude-powered, multi-venue AI trading agent. QuntaTradeAI evaluates live market data with technical indicators, asks Claude for buy/sell/hold decisions, and executes trades through pluggable venue adapters across **crypto** and **forex** platforms.
+**The AI Agent That Trades While You Sleep.**
 
-> Originally forked from [aggarwaldev/hyperliquid-trading-agent](https://github.com/aggarwaldev/hyperliquid-trading-agent). Rearchitected to be venue-agnostic, with tightened risk defaults and scaffolding for backtesting and alerts.
+QuntaTradeAI is a production-grade autonomous trading platform powered by multi-LLM decision-making (Claude, Groq, Gemini), connecting to 10+ exchanges and brokers across crypto, forex, and stocks. The AI monitors markets 24/7, analyses live indicators, and executes risk-validated trades on your behalf — fully automated, fully audited, fully yours.
+
+---
 
 ## What It Does
 
-1. Fetches real-time candles from the selected venue and computes local technical indicators (EMA, RSI, MACD, ATR, BBands, ADX, OBV, VWAP).
-2. Sends the full market context to Claude, which returns structured buy/sell/hold decisions with allocation and TP/SL.
-3. The risk manager validates every trade against hard-coded limits before execution.
-4. The venue adapter executes the approved orders.
+- Fetches live candles from any connected venue and computes 10+ technical indicators (EMA, RSI, MACD, ATR, BBands, ADX, OBV, VWAP, Stoch RSI)
+- Routes market context through an **AI Council** (majority-vote across multiple LLM providers) for high-confidence decisions
+- Every trade passes through a **hard-coded risk manager** before execution — no LLM can bypass it
+- Full **audit trail** on every decision, order, and risk block
+- Real-time dashboard with WebSocket updates, equity curve, and decision timeline
+
+---
 
 ## Supported Venues
 
-| Venue | Asset classes | Adapter |
-|---|---|---|
-| **Hyperliquid** | Crypto perps (+ HIP-3 tradfi assets) | `src/venues/crypto/hyperliquid.py` |
-| **CCXT** (100+ exchanges: Binance, Coinbase, Kraken, OKX, Bybit, KuCoin, Bitget, Gate, MEXC, ...) | Crypto spot + many perps | `src/venues/crypto/ccxt_adapter.py` |
-| **OANDA** | Forex majors/minors/exotics + CFDs | `src/venues/forex/oanda.py` |
+| Venue | Asset Class | Notes |
+|-------|------------|-------|
+| **Binance** (spot + perps) | Crypto | Futures + spot markets |
+| **Hyperliquid** | Crypto perps | HIP-3 tradfi assets |
+| **Bybit / OKX / Kraken / Coinbase** | Crypto | Via CCXT adapter |
+| **OANDA** | Forex | Practice + live |
+| **MetaTrader 4/5** | Forex + CFDs | Via MetaAPI cloud |
+| **Alpaca** | Stocks | Paper + live |
+| **Interactive Brokers** | Stocks + options | Requires TWS |
+| **Polymarket** | Prediction markets | CLOB via py-clob-client |
 
-Additional native adapters (Binance perps, MetaTrader 5, Interactive Brokers) are stubbed and can be filled in as needs arise.
+---
 
-## Safety Guards
+## Strategy Personas
 
-All enforced in code, not just LLM prompts. Defaults are intentionally conservative:
+Choose how the AI thinks before you start:
 
-| Guard | QuntaTradeAI default | Upstream default |
-|-------|---------------------|------------------|
-| Max position size | **3%** | 10% |
-| Max leverage | **2x** | 10x |
-| Mandatory stop-loss | **2.5%** | 5% |
-| Daily drawdown circuit breaker | **-4%** | -10% |
-| Force-close loss threshold | **-8%** | -20% |
-| Total exposure | **20%** | 50% |
-| Max concurrent positions | **5** | 10 |
-| Balance reserve | **30%** | 20% |
+| Persona | Style | Risk |
+|---------|-------|------|
+| **Momentum Hunter** | Trend-following | Moderate |
+| **Scalper AI** | Fast in/out | Aggressive |
+| **Swing Master** | 1-3 day holds | Conservative |
+| **News Reactor** | Sentiment-driven | Moderate |
 
-Loosen these only after backtesting and a testnet/practice run.
+---
 
-Per-venue and per-asset-class overrides live in [risk.yaml](risk.yaml).
+## Safety Architecture
+
+Every guard is enforced in code — not just LLM prompts. The LLM cannot override these.
+
+| Guard | Default |
+|-------|---------|
+| Max position size | 3% of equity |
+| Max leverage | 2× |
+| Mandatory stop-loss | 2.5% |
+| Daily drawdown circuit breaker | −4% |
+| Force-close loss threshold | −8% |
+| Total exposure | 20% |
+| Max concurrent positions | 5 |
+| Balance reserve | 30% |
+| Confidence gate | Configurable (0–95%) |
+| Max trades per day | Configurable |
+| Consecutive loss cooldown | Configurable |
+
+---
 
 ## Setup
 
 ### Prerequisites
 - Python 3.12+
-- [Poetry](https://python-poetry.org/) 2.x (or use plain pip per the Dockerfile)
+- Node.js 22+
+- PostgreSQL (via Supabase or self-hosted)
+- [Poetry](https://python-poetry.org/) 2.x
 
-### Install
+### Quick start
+
 ```bash
-poetry install
+git clone https://github.com/Conradfrmdao/Quantatraderai.git
+cd Quantatraderai
+
+# Backend
 cp .env.example .env
-# fill in your keys
+# Fill in .env (see Environment Variables section)
+poetry install
+poetry run uvicorn src.server:app --host 0.0.0.0 --port 8000
+
+# Frontend
+cd ui
+cp .env.local.example .env.local
+# Fill in .env.local
+pnpm install
+pnpm prisma migrate deploy
+pnpm dev
 ```
 
-### API keys
+### Environment Variables
 
-1. **Anthropic** — create a key at [console.anthropic.com](https://console.anthropic.com) and set `ANTHROPIC_API_KEY`. Default model is `claude-sonnet-4-6` (cheaper for per-bar loops); switch to `claude-opus-4-7` for higher-stakes decisions.
-2. **Hyperliquid** — in the Hyperliquid UI, generate an **API wallet** (not your main seed), set `HYPERLIQUID_PRIVATE_KEY` (API wallet key) and `HYPERLIQUID_VAULT_ADDRESS` (main wallet). Start with `HYPERLIQUID_NETWORK=testnet`.
-3. **CCXT crypto exchange** — pick one (e.g. Binance). Create a key with **trade enabled, withdrawals disabled**, IP-allowlisted. Set `CCXT_EXCHANGE`, `CCXT_API_KEY`, `CCXT_API_SECRET`, `CCXT_SANDBOX=true`.
-4. **OANDA** — create a **practice** account at [developer.oanda.com](https://developer.oanda.com), generate a personal access token. Set `OANDA_API_TOKEN`, `OANDA_ACCOUNT_ID`, `OANDA_ENV=practice`.
-5. **Telegram alerts** (optional) — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-
-### Run
+See `.env.example` for the full reference. Minimum required for local dev:
 
 ```bash
-# Hyperliquid (default)
-poetry run qunta --venue hyperliquid --assets "BTC ETH SOL" --interval 5m
+# Backend (.env)
+ENCRYPTION_KEY=        # 32-byte base64 key: python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+DATABASE_URL=          # postgresql://...
+LLM_PROVIDER=groq      # groq | anthropic | gemini
+GROQ_API_KEY=          # gsk_...
 
-# CCXT (Binance spot)
-poetry run qunta --venue ccxt --assets "BTC/USDT ETH/USDT" --interval 15m
-
-# OANDA (forex, practice env)
-poetry run qunta --venue oanda --assets "EUR_USD GBP_USD USD_JPY" --interval 1h
+# Frontend (ui/.env.local)
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=   # pk_...
+CLERK_SECRET_KEY=                     # sk_...
+DATABASE_URL=                         # same as backend
+ENCRYPTION_KEY=                       # same as backend
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
+PYTHON_API_URL=http://localhost:8000
 ```
 
-Or via `.env` (`VENUE`, `ASSETS`, `INTERVAL`) and `poetry run qunta`.
+---
 
-### Backtesting
+## Running Tests
 
 ```bash
-poetry run python -m src.backtesting.engine \
-    --venue hyperliquid --symbol BTC --timeframe 1h --days 30 --sample 50
+bash scripts/run_tests.sh
+# 24 test suites: unit, integration, E2E, chaos, concurrency, load, security
+# All must pass before deploying: "RELEASE READY — All 24 test suites passed"
 ```
 
-Backtests call the **same** `decision_maker` and `risk_manager` code as live; only the venue is swapped for a mock that tracks PnL in memory.
+---
 
-### Status CLI
+## Docker
 
 ```bash
-poetry run python -m src.dashboard.status
+docker build -t quntatradeai .
+docker run --env-file .env -p 8000:8000 quntatradeai
 ```
 
-Prints current positions, today's PnL, and the last N Claude decisions.
+---
 
-## Validation Sequence (do this before real money)
-
-1. **Backtest** the tightened risk config on ≥30 days of historical data. Confirm it's not catastrophic.
-2. **Testnet / practice run** — Hyperliquid testnet or OANDA practice env. Run the live loop for several full decision cycles. Confirm orders submit, the risk manager rejects oversized trades, and alerts fire.
-3. **Live with minimum stake** — only after 1 and 2 pass, start with the smallest viable equity.
-
-## Structure
+## Architecture
 
 ```
 src/
-  main.py                   # Entry point, trading loop, API server
-  config_loader.py          # Environment config
-  risk_manager.py           # Safety guards
-  agent/decision_maker.py   # Claude integration
-  indicators/               # Local TA indicators
+  server.py                  # FastAPI + WebSocket API server
+  config_loader.py           # Environment config
+  risk_manager.py            # Hard safety guards
+  agent/
+    decision_maker.py        # LLM provider abstraction
+    council.py               # Multi-LLM majority vote
+    strategy_personas.py     # Named AI trading personalities
+    nl_parser.py             # Natural language strategy rules
   venues/
-    base.py                 # Abstract Venue interface
-    models.py               # Shared Order/Position/Balance/Candle dataclasses
-    registry.py             # venue-name -> adapter
-    crypto/
-      hyperliquid.py
-      ccxt_adapter.py
-    forex/
-      oanda.py
-  backtesting/              # Backtest engine + mock venue
-  alerts/                   # Notifier (Telegram, console)
-  dashboard/                # Status CLI
-  trading/hyperliquid_api.py  # Legacy wrapper, now used by venues/crypto/hyperliquid.py
+    base.py                  # Abstract Venue interface
+    models.py                # Order/Position/Balance/Candle types
+    registry.py              # Name → adapter routing
+    crypto/                  # Binance, Hyperliquid, CCXT
+    forex/                   # OANDA, MetaTrader
+    stocks/                  # Alpaca, IBKR
+    predictions/             # Polymarket
+  backtesting/               # Full backtest engine
+  risk/                      # Adaptive sizing, slippage, hedging, VaR
+  intel/                     # MTF confluence, news sentiment, economic calendar
+  memory/                    # RAG trade memory (pgvector)
+  services/                  # Encryption, audit, persistence, receipts
+  copy_trading/              # Mirror trades to followers
+  alerts/                    # Telegram, email, Discord notifier
+
+ui/
+  app/                       # Next.js 16 App Router
+    (protected)/             # Auth-gated pages
+      dashboard/             # Main trading dashboard
+      settings/              # Venue + risk configuration
+      backtest/              # Backtesting + replay visualiser
+      trust/                 # Trust dashboard (win rate, drawdown, Sharpe)
+      admin/                 # Platform admin (users, revenue, active agents)
+  components/                # UI components
+  lib/                       # Prisma, auth, payments, rate limiting
+  prisma/                    # Schema + migrations
 ```
 
-## API Endpoints
-
-When running, the agent serves a local HTTP API:
-- `GET /diary` — recent trade diary entries
-- `GET /logs` — LLM request logs
+---
 
 ## License
 
-Use at your own risk. No guarantee of returns. This code has not been audited.
+Use at your own risk. Not financial advice. No guarantee of returns. This code has not been independently audited. Always start with paper trading.
