@@ -1,0 +1,32 @@
+name: Weekly Persona Benchmarks
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'   # Every Monday 06:00 UTC — fresh data every week
+  workflow_dispatch:        # Run manually anytime from GitHub Actions tab
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install minimal deps
+        run: pip install aiohttp
+
+      - name: Run persona backtests against real Binance candle data
+        run: python3 scripts/run_persona_backtests.py --days 90 --interval 1h
+
+      - name: Commit updated benchmark file
+        run: |
+          git config user.name  "QuntaTradeAI Bot"
+          git config user.email "bot@quntatradeai.com"
+          git add ui/public/persona_benchmarks.json
+          git diff --staged --quiet || (git commit -m "chore: weekly persona benchmarks update [bot]" && git push)
