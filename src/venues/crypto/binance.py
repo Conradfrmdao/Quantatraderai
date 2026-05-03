@@ -97,21 +97,17 @@ class BinanceVenue(Venue):
             self.asset_class = "crypto_spot"
             self.name = "binance:spot"
 
+        # Paper trading is simulated entirely in the agent tick loop —
+        # we use the LIVE Binance endpoint for read-only price/balance data
+        # regardless of paper mode. Never set sandbox mode:
+        #   - Futures testnet was deprecated by Binance in 2024
+        #   - Spot testnet requires separate testnet API keys (not your live keys)
+        # Setting sandbox mode causes -2008 "Invalid API key" on both endpoints.
         if sandbox:
-            if market == "futures":
-                # Binance deprecated futures testnet in 2024.
-                # For paper trading, execution is simulated by the agent loop —
-                # we only use the live API for read-only price data.
-                logging.info(
-                    "Binance futures: sandbox/testnet deprecated — using live API "
-                    "for price data only. Paper trade execution is simulated locally."
-                )
-            else:
-                try:
-                    self.client.set_sandbox_mode(True)
-                    logging.info("Binance spot running in testnet / sandbox mode")
-                except Exception as e:
-                    logging.warning("Binance spot sandbox mode not supported: %s", e)
+            logging.info(
+                "Binance %s paper mode: using live endpoint for price data. "
+                "Trade execution is simulated locally (no real orders placed).", market
+            )
 
     # ---- helpers --------------------------------------------------------
 
