@@ -63,11 +63,27 @@ class BinanceVenue(Venue):
             """Strip non-ASCII characters from API keys to prevent latin-1 encode errors."""
             return s.encode("ascii", errors="ignore").decode("ascii").strip()
 
+        _raw_key = os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or ""
+        _raw_sec = os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or ""
+        _clean_key = _ascii(_raw_key)
+        _clean_sec = _ascii(_raw_sec)
+
         cfg: dict[str, Any] = {
-            "apiKey": _ascii(os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or ""),
-            "secret": _ascii(os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or ""),
+            "apiKey": _clean_key,
+            "secret": _clean_sec,
             "enableRateLimit": True,
         }
+
+        # Diagnostic — log key shape without revealing value
+        logging.info(
+            "Binance API key: len=%d first3=%s last3=%s | secret: len=%d",
+            len(_clean_key), _clean_key[:3] if _clean_key else "???",
+            _clean_key[-3:] if _clean_key else "???", len(_clean_sec),
+        )
+        if len(_clean_key) < 10:
+            logging.warning("Binance API key looks too short (len=%d) — may be missing or corrupt", len(_clean_key))
+        if len(_clean_sec) < 10:
+            logging.warning("Binance API secret looks too short (len=%d) — may be missing or corrupt", len(_clean_sec))
 
         sandbox_raw = os.environ.get("BINANCE_SANDBOX") or str(CONFIG.get("binance_sandbox", "true"))
         sandbox = sandbox_raw.lower() in {"1", "true", "yes"}

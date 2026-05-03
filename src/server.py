@@ -2042,9 +2042,26 @@ async def test_venue(req: VenueTestRequest):
         meta_tok  = match.get("metaApiToken") or ""
         meta_acct = match.get("metaApiAccountId") or ""
 
-        if venue_lc in ("binance", "bybit", "kraken", "coinbase"):
+        if venue_lc in ("binance", "bybit", "kraken", "coinbase", "binanceusdm"):
             if not api_key or not api_sec:
                 return {"ok": False, "error": f"{req.venue} requires API key + secret."}
+            # Validate Binance key format — should be ~64 alphanumeric chars
+            if venue_lc in ("binance", "binanceusdm"):
+                if len(api_key) < 20:
+                    return {"ok": False, "error": (
+                        f"Binance API key looks wrong — only {len(api_key)} characters. "
+                        "A valid key is 64 characters. Check Settings → Venues and re-paste it."
+                    )}
+                if len(api_sec) < 20:
+                    return {"ok": False, "error": (
+                        f"Binance API secret looks wrong — only {len(api_sec)} characters. "
+                        "A valid secret is 64 characters. Check Settings → Venues and re-paste it."
+                    )}
+                if not api_key.replace("-", "").replace("_", "").isalnum():
+                    return {"ok": False, "error": (
+                        "Binance API key contains invalid characters. "
+                        "Keys are alphanumeric only. Re-paste carefully."
+                    )}
         if venue_lc == "okx" and (not api_key or not api_sec or not passph):
             return {"ok": False, "error": "OKX requires API key, secret, AND passphrase."}
         if venue_lc == "hyperliquid" and not api_key:
