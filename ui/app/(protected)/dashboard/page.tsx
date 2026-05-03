@@ -395,88 +395,82 @@ export default function Dashboard() {
           zIndex: 50,
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
+          overflow: "hidden",
         }}
       >
         <Link href="/" style={{ textDecoration: "none" }}>
           <LogoWordmark size={30} />
         </Link>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* WS indicator */}
-          <span title={connected ? "Live" : "Disconnected"} style={{ display: "flex", alignItems: "center", color: connected ? "#22c55e" : "rgba(255,255,255,0.3)" }}>
-            {connected ? <Wifi size={14} /> : <WifiOff size={14} />}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
+          {/* WS dot */}
+          <span title={connected ? "Live feed connected" : "Disconnected"} style={{ display: "flex", alignItems: "center", flexShrink: 0, color: connected ? "#22c55e" : "rgba(255,255,255,0.3)" }}>
+            {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
           </span>
 
-          {/* Live price */}
+          {/* Live price — compact */}
           {displayPrice && !isMobile && (
-            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", fontVariantNumeric: "tabular-nums", minWidth: 90, textAlign: "right" }}>
-              {symbol.replace("USDT", "")} ${displayPrice.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", fontVariantNumeric: "tabular-nums",
+              flexShrink: 0, whiteSpace: "nowrap" }}>
+              {symbol.replace("USDT", "")} <strong>${displayPrice.toLocaleString("en-US", { maximumFractionDigits: 0 })}</strong>
             </span>
           )}
 
-          {/* Strategy persona selector */}
-          {!running && !isMobile && (
-            <select
-              value={strategyType}
-              onChange={e => setStrategyType(e.target.value)}
-              style={{
-                background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: 8, padding: "5px 8px", fontSize: 11, color: "rgba(255,255,255,0.6)",
-                cursor: "pointer",
-              }}
-            >
-              <option value="MOMENTUM_HUNTER">Momentum Hunter</option>
-              <option value="SCALPER_AI">Scalper AI</option>
-              <option value="SWING_MASTER">Swing Master</option>
-              <option value="NEWS_REACTOR">News Reactor</option>
-            </select>
+          {/* Controls group — only when not mobile */}
+          {!isMobile && !running && (
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* Persona — compact */}
+              <select value={strategyType} onChange={e => setStrategyType(e.target.value)}
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
+                  cursor: "pointer", maxWidth: 110 }}>
+                <option value="MOMENTUM_HUNTER">Momentum</option>
+                <option value="SCALPER_AI">Scalper</option>
+                <option value="SWING_MASTER">Swing</option>
+                <option value="NEWS_REACTOR">News</option>
+              </select>
+              {/* Timeframe — compact */}
+              <select value={timeframe} onChange={e => setTimeframe(e.target.value)}
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
+                  cursor: "pointer", maxWidth: 70 }}>
+                <option value="1m">1m</option>
+                <option value="5m">5m</option>
+                <option value="15m">15m</option>
+                <option value="1h">1h</option>
+                <option value="4h">4h</option>
+              </select>
+              {/* Guards — icon+label compact */}
+              <button onClick={() => setShowGuards(g => !g)}
+                title="Guard settings: confidence gate, loss limits"
+                style={{ display: "flex", alignItems: "center", gap: 4,
+                  background: showGuards ? "rgba(251,191,36,0.12)" : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${showGuards ? "rgba(251,191,36,0.35)" : "rgba(255,255,255,0.08)"}`,
+                  borderRadius: 7, padding: "4px 8px", fontSize: 10, cursor: "pointer",
+                  color: showGuards ? "#fbbf24" : "rgba(255,255,255,0.4)" }}>
+                <Shield size={9} /> Guards
+              </button>
+            </div>
           )}
 
-          {/* Timeframe selector */}
-          {!running && !isMobile && (
-            <select value={timeframe} onChange={e => setTimeframe(e.target.value)}
-              style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
-                borderRadius: 8, padding: "5px 8px", fontSize: 11, color: "rgba(255,255,255,0.6)",
-                cursor: "pointer" }}>
-              <option value="1m">1m (fast)</option>
-              <option value="5m">5m (default)</option>
-              <option value="15m">15m</option>
-              <option value="1h">1h</option>
-              <option value="4h">4h</option>
-            </select>
-          )}
-
-          {/* Guard settings toggle */}
-          {!running && !isMobile && (
-            <button onClick={() => setShowGuards(g => !g)}
-              style={{ display: "flex", alignItems: "center", gap: 5,
-                background: showGuards ? "rgba(251,191,36,0.1)" : "rgba(255,255,255,0.04)",
-                border: `1px solid ${showGuards ? "rgba(251,191,36,0.3)" : "rgba(255,255,255,0.08)"}`,
-                borderRadius: 8, padding: "5px 10px", fontSize: 11, cursor: "pointer",
-                color: showGuards ? "#fbbf24" : "rgba(255,255,255,0.4)" }}>
-              <Shield size={10} /> Guards
-            </button>
-          )}
-
-          {/* Start / Stop agent — disabled if no venue connected */}
+          {/* Start / Stop agent */}
           <button
             onClick={!activeVenue && !running ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
             disabled={agentLoading}
             title={!activeVenue && !running ? "Connect a venue in Settings first" : undefined}
             style={{
-              display: "flex", alignItems: "center", gap: 6,
-              background: running ? "rgba(239,68,68,0.12)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.12)",
-              border: `1px solid ${running ? "rgba(239,68,68,0.3)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.3)"}`,
+              display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+              background: running ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
+              border: `1px solid ${running ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
               color: running ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
-              borderRadius: 10, padding: isMobile ? "7px" : "6px 12px",
+              borderRadius: 8, padding: isMobile ? "7px" : "5px 12px",
               cursor: agentLoading ? "default" : "pointer",
-              fontSize: 12, fontWeight: 500,
-              opacity: agentLoading ? 0.6 : 1,
-              transition: "all 0.2s",
+              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+              opacity: agentLoading ? 0.6 : 1, transition: "all 0.2s",
             }}
           >
-            {running ? <Square size={11} /> : <Play size={11} />}
-            {!isMobile && (agentLoading ? "…" : running ? "Stop Agent" : !activeVenue ? "No venue" : "Start Agent")}
+            {running ? <Square size={10} /> : <Play size={10} />}
+            {agentLoading ? "…" : running ? "Stop" : !activeVenue ? "No venue" : "Start"}
           </button>
 
           {/* Kill switch — close ALL positions immediately */}
@@ -502,81 +496,63 @@ export default function Dashboard() {
             </button>
           )}
 
+          {/* Icon-only nav links — compact, no text, tooltip on hover */}
           {!isMobile && (
-            <Link href="/backtest" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <BarChart2 size={12} /> Backtest
-            </Link>
+            <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+              {([
+                { href: "/backtest",    icon: BarChart2,   title: "Backtest" },
+                { href: "/journal",     icon: BookOpen,    title: "Journal"  },
+                { href: "/marketplace", icon: ShoppingBag, title: "Market"   },
+                { href: "/copy-trading",icon: Copy,        title: "Copy"     },
+                { href: "/rag-memory",  icon: Brain,       title: "Memory"   },
+                { href: "/audit",       icon: FileText,    title: "Audit"    },
+                { href: "/trust",       icon: Shield,      title: "Trust"    },
+              ] as { href: string; icon: React.ElementType; title: string }[]).map(({ href, icon: Icon, title }) => (
+                <Link key={href} href={href} title={title}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                    width: 28, height: 28, borderRadius: 7,
+                    background: "rgba(255,255,255,0.03)",
+                    border: "1px solid rgba(255,255,255,0.07)",
+                    color: "var(--muted)", textDecoration: "none",
+                    transition: "all 0.15s" }}>
+                  <Icon size={12} />
+                </Link>
+              ))}
+            </div>
           )}
-          {!isMobile && (
-            <Link href="/journal" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <BookOpen size={12} /> Journal
-            </Link>
-          )}
-          {!isMobile && (
-            <Link href="/marketplace" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <ShoppingBag size={12} /> Market
-            </Link>
-          )}
-          {!isMobile && (
-            <Link href="/copy-trading" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <Copy size={12} /> Copy
-            </Link>
-          )}
-          {!isMobile && (
-            <Link href="/rag-memory" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <Brain size={12} /> Memory
-            </Link>
-          )}
-          {!isMobile && (
-            <Link href="/audit" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <FileText size={12} /> Audit
-            </Link>
-          )}
-          {!isMobile && (
-            <Link href="/trust" style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 12px", color: "var(--muted)", fontSize: 12, textDecoration: "none" }}>
-              <Shield size={12} /> Trust
-            </Link>
-          )}
-          <Link href="/billing" style={{
-            display: "inline-flex", alignItems: "center", gap: 5,
-            background: currentPlan === "FREE" ? "rgba(255,255,255,0.04)"
-              : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "rgba(74,222,128,0.08)"
-              : "rgba(167,139,250,0.08)",
-            border: `1px solid ${currentPlan === "FREE" ? "var(--border)"
-              : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "rgba(74,222,128,0.25)"
-              : "rgba(167,139,250,0.25)"}`,
-            borderRadius: 10, padding: isMobile ? "5px 8px" : "5px 10px",
-            color: currentPlan === "FREE" ? "var(--muted)"
-              : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "var(--green)"
-              : "#a78bfa",
-            fontSize: 11, fontWeight: 700, letterSpacing: "0.05em",
-            textDecoration: "none",
-          }}>
+          <Link href="/billing" title={currentPlan === "FREE" ? "Upgrade plan" : "Manage billing"}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, flexShrink: 0,
+              background: currentPlan === "FREE" ? "rgba(255,255,255,0.04)"
+                : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "rgba(74,222,128,0.1)"
+                : "rgba(167,139,250,0.1)",
+              border: `1px solid ${currentPlan === "FREE" ? "rgba(255,255,255,0.1)"
+                : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "rgba(74,222,128,0.3)"
+                : "rgba(167,139,250,0.3)"}`,
+              borderRadius: 7, padding: "4px 8px",
+              color: currentPlan === "FREE" ? "rgba(255,255,255,0.4)"
+                : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "var(--green)"
+                : "#a78bfa",
+              fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
+              textDecoration: "none", whiteSpace: "nowrap" }}>
             {currentPlan}
-            {currentPlan === "FREE" && !isMobile && <span style={{ fontSize: 10, opacity: 0.5, fontWeight: 400, marginLeft: 2 }}>↑ Upgrade</span>}
+            {currentPlan === "FREE" && <span style={{ fontSize: 9, opacity: 0.6 }}>↑</span>}
           </Link>
-          <Link href="/settings" style={{
-            display: "inline-flex", alignItems: "center", gap: 6,
-            background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)",
-            borderRadius: 10, padding: isMobile ? "7px" : "6px 12px",
-            color: "var(--muted)", fontSize: 12, textDecoration: "none",
-          }}>
-            <Settings size={12} /> {!isMobile && "Settings"}
+          <Link href="/settings" title="Settings"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center",
+              width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              color: "var(--muted)", textDecoration: "none" }}>
+            <Settings size={13} />
           </Link>
           <UserButton />
-          <button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            style={{
-              background: "rgba(255,255,255,0.04)", border: "1px solid var(--border)",
-              borderRadius: 10, padding: isMobile ? "7px" : "6px 12px",
+          <button onClick={handleRefresh} disabled={refreshing} title="Refresh data"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center",
+              width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
               cursor: refreshing ? "default" : "pointer",
-              color: "var(--muted)", display: "flex", alignItems: "center", gap: 6,
-              fontSize: 12, opacity: refreshing ? 0.6 : 1,
-            }}
-          >
-            <RefreshCw size={12} style={{ animation: refreshing ? "spin 0.8s linear infinite" : "none" }} />
-            {!isMobile && (refreshing ? "Refreshing…" : "Refresh")}
+              color: refreshing ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.5)",
+              transition: "all 0.2s" }}>
+            <RefreshCw size={12} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }} />
           </button>
         </div>
       </motion.header>

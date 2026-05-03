@@ -143,6 +143,8 @@ function VenueForm({ onSave, onCancel, initialType }: {
   const [form, setForm] = useState<Partial<Venue>>({ type: safeInitial, isPaper: true });
   const set = (k: keyof Venue, v: unknown) => setForm(f => ({ ...f, [k]: v }));
   const isMobile = useIsMobile();
+  const [showSecret, setShowSecret] = useState(false);
+  const [showApiKey, setShowApiKey]  = useState(false);
 
   return (
     <div style={{ ...card, border: "1px solid rgba(255,255,255,0.14)" }}>
@@ -162,14 +164,32 @@ function VenueForm({ onSave, onCancel, initialType }: {
         </FieldGroup>
         {form.type !== "POLYMARKET" && form.type !== "METATRADER" && (<>
           <FieldGroup label={form.type === "HYPERLIQUID" ? "Private Key (API wallet)" : "API Key"}>
-            <input style={inputStyle}
-              placeholder={form.type === "HYPERLIQUID" ? "0x... (Hyperliquid API wallet key)" : "API key"}
-              type={form.type === "HYPERLIQUID" ? "password" : "text"}
-              value={form.apiKey ?? ""} onChange={e => set("apiKey", e.target.value)} />
+            <div style={{ position: "relative" }}>
+              <input style={{ ...inputStyle, paddingRight: 36 }}
+                placeholder={form.type === "HYPERLIQUID" ? "0x... (Hyperliquid API wallet key)" : "API key"}
+                type={showApiKey ? "text" : "password"}
+                value={form.apiKey ?? ""} onChange={e => set("apiKey", e.target.value)} />
+              <button type="button" onClick={() => setShowApiKey(s => !s)}
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
+                {showApiKey ? "Hide" : "Show"}
+              </button>
+            </div>
           </FieldGroup>
           {form.type !== "HYPERLIQUID" && (
             <FieldGroup label="API Secret">
-              <input style={inputStyle} type="password" placeholder="API secret" value={form.apiSecret ?? ""} onChange={e => set("apiSecret", e.target.value)} />
+              <div style={{ position: "relative" }}>
+                <input style={{ ...inputStyle, paddingRight: 36 }} placeholder="API secret"
+                  type={showSecret ? "text" : "password"}
+                  value={form.apiSecret ?? ""} onChange={e => set("apiSecret", e.target.value)} />
+                <button type="button" onClick={() => setShowSecret(s => !s)}
+                  style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
+                  {showSecret ? "Hide" : "Show"}
+                </button>
+              </div>
             </FieldGroup>
           )}
         </>)}
@@ -193,7 +213,17 @@ function VenueForm({ onSave, onCancel, initialType }: {
         )}
         {(form.type === "METATRADER") && (<>
           <FieldGroup label="MetaAPI Token">
-            <input style={inputStyle} type="password" placeholder="From metaapi.cloud dashboard" value={form.metaApiToken ?? ""} onChange={e => set("metaApiToken", e.target.value)} />
+            <div style={{ position: "relative" }}>
+              <input style={{ ...inputStyle, paddingRight: 36 }} placeholder="From metaapi.cloud dashboard"
+                type={showSecret ? "text" : "password"}
+                value={form.metaApiToken ?? ""} onChange={e => set("metaApiToken", e.target.value)} />
+              <button type="button" onClick={() => setShowSecret(s => !s)}
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
+                {showSecret ? "Hide" : "Show"}
+              </button>
+            </div>
           </FieldGroup>
           <FieldGroup label="MetaAPI Account ID">
             <input style={inputStyle} placeholder="MT4/MT5 account ID on MetaAPI" value={form.metaApiAccountId ?? ""} onChange={e => set("metaApiAccountId", e.target.value)} />
