@@ -92,6 +92,7 @@ export default function Dashboard() {
   const [livePrice, setLivePrice]         = useState<number | null>(null);
   const [strategyType, setStrategyType]     = useState<string>("MOMENTUM_HUNTER");
   const [timeframe, setTimeframe]           = useState<string>("5m");
+  const [market, setMarket]                 = useState<string>("spot");
   const [showGuards, setShowGuards]         = useState(false);
   const [minConfidence, setMinConfidence]   = useState(0);    // 0-100
   const [maxDailyLoss, setMaxDailyLoss]     = useState(0);    // 0-100 %
@@ -163,6 +164,7 @@ export default function Dashboard() {
         venue:            venueName,
         symbols:          [symbol],
         timeframe:        timeframe,
+        market:           market,
         isPaper:          activeVenue?.isPaper ?? true,
         strategyType:     strategyType,
         minConfidencePct: minConfidence,
@@ -302,6 +304,7 @@ export default function Dashboard() {
             strategyTagline:   PERSONA_DISPLAY[strategyType]?.tagline  ?? "",
             isPaper:           activeVenue?.isPaper ?? true,
             venueName:         VENUE_LABEL[venueType] ?? venueType,
+            market:            market,
             minConfidencePct:  minConfidence,
             maxDailyLossPct:   maxDailyLoss,
             maxTradesPerDay:   maxTradesDay,
@@ -439,6 +442,15 @@ export default function Dashboard() {
                 <option value="15m">15m</option>
                 <option value="1h">1h</option>
                 <option value="4h">4h</option>
+              </select>
+              {/* Spot/Futures — only relevant for Binance */}
+              <select value={market} onChange={e => setMarket(e.target.value)}
+                title="spot = standard Binance account, futures = requires Binance Futures account"
+                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                  borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
+                  cursor: "pointer", maxWidth: 68 }}>
+                <option value="spot">Spot</option>
+                <option value="futures">Futures</option>
               </select>
               {/* Guards — icon+label compact */}
               <button onClick={() => setShowGuards(g => !g)}

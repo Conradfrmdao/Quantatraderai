@@ -1631,7 +1631,7 @@ class StartRequest(BaseModel):
     symbols:       list[str]     = Field(default=["BTC/USDT"], max_length=20)
     timeframe:     str           = "1h"
     isPaper:       bool          = True
-    market:        str           = "futures"
+    market:        str           = "spot"   # default: spot avoids requiring a Binance Futures account
     apiKey:        Optional[str] = None
     apiSecret:     Optional[str] = None
     strategyType:     Optional[str] = None   # MOMENTUM_HUNTER | SCALPER_AI | SWING_MASTER | NEWS_REACTOR

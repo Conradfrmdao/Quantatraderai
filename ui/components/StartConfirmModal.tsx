@@ -12,6 +12,7 @@ export interface StartConfig {
   strategyTagline:  string;
   isPaper:          boolean;
   venueName:        string;
+  market:           string;
   minConfidencePct: number;
   maxDailyLossPct:  number;
   maxTradesPerDay:  number;
@@ -170,7 +171,7 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
             <Row icon={TrendingUp}
               label="Venue"
               value={config.venueName}
-              sub={`Symbols: ${config.symbols.join(", ")}`} />
+              sub={`${config.market.toUpperCase()} · ${config.symbols.join(", ")}`} />
 
             <Row icon={Target}
               label="Confidence gate"
