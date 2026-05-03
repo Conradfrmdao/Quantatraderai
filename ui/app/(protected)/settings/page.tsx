@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useUser, UserProfile, useClerk } from "@clerk/nextjs";
 import { LogoWordmark } from "@/components/Logo";
-import { ArrowLeft, Plus, Trash2, Save, Shield, Bell, User, Lock, Wifi } from "lucide-react";
+import { ArrowLeft, Plus, Trash2, Save, Shield, Bell, User, Lock, Wifi, Eye, EyeOff } from "lucide-react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useToast } from "@/components/Toast";
 import { DarkSelect } from "@/components/ui/dark-select";
@@ -173,7 +173,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
                 style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer",
                   color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
-                {showApiKey ? "Hide" : "Show"}
+                {showApiKey ? <EyeOff size={13} /> : <Eye size={13} />}
               </button>
             </div>
           </FieldGroup>
@@ -187,7 +187,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
                   style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
                     background: "none", border: "none", cursor: "pointer",
                     color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
-                  {showSecret ? "Hide" : "Show"}
+                  {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
                 </button>
               </div>
             </FieldGroup>
@@ -221,7 +221,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
                 style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
                   background: "none", border: "none", cursor: "pointer",
                   color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
-                {showSecret ? "Hide" : "Show"}
+                {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
               </button>
             </div>
           </FieldGroup>
@@ -243,7 +243,17 @@ function VenueForm({ onSave, onCancel, initialType }: {
         )}
         {!(["METATRADER","ALPACA","IBKR"] as VenueType[]).includes(form.type!) && (
           <FieldGroup label="Passphrase (optional)">
-            <input style={inputStyle} type="password" placeholder="Only for Coinbase, OKX, etc." value={form.apiPassphrase ?? ""} onChange={e => set("apiPassphrase", e.target.value)} />
+            <div style={{ position: "relative" }}>
+              <input style={{ ...inputStyle, paddingRight: 36 }} type={showSecret ? "text" : "password"}
+                placeholder="Only for Coinbase, OKX, etc."
+                value={form.apiPassphrase ?? ""} onChange={e => set("apiPassphrase", e.target.value)} />
+              <button type="button" onClick={() => setShowSecret(s => !s)}
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "rgba(255,255,255,0.3)", padding: 0, display: "flex" }}>
+                {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
           </FieldGroup>
         )}
       </div>
