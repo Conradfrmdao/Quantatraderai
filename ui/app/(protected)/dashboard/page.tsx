@@ -598,14 +598,14 @@ export default function Dashboard() {
         <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, minmax(0, 1fr))", gap: isMobile ? 10 : 16, marginBottom: 24 }}>
           <StatCard
             label="Portfolio Equity"
-            value={acc ? `$${acc.equity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
-            sub={acc ? `${isUp ? "▲" : "▼"} ${Math.abs(acc.total_return_pct).toFixed(2)}% total return` : undefined}
+            value={acc ? `$${(acc.equity ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+            sub={acc ? `${isUp ? "▲" : "▼"} ${Math.abs(acc.total_return_pct ?? 0).toFixed(2)}% total return` : undefined}
             icon={TrendingUp} trend={isUp ? "up" : "down"} glow delay={0}
           />
           <StatCard
             label="Unrealised PnL"
             value={totalPnL ? `${totalPnL >= 0 ? "+" : ""}$${totalPnL.toFixed(2)}` : "$0.00"}
-            sub={acc ? `Available: $${acc.balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined}
+            sub={acc ? `Available: $${(acc.balance ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined}
             icon={totalPnL >= 0 ? TrendingUp : TrendingDown} trend={totalPnL >= 0 ? "up" : "down"} delay={0.07}
           />
           <StatCard
@@ -616,7 +616,7 @@ export default function Dashboard() {
           />
           <StatCard
             label="Sharpe Ratio"
-            value={acc ? acc.sharpe.toFixed(3) : "—"}
+            value={acc ? (acc.sharpe ?? 0).toFixed(3) : "—"}
             sub="Risk-adjusted return"
             icon={Activity} trend={acc && acc.sharpe > 0 ? "up" : "neutral"} delay={0.21}
           />
