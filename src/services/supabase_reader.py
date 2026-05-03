@@ -20,7 +20,7 @@ async def _connect():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         raise RuntimeError("DATABASE_URL env var is not set")
-    return await asyncpg.connect(db_url, timeout=_DB_TIMEOUT)
+    return await asyncpg.connect(db_url, timeout=_DB_TIMEOUT, statement_cache_size=0)
 
 
 async def get_user_venues(
