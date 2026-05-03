@@ -47,10 +47,13 @@ class CcxtVenue(Venue):
         if not hasattr(ccxt, exchange_id):
             raise ValueError(f"CCXT has no exchange named {exchange_id!r}")
 
+        def _ascii(s: str) -> str:
+            return s.encode("ascii", errors="ignore").decode("ascii").strip()
+
         exchange_cls = getattr(ccxt, exchange_id)
         self.client = exchange_cls({
-            "apiKey": os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or "",
-            "secret": os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or "",
+            "apiKey": _ascii(os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or ""),
+            "secret": _ascii(os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or ""),
             "enableRateLimit": True,
         })
         sandbox_val = os.environ.get("CCXT_SANDBOX") or str(CONFIG.get("ccxt_sandbox", "true"))
@@ -65,7 +68,13 @@ class CcxtVenue(Venue):
 
     # CCXT's sync calls wrapped in to_thread keep the adapter async-compatible.
     async def _call(self, fn, *args, **kwargs):
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except UnicodeEncodeError as e:
+            raise RuntimeError(
+                f"Encoding error: {e}. Check your API key contains only "
+                "standard ASCII characters and re-save the venue in Settings."
+            ) from e
 
     async def get_balances(self) -> list[Balance]:
         bal = await self._call(self.client.fetch_balance)

@@ -59,9 +59,13 @@ class BinanceVenue(Venue):
         market = (market or os.environ.get("BINANCE_MARKET") or CONFIG.get("binance_market") or "futures").lower()
         self._market = market
 
+        def _ascii(s: str) -> str:
+            """Strip non-ASCII characters from API keys to prevent latin-1 encode errors."""
+            return s.encode("ascii", errors="ignore").decode("ascii").strip()
+
         cfg: dict[str, Any] = {
-            "apiKey": os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or "",
-            "secret": os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or "",
+            "apiKey": _ascii(os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or ""),
+            "secret": _ascii(os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or ""),
             "enableRateLimit": True,
         }
 
@@ -96,7 +100,17 @@ class BinanceVenue(Venue):
     # ---- helpers --------------------------------------------------------
 
     async def _call(self, fn, *args, **kwargs):
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        except UnicodeEncodeError as e:
+            # This happens when the API key/secret contains non-ASCII characters,
+            # or when Binance returns an error message in a non-Latin script.
+            raise RuntimeError(
+                f"Encoding error communicating with Binance: {e}. "
+                "Check that your API key and secret contain only standard ASCII "
+                "characters (no spaces, Cyrillic, Chinese, or special symbols). "
+                "Re-generate the key in Binance if unsure."
+            ) from e
 
     async def _load_markets(self):
         if not self.client.markets:
