@@ -1996,23 +1996,26 @@ async def personas_leaderboard():
 
 
 @app.post("/api/agent/stop")
-async def stop_agent():
-    if _state.status != "running":
+async def stop_agent(body: dict = {}):
+    userId = body.get("userId") if body else None
+    # Resolve the correct per-user state — same pattern as every other endpoint
+    s = get_state(userId)
+    if s.status not in ("running", "starting"):
         return {"ok": False, "error": "Agent is not running"}
-    _state.status = "stopping"
-    if _state._loop_task:
-        _state._loop_task.cancel()
-    if _state.user_id:
+    s.status = "stopping"
+    if s._loop_task:
+        s._loop_task.cancel()
+    if s.user_id:
         try:
             from src.services.supabase_reader import upsert_agent_run
             await upsert_agent_run(
-                _state.user_id, _state.venue_name, _state.symbols, _state.timeframe,
-                _state.is_paper, _state.market, False,
+                s.user_id, s.venue_name, s.symbols, s.timeframe,
+                s.is_paper, s.market, False,
             )
         except Exception:
             pass
         asyncio.create_task(_persist_audit(
-            _state.user_id, "agent_stop", None, None, {"venue": _state.venue_name},
+            s.user_id, "agent_stop", None, None, {"venue": s.venue_name},
         ))
     return {"ok": True}
 
