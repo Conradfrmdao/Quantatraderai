@@ -78,11 +78,20 @@ class BinanceVenue(Venue):
             self.name = "binance:spot"
 
         if sandbox:
-            try:
-                self.client.set_sandbox_mode(True)
-                logging.info("Binance %s running in testnet / sandbox mode", market)
-            except Exception as e:
-                logging.warning("Binance sandbox mode not supported: %s", e)
+            if market == "futures":
+                # Binance deprecated futures testnet in 2024.
+                # For paper trading, execution is simulated by the agent loop —
+                # we only use the live API for read-only price data.
+                logging.info(
+                    "Binance futures: sandbox/testnet deprecated — using live API "
+                    "for price data only. Paper trade execution is simulated locally."
+                )
+            else:
+                try:
+                    self.client.set_sandbox_mode(True)
+                    logging.info("Binance spot running in testnet / sandbox mode")
+                except Exception as e:
+                    logging.warning("Binance spot sandbox mode not supported: %s", e)
 
     # ---- helpers --------------------------------------------------------
 
