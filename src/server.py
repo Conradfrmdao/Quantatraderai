@@ -590,9 +590,17 @@ async def _tick_for(s: "AgentState"):
         human_msg = err_str
         if "-2008" in err_str or "Invalid Api-Key" in err_str or "invalid api" in err_str.lower():
             human_msg = (
-                "Invalid API key — Binance rejected it. "
-                "Go to Settings → Venues → delete this venue → re-add it with a fresh API key from binance.com. "
-                "Make sure you enable 'Spot & Margin Trading' permission and copy the key exactly."
+                "Invalid API key (-2008) — Binance does not recognise this key. "
+                "Most common causes: (1) extra space when pasting — delete the venue and re-paste carefully, "
+                "(2) key was regenerated or deleted on binance.com/my/settings/api-management, "
+                "(3) you pasted the Secret instead of the Key. "
+                "NOTE: Read-Only is fine for paper trading but you need 'Enable Spot & Margin Trading' for live."
+            )
+        elif "-2015" in err_str or "permissions" in err_str.lower():
+            human_msg = (
+                "API key permissions error (-2015). "
+                "For paper trading: Read-Only is enough. "
+                "For live trading: go to binance.com → API Management → Edit → enable 'Spot & Margin Trading'."
             )
         elif "-1102" in err_str or "mandatory parameter" in err_str.lower():
             human_msg = "Binance rejected the request — missing a required parameter. Check venue settings."
