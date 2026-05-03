@@ -10,7 +10,8 @@ const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 // positions, status, risk, decisions, candles, calendar, etc.) lives at /api/*.
 const AGENT_VERBS = new Set([
   "start", "stop", "killswitch",
-  // future: pause, resume, restart…
+  "timeline", "personas", "pending-order", "trust",
+  "execute-signal", "strategies",
 ]);
 
 function buildPythonPath(subpath: string): string {

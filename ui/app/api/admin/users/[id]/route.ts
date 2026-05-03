@@ -31,11 +31,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       id: true, clerkId: true, email: true, name: true,
       plan: true, stripeCustomerId: true, stripeSubId: true,
       planExpiresAt: true, createdAt: true,
-      trades:  { orderBy: { createdAt: "desc" }, take: 20,
+      tradeLogs: { orderBy: { createdAt: "desc" }, take: 20,
                  select: { id: true, symbol: true, action: true, price: true,
                            quantity: true, pnl: true, createdAt: true, source: true } },
-      venues:  { select: { id: true, type: true, displayName: true, isPaper: true, createdAt: true } },
-      audits:  { orderBy: { createdAt: "desc" }, take: 30,
+      venues:    { select: { id: true, type: true, displayName: true, isPaper: true, createdAt: true } },
+      auditLogs: { orderBy: { createdAt: "desc" }, take: 30,
                  select: { event: true, symbol: true, action: true, createdAt: true } },
     },
   });
@@ -130,7 +130,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
       event:   "admin_plan_override",
       symbol:  null,
       action:  plan,
-      data:    { reason: reason ?? "Manual override by admin", adminId, previousPlan: "unknown" },
+      data:    JSON.stringify({ reason: reason ?? "Manual override by admin", adminId, previousPlan: "unknown" }),
     },
   });
 

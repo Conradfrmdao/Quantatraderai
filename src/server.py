@@ -1353,15 +1353,32 @@ async def admin_server_stats(admin_key: str = ""):
 @app.get("/api/status")
 async def get_status(userId: Optional[str] = None):
     s      = get_state(userId)
-    uptime = int((datetime.now(timezone.utc) - s.start_time).total_seconds()) if s.start_time else 0
+    now    = datetime.now(timezone.utc)
+    uptime = int((now - s.start_time).total_seconds()) if s.start_time else 0
+    tick_interval = _interval_seconds(s.timeframe)
+    last_tick_ago = int((now - s.last_tick_at).total_seconds()) if s.last_tick_at else None
+    next_tick_in  = max(0, int(tick_interval - (last_tick_ago or tick_interval))) if s.status == "running" else None
+
+    # Get the most recent log message so dashboard can show "what is it doing?"
+    latest_log = list(s.logs)[-1] if s.logs else None
+
     return {
-        "status":         s.status,
-        "provider":       CONFIG.get("llm_provider") or "groq",
-        "model":          CONFIG.get("llm_model")    or "llama-3.3-70b-versatile",
-        "venue":          s.venue_name,
-        "assets":         s.symbols,
-        "tick_count":     s.tick_count,
-        "uptime_seconds": uptime,
+        "status":           s.status,
+        "provider":         CONFIG.get("llm_provider") or "groq",
+        "model":            CONFIG.get("llm_model")    or "llama-3.3-70b-versatile",
+        "venue":            s.venue_name,
+        "assets":           s.symbols,
+        "tick_count":       s.tick_count,
+        "uptime_seconds":   uptime,
+        "timeframe":        s.timeframe,
+        "is_paper":         s.is_paper,
+        "last_tick_ago_s":  last_tick_ago,
+        "next_tick_in_s":   next_tick_in,
+        "tick_interval_s":  int(tick_interval),
+        "strategy_type":    s.strategy_type or None,
+        "latest_log":       latest_log,
+        "daily_trade_count": s.daily_trade_count,
+        "consecutive_losses": s.consecutive_losses,
     }
 
 
@@ -1384,7 +1401,7 @@ async def get_risk(userId: Optional[str] = None):
     """Live risk config for the requesting user's session (or fallback global)."""
     s = get_state(userId)
     if s.risk_mgr:
-        cfg = s.risk_mgr.config
+        cfg = s.risk_mgr.config if s.risk_mgr and hasattr(s.risk_mgr, "config") else {}
     else:
         cfg = CONFIG
     return {
@@ -1572,8 +1589,9 @@ async def get_candles(
 
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 100):
-    return {"logs": list(_state.logs)[-limit:]}
+async def get_logs(limit: int = 100, userId: Optional[str] = None):
+    s = get_state(userId)
+    return {"logs": list(s.logs)[-limit:]}
 
 
 # ── Agent control ─────────────────────────────────────────────────────────────

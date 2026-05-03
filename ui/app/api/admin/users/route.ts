@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
         id: true, clerkId: true, email: true, name: true,
         plan: true, stripeCustomerId: true, stripeSubId: true,
         planExpiresAt: true, createdAt: true,
-        _count: { select: { trades: true } },
+        _count: { select: { tradeLogs: true } },
       },
     }),
     prisma.user.count({ where }),

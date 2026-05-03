@@ -23,7 +23,7 @@ interface UserRow {
   id: string; clerkId: string; email: string; name: string | null;
   plan: string; stripeCustomerId: string | null; stripeSubId: string | null;
   planExpiresAt: string | null; createdAt: string;
-  _count: { trades: number };
+  _count: { tradeLogs: number };
 }
 
 interface UserDetail {
@@ -373,7 +373,7 @@ function UsersTab() {
               <p style={{ fontSize: 13, color: "#fff", fontWeight: 500 }}>{u.name ?? u.email}</p>
               {u.name && <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>{u.email}</p>}
               <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>
-                {"Joined " + fmtDate(u.createdAt) + " · " + u._count.trades + " trades"}
+                {"Joined " + fmtDate(u.createdAt) + " · " + u._count.tradeLogs + " trades"}
               </p>
             </div>
             <PlanBadge plan={u.plan} />

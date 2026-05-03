@@ -70,7 +70,7 @@ function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null)
 
 interface AccountData   { balance: number; equity: number; initial_equity: number; total_return_pct: number; open_positions: number; sharpe: number }
 interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage: number; liquidation_price: number }[] }
-interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[] }
+interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number }[] }[] }
 
@@ -82,7 +82,7 @@ export default function Dashboard() {
 
   const account   = usePolled<AccountData>  ("/api/account",   8000,  sessionKey);
   const positions = usePolled<PositionsData>("/api/positions", 8000,  sessionKey);
-  const status    = usePolled<StatusData>   ("/api/status",   15000, sessionKey);
+  const status    = usePolled<StatusData>   ("/api/status",    5000, sessionKey);
   const risk      = usePolled<RiskData>     ("/api/risk",     60000, sessionKey);
   const decisions = usePolled<DecisionsData>("/api/decisions",10000, sessionKey);
 
@@ -91,6 +91,7 @@ export default function Dashboard() {
   const [killConfirm, setKillConfirm]     = useState(false);
   const [livePrice, setLivePrice]         = useState<number | null>(null);
   const [strategyType, setStrategyType]     = useState<string>("MOMENTUM_HUNTER");
+  const [timeframe, setTimeframe]           = useState<string>("5m");
   const [showGuards, setShowGuards]         = useState(false);
   const [minConfidence, setMinConfidence]   = useState(0);    // 0-100
   const [maxDailyLoss, setMaxDailyLoss]     = useState(0);    // 0-100 %
@@ -161,7 +162,7 @@ export default function Dashboard() {
       const body = {
         venue:            venueName,
         symbols:          [symbol],
-        timeframe:        "1h",
+        timeframe:        timeframe,
         isPaper:          activeVenue?.isPaper ?? true,
         strategyType:     strategyType,
         minConfidencePct: minConfidence,
@@ -428,6 +429,20 @@ export default function Dashboard() {
               <option value="SCALPER_AI">Scalper AI</option>
               <option value="SWING_MASTER">Swing Master</option>
               <option value="NEWS_REACTOR">News Reactor</option>
+            </select>
+          )}
+
+          {/* Timeframe selector */}
+          {!running && !isMobile && (
+            <select value={timeframe} onChange={e => setTimeframe(e.target.value)}
+              style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
+                borderRadius: 8, padding: "5px 8px", fontSize: 11, color: "rgba(255,255,255,0.6)",
+                cursor: "pointer" }}>
+              <option value="1m">1m (fast)</option>
+              <option value="5m">5m (default)</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
             </select>
           )}
 
