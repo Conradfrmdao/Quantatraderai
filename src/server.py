@@ -1338,13 +1338,20 @@ async def _on_startup():
     venue_name = row.get("venue") or "binance"
     logger.info("Auto-resuming agent for userId=%s venue=%s symbols=%s",
                 row["userId"], venue_name, row["symbols"])
+    # Use stored market, but default to "spot" if stored value was "futures"
+    # (futures requires a separate Binance Futures account; spot works with any key)
+    stored_market = row.get("market") or "spot"
+    safe_market = stored_market if stored_market != "futures" else "spot"
+    if safe_market != stored_market:
+        logger.info("Auto-resume: downgraded market futures→spot (no futures account needed for paper trading)")
+
     await _do_start(
         user_id=row["clerkId"],
         venue_name=venue_name,
         symbols=list(row["symbols"]),
         timeframe=row["timeframe"],
         is_paper=row["isPaper"],
-        market=row["market"],
+        market=safe_market,
         api_key=None,
         api_secret=None,
     )
@@ -1377,6 +1384,42 @@ async def admin_server_stats(admin_key: str = ""):
         "ws_clients":            len(_ws_clients),
         "uptime_s":              int(time.time() - _server_start_ts),
     }
+
+
+@app.get("/api/agent/test-key")
+async def test_stored_key(userId: Optional[str] = None):
+    """Quick diagnostic: decrypt the stored API key and check its format/length.
+    Does NOT call the exchange — purely local validation.
+    Shows key length, first 4 chars, last 4 chars so the user can verify without exposing it."""
+    if not userId:
+        return {"ok": False, "error": "userId required"}
+    try:
+        from src.services.supabase_reader import get_user_venues
+        venues = await get_user_venues(userId)
+        if not venues:
+            return {"ok": False, "error": "No venues configured for this user"}
+        results = []
+        for v in venues:
+            vtype = v.get("type", "unknown")
+            key   = v.get("apiKey", "") or ""
+            sec   = v.get("apiSecret", "") or ""
+            results.append({
+                "type":          vtype,
+                "key_len":       len(key),
+                "key_preview":   f"{key[:4]}...{key[-4:]}" if len(key) >= 8 else f"<{len(key)} chars — too short>",
+                "secret_len":    len(sec),
+                "secret_ok":     len(sec) >= 20,
+                "key_ok":        len(key) >= 20,
+                "key_ascii":     key.isascii(),
+                "has_spaces":    " " in key or " " in sec,
+                "diagnosis":     (
+                    "✓ Key format looks correct" if len(key) >= 60 else
+                    f"⚠ Key only {len(key)} chars — Binance keys are 64 chars. Was it cut off when pasting?"
+                ),
+            })
+        return {"ok": True, "venues": results}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/api/status")
