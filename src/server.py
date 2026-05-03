@@ -585,7 +585,28 @@ async def _tick_for(s: "AgentState"):
         balances  = await s.venue.get_balances()
         positions = await s.venue.get_positions()
     except Exception as e:
-        s.log(f"Venue fetch error: {e}")
+        err_str = str(e)
+        # Translate common exchange error codes to plain English
+        human_msg = err_str
+        if "-2008" in err_str or "Invalid Api-Key" in err_str or "invalid api" in err_str.lower():
+            human_msg = (
+                "Invalid API key — Binance rejected it. "
+                "Go to Settings → Venues → delete this venue → re-add it with a fresh API key from binance.com. "
+                "Make sure you enable 'Spot & Margin Trading' permission and copy the key exactly."
+            )
+        elif "-1102" in err_str or "mandatory parameter" in err_str.lower():
+            human_msg = "Binance rejected the request — missing a required parameter. Check venue settings."
+        elif "401" in err_str or "403" in err_str or "Unauthorized" in err_str:
+            human_msg = "Exchange returned 401/403 — API key is invalid or expired. Re-generate it in your exchange settings."
+        elif "IP" in err_str and ("restrict" in err_str.lower() or "whitelist" in err_str.lower()):
+            human_msg = "IP restriction: your API key only allows specific IPs. Remove IP restriction in Binance API settings or add your server IP."
+        elif "Connection" in err_str or "Timeout" in err_str or "timeout" in err_str.lower():
+            human_msg = "Network timeout connecting to exchange. Will retry next tick."
+        elif "UnicodeEncodeError" in err_str or "latin-1" in err_str:
+            human_msg = "API key contains invalid characters. Delete the venue and re-paste the key."
+        elif "deprecated" in err_str.lower() or "testnet" in err_str.lower():
+            human_msg = "Exchange testnet is deprecated. Running in paper mode — trades are simulated locally."
+        s.log(f"Venue fetch error: {human_msg}")
         return
 
     usdt      = next((b for b in balances if b.currency in ("USDT", "USD", "BUSD")), None)
