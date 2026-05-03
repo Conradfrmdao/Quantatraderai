@@ -28,4 +28,4 @@ venv/
 llm_requests.log
 trading_history.log
 *.log
-diary.jsonl
+diary.jsonlui/tmp/
