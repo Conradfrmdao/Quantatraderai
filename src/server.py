@@ -263,6 +263,8 @@ class AgentState:
 
         self.start_time:     datetime | None = None
         self.initial_equity: float   | None = None
+        self.paper_balance:  float          = 10_000.0  # simulated balance for paper trading
+        self.paper_positions: list[dict]    = []         # simulated open positions
         self.trade_log:      list[dict]      = []
         self.tick_count:     int             = 0
         self.error:          str | None      = None
@@ -617,10 +619,18 @@ async def _tick_for(s: "AgentState"):
         s.log(f"Venue fetch error: {human_msg}")
         return
 
-    usdt      = next((b for b in balances if b.currency in ("USDT", "USD", "BUSD")), None)
-    balance   = usdt.available if usdt else 0.0
-    pnl_total = sum(p.unrealized_pnl for p in positions)
-    equity    = balance + pnl_total
+    if s.is_paper:
+        # Paper mode: use simulated balance — never the real exchange balance.
+        # Real balance is often $0 which causes the AI to refuse all trades.
+        # Paper trades update s.paper_balance so P&L is tracked correctly.
+        balance   = s.paper_balance
+        pnl_total = sum(p.get("unrealized_pnl", 0.0) for p in s.paper_positions)
+        equity    = balance + pnl_total
+    else:
+        usdt      = next((b for b in balances if b.currency in ("USDT", "USD", "BUSD")), None)
+        balance   = usdt.available if usdt else 0.0
+        pnl_total = sum(p.unrealized_pnl for p in positions)
+        equity    = balance + pnl_total
 
     if s.initial_equity is None:
         s.initial_equity = equity
@@ -880,11 +890,75 @@ async def _tick_for(s: "AgentState"):
             s.log(f"Strategy rule eval error: {e}")
 
     if s.is_paper:
+        # Paper trading: simulate execution against s.paper_balance
+        acc_state_paper = {"total_value": equity, "balance": balance, "positions": s.paper_positions}
         for dec in decisions:
             action = dec.get("action", "hold")
             sym    = dec.get("asset", "")
             alloc  = float(dec.get("allocation_usd", 0))
-            s.log(f"[PAPER] {action.upper()} {sym} ${alloc:.2f} — {dec.get('rationale','')[:80]}")
+            if action not in ("buy", "sell") or alloc <= 0:
+                s.log(f"[PAPER] HOLD {sym} — {dec.get('rationale','')[:80]}")
+                continue
+
+            # Apply beta cap and risk validation even for paper trades
+            if s.risk_mgr:
+                _beta = float(os.getenv("BETA_LIVE_CAP_USD", "500"))
+                if _beta > 0 and alloc > _beta:
+                    alloc = _beta; dec["allocation_usd"] = alloc
+                dec["current_price"] = s.price_cache.get(sym.replace("/", ""), 0)
+                ok, reason, dec = s.risk_mgr.validate_trade(dec, acc_state_paper, s.initial_equity or 0)
+                if not ok:
+                    s.log(f"[PAPER] BLOCKED {sym}: {reason}")
+                    continue
+
+            price = dec.get("current_price") or s.price_cache.get(sym.replace("/", ""), 0)
+            if price <= 0:
+                s.log(f"[PAPER] {action.upper()} {sym} — price unknown, skipping")
+                continue
+
+            qty = alloc / price
+            pnl = 0.0
+
+            if action == "buy":
+                s.paper_balance -= alloc
+                s.paper_positions.append({
+                    "symbol": sym, "quantity": qty, "entry_price": price,
+                    "current_price": price, "unrealized_pnl": 0.0,
+                    "sl_price": dec.get("sl_price"), "tp_price": dec.get("tp_price"),
+                })
+            elif action == "sell":
+                # Close matching paper position
+                matched = next((p for p in s.paper_positions if p["symbol"] == sym), None)
+                if matched:
+                    pnl = (price - matched["entry_price"]) * matched["quantity"]
+                    s.paper_balance += matched["quantity"] * price
+                    s.paper_positions = [p for p in s.paper_positions if p["symbol"] != sym]
+                    s.trade_log.append({"action": "sell", "price": price, "qty": qty, "pnl": pnl})
+                    if pnl < 0: s.consecutive_losses += 1
+                    else:       s.consecutive_losses = 0
+                    s.daily_loss_usd += pnl
+                else:
+                    s.log(f"[PAPER] SELL {sym} — no open position to close")
+                    continue
+
+            s.trade_log.append({"action": action, "price": price, "qty": qty, "pnl": pnl})
+            s.daily_trade_count += 1
+            s.timeline_event("executed", sym,
+                f"[Paper] {action.upper()} {qty:.6f} @ ${price:.2f} | balance=${s.paper_balance:.2f}",
+                action=action)
+            s.log(f"[PAPER] {action.upper()} {sym} qty={qty:.6f} @ ${price:.2f} "
+                  f"balance=${s.paper_balance:.2f} — {dec.get('rationale','')[:60]}")
+            await _broadcast({"type": "trade_executed", "data": {
+                "symbol": sym, "action": action, "price": price, "qty": qty,
+                "venue": s.venue_name, "paper": True,
+            }}, s.user_id)
+
+            # Update paper positions' current prices
+            for p in s.paper_positions:
+                cp = s.price_cache.get(p["symbol"].replace("/",""), p["entry_price"])
+                p["current_price"]  = cp
+                p["unrealized_pnl"] = (cp - p["entry_price"]) * p["quantity"]
+
         return
 
     # G22: Adaptive risk — auto-scale position size by rolling Sharpe each tick
@@ -1457,15 +1531,26 @@ async def get_status(userId: Optional[str] = None):
 @app.get("/api/account")
 async def get_account(userId: Optional[str] = None):
     s = get_state(userId)
-    return s.account or {
-        "balance": 0, "equity": 0, "initial_equity": 0,
+    if s.account:
+        return s.account
+    # Agent not running yet — show paper starting balance if paper mode, else zeros
+    paper_bal = s.paper_balance if hasattr(s, "paper_balance") else 10_000.0
+    is_paper  = s.is_paper
+    return {
+        "balance": paper_bal if is_paper else 0,
+        "equity":  paper_bal if is_paper else 0,
+        "initial_equity": paper_bal if is_paper else 0,
         "total_return_pct": 0, "open_positions": 0, "sharpe": 0,
     }
 
 
 @app.get("/api/positions")
 async def get_positions(userId: Optional[str] = None):
-    return {"positions": get_state(userId).positions}
+    s = get_state(userId)
+    # Return paper positions when in paper mode and agent ran at least one tick
+    if s.is_paper and s.paper_positions and not s.positions:
+        return {"positions": s.paper_positions}
+    return {"positions": s.positions}
 
 
 @app.get("/api/risk")
@@ -1908,6 +1993,11 @@ async def _do_start(
     final_state.consecutive_losses  = 0
     final_state.day_reset_at        = datetime.now(timezone.utc).date().isoformat()
     final_state.timeline            = deque(maxlen=200)
+    # Reset paper trading simulation on every fresh start
+    if is_paper:
+        final_state.paper_balance   = 10_000.0
+        final_state.paper_positions = []
+        final_state.initial_equity  = 10_000.0
 
     # Strategy persona — apply risk overrides and inject prompt addendum
     if strategy_type:
