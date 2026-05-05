@@ -1,13 +1,13 @@
-# QuntaTradeAI — State of the System & Road to World-Class
+# QuantatraderAI — State of the System & Road to World-Class
 
-> A single durable reference that fuses what's actually in the repo today with the strategic framing from `qunta_godmode_warroom.html`.
+> A single durable reference that fuses what's actually in the repo today with the strategic framing from `quantatrader_godmode_warroom.html`.
 > **17 features complete · 4 critical gaps · 31 world-class additions · 14 new venues to add**
 
 ---
 
 ## 1. Executive Summary
 
-**QuntaTradeAI** is a Claude/Groq-powered, multi-venue autonomous AI trading agent with a production-grade Next.js dashboard. The Python backend runs an OODA-style tick loop that fetches market data, computes local technical indicators, asks an LLM for buy/sell/hold decisions, enforces hard-coded risk rules, and executes trades through pluggable venue adapters. The frontend gives users Clerk-authenticated onboarding, encrypted credential storage (AES-256-GCM), live dashboards (WebSocket + polling), and per-venue risk configuration.
+**QuantatraderAI** is a Claude/Groq-powered, multi-venue autonomous AI trading agent with a production-grade Next.js dashboard. The Python backend runs an OODA-style tick loop that fetches market data, computes local technical indicators, asks an LLM for buy/sell/hold decisions, enforces hard-coded risk rules, and executes trades through pluggable venue adapters. The frontend gives users Clerk-authenticated onboarding, encrypted credential storage (AES-256-GCM), live dashboards (WebSocket + polling), and per-venue risk configuration.
 
 The architecture is **sound and modular** — adding a new exchange is an interface implementation, not a rewrite. The gap between today and world-class is not foundational; it's finishing the last mile on alerts/persistence, unlocking MetaTrader + IBKR, turning on multi-LLM consensus with RAG memory, and wiring Stripe/mobile/observability for scale.
 
@@ -499,7 +499,7 @@ That's not a hobby project. That's a company.
 
 ```bash
 # Backend — live loop (aiohttp)
-poetry run qunta --venue hyperliquid --assets "BTC ETH SOL" --interval 5m
+poetry run quantatrader --venue hyperliquid --assets "BTC ETH SOL" --interval 5m
 
 # Backend — FastAPI + WebSocket (for UI)
 poetry run python src/server.py

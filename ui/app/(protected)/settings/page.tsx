@@ -280,7 +280,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
       <div style={{ marginTop: 6, marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
         {[
           { icon: "🔒", text: "Your API key is encrypted with AES-256-GCM before storage — never stored in plain text." },
-          { icon: "🚫", text: "QuntaTradeAI never requests withdrawal permissions. Read-only + trade access only." },
+          { icon: "🚫", text: "QuantatraderAI never requests withdrawal permissions. Read-only + trade access only." },
           { icon: "🗑️", text: "You can revoke access anytime — delete the venue to permanently remove your credentials." },
         ].map(({ icon, text }) => (
           <div key={icon} style={{ display: "flex", alignItems: "flex-start", gap: 8,
@@ -729,12 +729,19 @@ export default function SettingsPage() {
                           color: "rgba(74,222,128,0.7)" }}>
                           🚫 No Withdrawal Access
                         </span>
-                        {v.isPaper && (
+                        {v.isPaper ? (
                           <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
                             padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
                             background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)",
                             color: "#818cf8" }}>
                             PAPER MODE
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                            padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
+                            background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+                            color: "#ef4444" }}>
+                            ● LIVE
                           </span>
                         )}
                       </div>
@@ -882,7 +889,7 @@ export default function SettingsPage() {
                   onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(239,68,68,0.18)")}
                   onMouseLeave={(e) => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
                 >
-                  Sign out of QuantaTrade AI
+                  Sign out of QuantatraderAI
                 </button>
               </div>
             </div>

@@ -1,4 +1,4 @@
-# QuntaTradeAI — GOD MODE L99 AUDIT
+# QuantatraderAI — GOD MODE L99 AUDIT
 **Date:** 2026-04-25 | **Auditor:** Claude Opus 4.7 | **Scope:** Every file
 
 ---
@@ -201,7 +201,7 @@ Makes the value of upgrading viscerally clear.
 
 ### G3. Verified strategy performance
 - Backtest results should be cryptographically signed with platform key
-- Marketplace listings show "Verified by QuntaTradeAI" badge only if backtested via platform
+- Marketplace listings show "Verified by QuantatraderAI" badge only if backtested via platform
 - Prevents fake performance claims
 
 ### G4. Progressive disclosure of complexity

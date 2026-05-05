@@ -1,5 +1,5 @@
 
-<h2 class="sr-only">QuntaTradeAI God Mode War Room — full gap analysis, MetaTrader integration, and world-class roadmap</h2>
+<h2 class="sr-only">QuantatraderAI God Mode War Room — full gap analysis, MetaTrader integration, and world-class roadmap</h2>
 <style>
 :root{--c1:var(--color-text-primary);--c2:var(--color-text-secondary);--c3:var(--color-text-tertiary);--bg1:var(--color-background-primary);--bg2:var(--color-background-secondary);--bg3:var(--color-background-tertiary);--bdr:var(--color-border-tertiary);--bdr2:var(--color-border-secondary);--ok:var(--color-text-success);--warn:var(--color-text-warning);--danger:var(--color-text-danger);--info:var(--color-text-info)}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -69,7 +69,7 @@
 <div class="wr">
 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
   <div>
-    <div style="font-size:18px;font-weight:500;color:var(--c1)">QuntaTradeAI — god mode</div>
+    <div style="font-size:18px;font-weight:500;color:var(--c1)">QuantatraderAI — god mode</div>
     <div style="font-size:12px;color:var(--c2);margin-top:2px">Full gap analysis · MetaTrader bridge · path to world-class</div>
   </div>
   <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--c2)">
@@ -200,7 +200,7 @@ request = {
     "volume": 0.1,
     "type": mt5.ORDER_TYPE_BUY,
     "sl": 1.0800, "tp": 1.1050,
-    "comment": "QuntaTradeAI"
+    "comment": "QuantatraderAI"
 }
 result = mt5.order_send(request)</div>
   </div>
@@ -208,7 +208,7 @@ result = mt5.order_send(request)</div>
   <p class="sec-title">New venue adapter to build — MetaTraderVenue</p>
   <div class="code-block">class MetaTraderVenue(BaseVenue):
     """
-    Wraps MetaAPI to give QuntaTradeAI uniform interface.
+    Wraps MetaAPI to give QuantatraderAI uniform interface.
     Drop-in replacement for BinanceVenue.
     """
     def __init__(self, metaapi_token, account_id, paper=True):
@@ -253,35 +253,35 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Tier 1 — intelligence engine (highest alpha)</div>
     <div class="feat-grid">
-      <div class="feat" onclick="sendPrompt('How do I add order flow and Level 2 data to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add order flow and Level 2 data to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-danger"></span>Order flow / DOM<span class="feat-tag badge b-danger">critical</span></div>
         <div class="feat-sub">Level 2 depth-of-market, tape reading, bid/ask imbalance. Institutional traders live here.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add an economic calendar auto-pause to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add an economic calendar auto-pause to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-danger"></span>Economic calendar<span class="feat-tag badge b-danger">critical</span></div>
         <div class="feat-sub">Auto-pause agent before NFP, CPI, FOMC. News events destroy algos that ignore them.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add news sentiment NLP to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add news sentiment NLP to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>News sentiment NLP<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Real-time news feed analysis. Feed headlines into LLM context before each decision tick.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add on-chain analytics to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add on-chain analytics to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>On-chain analytics<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Exchange inflows/outflows, whale wallet tracking, funding rates. Glassnode/Nansen APIs.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add a cross-asset correlation matrix to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add a cross-asset correlation matrix to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Correlation matrix<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Cross-asset correlation rolling window. Avoid stacking correlated positions that amplify drawdown.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add multi-timeframe confluence analysis to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add multi-timeframe confluence analysis to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>MTF confluence<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Indicators on 1h + 4h + 1D must align. Single-timeframe analysis misses the bigger picture.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add a fear and greed index to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add a fear and greed index to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Fear/greed index<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Crypto F&G, VIX, put/call ratio. Macro sentiment injected into LLM context every tick.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add funding rate monitoring to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add funding rate monitoring to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Funding rate monitor<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">High positive funding = crowded longs = squeeze risk. Auto-reduce position or flip short.</div>
       </div>
@@ -291,27 +291,27 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Tier 2 — AI architecture (the real moat)</div>
     <div class="feat-grid">
-      <div class="feat" onclick="sendPrompt('How do I add RAG memory so QuntaTradeAI remembers past trades?')">
+      <div class="feat" onclick="sendPrompt('How do I add RAG memory so QuantatraderAI remembers past trades?')">
         <div class="feat-title"><span class="dot dot-danger"></span>RAG trade memory<span class="feat-tag badge b-danger">critical</span></div>
         <div class="feat-sub">Vector DB (Pinecone/pgvector) stores every decision + outcome. Agent learns what worked. True learning loop.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I implement multi-AI council consensus voting in QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I implement multi-AI council consensus voting in QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-danger"></span>Council consensus<span class="feat-tag badge b-danger">critical</span></div>
         <div class="feat-sub">Groq + Claude + Gemini vote in parallel. Only execute if 2/3 agree. Eliminates single-LLM hallucination risk.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add reinforcement learning to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add reinforcement learning to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>RL feedback loop<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Reward signal from actual PnL. Update system prompt weights based on which decisions made money.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add natural language trade commands to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add natural language trade commands to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Natural language commands<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">"Buy 1 BTC when RSI drops below 30." Chat-based strategy authoring. No code required for users.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add explainable AI to QuntaTradeAI so users understand every decision?')">
+      <div class="feat" onclick="sendPrompt('How do I add explainable AI to QuantatraderAI so users understand every decision?')">
         <div class="feat-title"><span class="dot dot-info"></span>Explainable AI<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Visual confidence breakdown, indicator weights, "which factor drove this BUY?" — builds user trust fast.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add ML-powered backtesting optimization to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add ML-powered backtesting optimization to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>ML backtest optimizer<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Walk-forward optimization, Bayesian parameter search. Find best RSI/EMA params per market regime.</div>
       </div>
@@ -321,19 +321,19 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Tier 3 — execution quality</div>
     <div class="feat-grid">
-      <div class="feat" onclick="sendPrompt('How do I add smart order routing to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add smart order routing to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Smart order routing<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">VWAP/TWAP execution algos. Split large orders to minimise slippage. Iceberg orders for institutional size.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add TradingView webhook support to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add TradingView webhook support to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-danger"></span>TradingView webhooks<span class="feat-tag badge b-danger">critical</span></div>
         <div class="feat-sub">POST /api/webhook/tradingview. TV Pine Script alert → instant execution. Every retail trader already uses TV.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add MEV protection for DeFi trades in QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add MEV protection for DeFi trades in QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>MEV protection (DeFi)<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Flashbots / MEV Blocker for on-chain orders. Prevents front-running on Ethereum/Arbitrum swaps.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add order book visualisation to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add order book visualisation to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Order book heatmap<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Live bid/ask depth visualised as a heatmap. Spot walls, spoofing, large limit orders before entry.</div>
       </div>
@@ -343,27 +343,27 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Tier 4 — platform (the moat that compounds)</div>
     <div class="feat-grid">
-      <div class="feat" onclick="sendPrompt('How do I add copy trading and social features to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add copy trading and social features to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Copy / social trading<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Follow top-performing agents. Revenue split for strategy creators. Virality engine — every winner brings 10 followers.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I build a strategy marketplace for QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I build a strategy marketplace for QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Strategy marketplace<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">Buy/sell trading strategies. Verified backtested returns. Monthly subscription model. 30% platform cut.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I build a mobile app for QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I build a mobile app for QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Mobile app<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">React Native or Expo. Push notifications, quick start/stop, real-time PnL. App store distribution = credibility.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add portfolio optimization with Kelly Criterion to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add portfolio optimization with Kelly Criterion to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Portfolio optimizer<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Kelly Criterion sizing, Modern Portfolio Theory, Sharpe-maximising allocation across multiple positions.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add tax reporting to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add tax reporting to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Tax reporting<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">FIFO/LIFO cost basis, realized PnL export, CSV for CPA. HMRC / IRS compatible. Traders will pay for this alone.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add a public leaderboard to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add a public leaderboard to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Public leaderboard<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Anonymous verified returns ranking. Top 100 agents by Sharpe. Organic virality — traders want bragging rights.</div>
       </div>
@@ -373,15 +373,15 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Tier 5 — risk & compliance (institutional grade)</div>
     <div class="feat-grid">
-      <div class="feat" onclick="sendPrompt('How do I add Value at Risk calculations to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add Value at Risk calculations to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>VaR calculations<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">95%/99% Value at Risk. Monte Carlo simulations. Institutional risk reporting. Unlocks hedge fund clients.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add a kill switch with dead mans switch to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add a kill switch with dead mans switch to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-warn"></span>Kill switch + dead man<span class="feat-tag badge b-warn">high</span></div>
         <div class="feat-sub">One-click close all positions. If server goes silent for 30min, auto-close everything. Non-negotiable for live trading.</div>
       </div>
-      <div class="feat" onclick="sendPrompt('How do I add a compliance audit trail to QuntaTradeAI?')">
+      <div class="feat" onclick="sendPrompt('How do I add a compliance audit trail to QuantatraderAI?')">
         <div class="feat-title"><span class="dot dot-info"></span>Audit trail<span class="feat-tag badge b-info">medium</span></div>
         <div class="feat-sub">Immutable log of every decision, order, rejection. Required for regulated venues and enterprise clients.</div>
       </div>
@@ -404,22 +404,22 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Forex + CFDs + stocks (MetaTrader ecosystem)</div>
     <div class="venue-grid">
-      <div class="venue" onclick="sendPrompt('How do I add MetaTrader 4 and 5 support to QuntaTradeAI via MetaAPI?')">
+      <div class="venue" onclick="sendPrompt('How do I add MetaTrader 4 and 5 support to QuantatraderAI via MetaAPI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-danger"></span>MetaTrader 4/5</div>
         <div class="venue-type">Forex · metals · CFDs</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via MetaAPI SDK</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add Interactive Brokers IBKR to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Interactive Brokers IBKR to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-danger"></span>Interactive Brokers</div>
         <div class="venue-type">Stocks · options · futures · FX</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via IBKR TWS API / ibapi</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add Alpaca to QuntaTradeAI for US stocks?')">
+      <div class="venue" onclick="sendPrompt('How do I add Alpaca to QuantatraderAI for US stocks?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Alpaca</div>
         <div class="venue-type">US stocks · options</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via alpaca-trade-api</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add FXCM forex broker to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add FXCM forex broker to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>FXCM</div>
         <div class="venue-type">Forex · indices · CFDs</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via fxcmpy SDK</div>
@@ -430,32 +430,32 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Crypto — perps + spot</div>
     <div class="venue-grid">
-      <div class="venue" onclick="sendPrompt('How do I add Bybit to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Bybit to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Bybit</div>
         <div class="venue-type">Crypto perps · spot</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add OKX to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add OKX to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>OKX</div>
         <div class="venue-type">Crypto · DeFi bridge</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add dYdX v4 to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add dYdX v4 to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>dYdX v4</div>
         <div class="venue-type">DEX perps (Cosmos)</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via dydx-v4-client SDK</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add GMX to QuntaTradeAI for Arbitrum trading?')">
+      <div class="venue" onclick="sendPrompt('How do I add GMX to QuantatraderAI for Arbitrum trading?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>GMX</div>
         <div class="venue-type">DEX perps (Arbitrum)</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via Web3.py + GMX SDK</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add Kraken futures to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Kraken futures to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Kraken</div>
         <div class="venue-type">Crypto spot + futures</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add Coinbase Advanced Trade to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Coinbase Advanced Trade to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Coinbase Advanced</div>
         <div class="venue-type">Crypto spot</div>
         <div style="font-size:10px;color:var(--info);margin-top:4px">via CCXT already supported</div>
@@ -466,19 +466,19 @@ result = mt5.order_send(request)</div>
   <div class="tier">
     <div class="tier-label">Data only — feeds that make your LLM smarter</div>
     <div class="venue-grid">
-      <div class="venue" onclick="sendPrompt('How do I add Glassnode on-chain data to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Glassnode on-chain data to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>Glassnode</div>
         <div class="venue-type">On-chain analytics API</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add CryptoCompare news sentiment to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add CryptoCompare news sentiment to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>CryptoCompare</div>
         <div class="venue-type">News · social sentiment</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add TwelveData economic calendar to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add TwelveData economic calendar to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-warn"></span>TwelveData</div>
         <div class="venue-type">Stocks · forex · economic calendar</div>
       </div>
-      <div class="venue" onclick="sendPrompt('How do I add Alternative.me fear greed index to QuntaTradeAI?')">
+      <div class="venue" onclick="sendPrompt('How do I add Alternative.me fear greed index to QuantatraderAI?')">
         <div class="venue-name" style="display:flex;align-items:center;gap:6px"><span class="dot dot-info"></span>Alternative.me</div>
         <div class="venue-type">Fear/greed index (free)</div>
       </div>

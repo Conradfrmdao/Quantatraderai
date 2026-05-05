@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ArrowLeft, ArrowRight, KeyRound } from "lucide-react";
 import dynamic from "next/dynamic";
 import { Logo, LogoWordmark } from "@/components/Logo";
+import { APP_NAME } from "@/lib/constants";
 
 const CanvasRevealEffect = dynamic(
   () => import("@/components/ui/canvas-reveal-effect").then((m) => m.CanvasRevealEffect),
@@ -130,7 +131,7 @@ export function SignIn() {
                       <Logo size={52} />
                     </div>
                     <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8, letterSpacing: "-0.02em" }}>
-                      Sign in to QuantaTrade AI
+                      Sign in to {APP_NAME}
                     </h1>
                     <p style={{ fontSize: 14, color: "rgba(255,255,255,0.38)", lineHeight: 1.5 }}>
                       Enter your email to receive a one-time code.

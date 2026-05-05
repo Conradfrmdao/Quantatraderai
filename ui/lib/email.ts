@@ -1,23 +1,11 @@
-/**
- * QuntaTradeAI Email System — powered by Resend
- *
- * Required env: RESEND_API_KEY (get from resend.com → API Keys)
- * Required env: EMAIL_FROM=QuntaTradeAI <noreply@yourdomain.com>
- *
- * Functions:
- *   sendWelcomeEmail        — triggered by Clerk webhook on user.created
- *   sendTradeExecutedEmail  — triggered by trade webhook
- *   sendAgentStoppedEmail   — triggered when agent stops unexpectedly
- *   sendWeeklyReport        — called by a cron/scheduled job
- */
-
 import { Resend } from "resend";
+import { APP_NAME, NOREPLY_EMAIL } from "@/lib/constants";
 
 const resend = process.env.RESEND_API_KEY
   ? new Resend(process.env.RESEND_API_KEY)
   : null;
 
-const FROM = process.env.EMAIL_FROM ?? "QuntaTradeAI <noreply@quntatradeai.com>";
+const FROM = process.env.EMAIL_FROM ?? `${APP_NAME} <${NOREPLY_EMAIL}>`;
 
 function log(msg: string) {
   if (!resend) console.warn("[email] RESEND_API_KEY not set —", msg);
@@ -32,11 +20,11 @@ function wrap(body: string): string {
   <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;margin:0 auto;padding:32px 20px;">
     <tr><td>
       <div style="margin-bottom:28px;">
-        <span style="font-size:18px;font-weight:800;color:#4ade80;letter-spacing:-0.03em;">QuntaTradeAI</span>
+        <span style="font-size:18px;font-weight:800;color:#4ade80;letter-spacing:-0.03em;">${APP_NAME}</span>
       </div>
       ${body}
       <div style="margin-top:36px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.08);font-size:11px;color:rgba(255,255,255,0.25);">
-        QuntaTradeAI is not a financial advisor. All trades are executed at your own risk.
+        ${APP_NAME} is not a financial advisor. All trades are executed at your own risk.
         This is not financial advice. <a href="{{UNSUBSCRIBE}}" style="color:rgba(255,255,255,0.3);">Unsubscribe</a>
       </div>
     </td></tr>
@@ -50,13 +38,13 @@ export async function sendWelcomeEmail(to: string, firstName: string) {
   if (!resend) { log(`welcome → ${to}`); return; }
   await resend.emails.send({
     from: FROM, to,
-    subject: "Welcome to QuntaTradeAI — your AI is ready",
+    subject: "Welcome to QuantatraderAI — your AI is ready",
     html: wrap(`
       <h1 style="font-size:24px;font-weight:800;margin:0 0 12px;color:#fff;">
         Welcome, ${firstName} 👋
       </h1>
       <p style="font-size:14px;color:rgba(255,255,255,0.6);line-height:1.7;margin-bottom:20px;">
-        Your QuntaTradeAI account is ready. The AI works 24/7 — it monitors live markets,
+        Your QuantatraderAI account is ready. The AI works 24/7 — it monitors live markets,
         analyses indicators, and executes trades on your behalf once you connect an exchange.
       </p>
       <div style="margin-bottom:20px;">
@@ -111,7 +99,7 @@ export async function sendAgentStoppedEmail(to: string, reason: string, venue: s
   if (!resend) { log(`agent-stopped → ${to}`); return; }
   await resend.emails.send({
     from: FROM, to,
-    subject: "Your QuntaTradeAI agent has stopped",
+    subject: "Your QuantatraderAI agent has stopped",
     html: wrap(`
       <h2 style="font-size:18px;font-weight:700;color:#fff;margin:0 0 12px;">Agent Stopped</h2>
       <div style="background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.2);border-radius:10px;padding:14px 16px;margin-bottom:18px;">

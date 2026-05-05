@@ -4,10 +4,11 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 import { LogoWordmark } from "@/components/Logo";
 import { ArrowLeft } from "lucide-react";
+import { APP_NAME, LEGAL_EMAIL } from "@/lib/constants";
 
 const LAST_UPDATED = "18 April 2026";
-const COMPANY = "QuantaTrade AI";
-const CONTACT_EMAIL = "legal@quntatrade.ai";
+const COMPANY = APP_NAME;
+const CONTACT_EMAIL = LEGAL_EMAIL;
 
 const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <section style={{ marginBottom: 48 }}>

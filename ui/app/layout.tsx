@@ -3,12 +3,13 @@ import { Inter } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ToastProvider } from "@/components/Toast";
 import { SignOutGuard } from "@/components/SignOutGuard";
+import { APP_NAME, APP_TAGLINE } from "@/lib/constants";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "QuantaTrade AI — The AI Agent That Trades While You Sleep",
+  title: `${APP_NAME} — ${APP_TAGLINE}`,
   description: "Multi-venue AI trading agent. Connects to Hyperliquid, Binance, OANDA, MetaTrader, Alpaca, IBKR and 100+ exchanges. 24/7 autonomous trading with collective AI council decision-making.",
   icons: { icon: "/icon.svg" },
 };

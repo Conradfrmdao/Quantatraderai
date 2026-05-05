@@ -1,8 +1,8 @@
-# QuntaTradeAI
+# QuantatraderAI
 
 **The AI Agent That Trades While You Sleep.**
 
-QuntaTradeAI is a production-grade autonomous trading platform powered by multi-LLM decision-making (Claude, Groq, Gemini), connecting to 10+ exchanges and brokers across crypto, forex, and stocks. The AI monitors markets 24/7, analyses live indicators, and executes risk-validated trades on your behalf — fully automated, fully audited, fully yours.
+QuantatraderAI is a production-grade autonomous trading platform powered by multi-LLM decision-making (Claude, Groq, Gemini), connecting to 10+ exchanges and brokers across crypto, forex, and stocks. The AI monitors markets 24/7, analyses live indicators, and executes risk-validated trades on your behalf — fully automated, fully audited, fully yours.
 
 ---
 
@@ -75,8 +75,8 @@ Every guard is enforced in code — not just LLM prompts. The LLM cannot overrid
 ### Quick start
 
 ```bash
-git clone https://github.com/Conradfrmdao/Quantatraderai.git
-cd Quantatraderai
+git clone https://github.com/Conradfrmdao/QuantatraderAI.git
+cd QuantatraderAI
 
 # Backend
 cp .env.example .env
@@ -129,8 +129,8 @@ bash scripts/run_tests.sh
 ## Docker
 
 ```bash
-docker build -t quntatradeai .
-docker run --env-file .env -p 8000:8000 quntatradeai
+docker build -t quantatraderai .
+docker run --env-file .env -p 8000:8000 quantatraderai
 ```
 
 ---

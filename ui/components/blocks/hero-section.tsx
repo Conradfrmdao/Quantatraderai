@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { ArrowRight, ChevronRight } from "lucide-react";
 import dynamic from "next/dynamic";
 import { InfiniteSlider } from "@/components/ui/infinite-slider";
+import { APP_NAME } from "@/lib/constants";
 import { Spotlight } from "@/components/ui/spotlight";
 import { LogoWordmark } from "@/components/Logo";
 import { useIsMobile } from "@/hooks/useIsMobile";
@@ -172,7 +173,7 @@ export function HeroSection() {
             transition={{ duration: 0.6, delay: 0.35 }}
             style={{ fontSize: 17, color: "rgba(255,255,255,0.38)", lineHeight: 1.65, maxWidth: 560, marginBottom: 40, margin: "0 auto 40px" }}
           >
-            QuantaTrade AI connects to Hyperliquid, Binance, OANDA, and 100+ exchanges.
+            {APP_NAME} connects to Hyperliquid, Binance, OANDA, and 100+ exchanges.
             Every decision is made by an LLM with full technical context and enforced
             by conservative risk rules before any order hits the wire.
           </motion.p>

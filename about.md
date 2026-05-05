@@ -1,12 +1,12 @@
-# QuntaTradeAI — Complete Technical Reference & Vision Document
+# QuantatraderAI — Complete Technical Reference & Vision Document
 
-> This document is a full, agent-ready briefing of the QuntaTradeAI codebase: every file, every system, every known gap, and the long-term vision. Paste this into any AI agent to get full context instantly.
+> This document is a full, agent-ready briefing of the QuantatraderAI codebase: every file, every system, every known gap, and the long-term vision. Paste this into any AI agent to get full context instantly.
 
 ---
 
-## 1. What Is QuntaTradeAI?
+## 1. What Is QuantatraderAI?
 
-QuntaTradeAI is an **autonomous, multi-venue AI trading platform** powered by Claude (Anthropic), Groq, Gemini, and Ollama. It trades crypto perpetuals, crypto spot, forex, and US equities across 10+ exchanges. The system runs 24/7 without human intervention, using LLMs to make fully reasoned trade decisions within hard-coded risk guardrails.
+QuantatraderAI is an **autonomous, multi-venue AI trading platform** powered by Claude (Anthropic), Groq, Gemini, and Ollama. It trades crypto perpetuals, crypto spot, forex, and US equities across 10+ exchanges. The system runs 24/7 without human intervention, using LLMs to make fully reasoned trade decisions within hard-coded risk guardrails.
 
 It is **not** a signal bot. It is **not** a simple algo. It is a full-stack, production-grade AI agent with its own reasoning loop, risk management, memory, backtesting engine, copy trading, strategy marketplace, and natural-language command bar.
 
@@ -26,7 +26,7 @@ It is **not** a signal bot. It is **not** a simple algo. It is a full-stack, pro
 ## 2. Repository Layout
 
 ```
-QuntaTradeAI/
+QuantatraderAI/
 ├── src/                        # Python backend
 │   ├── main.py                 # CLI entry point + legacy trading loop
 │   ├── server.py               # FastAPI production server
@@ -205,7 +205,7 @@ QuntaTradeAI/
 ### 3.1 Entry Points
 
 #### `src/main.py` — CLI Trading Loop
-The original entry point. CLI: `poetry run qunta --venue hyperliquid --assets "BTC ETH" --interval 5m`
+The original entry point. CLI: `poetry run quantatrader --venue hyperliquid --assets "BTC ETH" --interval 5m`
 
 - **`run_loop()`**: Async event loop. Every `interval` seconds:
   1. Fetch balances, positions, candles, tickers
@@ -521,11 +521,11 @@ Embeddings: OpenAI `text-embedding-3-small` (or SHA-512 hash fallback if no Open
 - `init_sentry()`: Sentry SDK with performance tracing + profiling
 - `init_structlog()`: structured JSON logs (field: venue, asset, action, latency, error)
 - Prometheus metrics:
-  - `qunta_tick_duration_seconds`: histogram of time per trading tick
-  - `qunta_llm_response_seconds{provider}`: LLM call latency by provider
-  - `qunta_order_fill_seconds{venue}`: order execution latency by venue
-  - `qunta_websocket_clients`: gauge of connected WS clients
-  - `qunta_agent_running`: 0/1 binary flag
+  - `quantatrader_tick_duration_seconds`: histogram of time per trading tick
+  - `quantatrader_llm_response_seconds{provider}`: LLM call latency by provider
+  - `quantatrader_order_fill_seconds{venue}`: order execution latency by venue
+  - `quantatrader_websocket_clients`: gauge of connected WS clients
+  - `quantatrader_agent_running`: 0/1 binary flag
 
 Prometheus HTTP server at `:9090/metrics` (configurable via `PROMETHEUS_PORT`).
 
@@ -878,15 +878,15 @@ These are documented, confirmed issues. Any agent working on this codebase shoul
 
 ### Docker
 ```bash
-docker build -t quntatradeai .
+docker build -t quantatraderai .
 docker run -d \
   --env-file .env \
   -p 8000:8000 \
   -p 9090:9090 \
-  quntatradeai
+  quantatraderai
 ```
 - Multi-stage: builder (Poetry install) → runtime (minimal python:3.12-slim)
-- Runs as non-root user `qunta` (uid 1001)
+- Runs as non-root user `quantatrader` (uid 1001)
 - Health check: `curl http://localhost:${API_PORT}/api/status`
 - Entrypoint: `python src/server.py`
 
@@ -916,13 +916,13 @@ pnpm dev   # http://localhost:3000
 
 ---
 
-## 10. Vision — Where QuntaTradeAI Should Go
+## 10. Vision — Where QuantatraderAI Should Go
 
 This section defines the product we are building toward. Every addition, fix, or agent decision should be measured against this vision.
 
 ### 10.1 Core Vision Statement
 
-**QuntaTradeAI becomes the Bloomberg Terminal of AI trading agents** — an institutional-grade, fully autonomous trading platform accessible to everyone from a sophisticated retail trader to a hedge fund. It is the only platform where you can deploy multiple AI models in a voting council, trade across 15+ venues simultaneously, let the system learn from every trade via semantic memory, and have your copy followers mirror your signals in real-time — all behind a single, beautiful dashboard.
+**QuantatraderAI becomes the Bloomberg Terminal of AI trading agents** — an institutional-grade, fully autonomous trading platform accessible to everyone from a sophisticated retail trader to a hedge fund. It is the only platform where you can deploy multiple AI models in a voting council, trade across 15+ venues simultaneously, let the system learn from every trade via semantic memory, and have your copy followers mirror your signals in real-time — all behind a single, beautiful dashboard.
 
 ---
 
@@ -1102,7 +1102,7 @@ This section defines the product we are building toward. Every addition, fix, or
 
 **Additional Revenue**
 - Strategy marketplace: 20% revenue share on subscriber fees
-- Copy trading: 1% AUM fee per month on follower allocations (paid to leaders, Qunta takes 15%)
+- Copy trading: 1% AUM fee per month on follower allocations (paid to leaders, QuantatraderAI takes 15%)
 - White-label: sell the platform to hedge funds / brokers under their brand
 
 ---
@@ -1160,4 +1160,4 @@ Tests live in `tests/`. Run with: `poetry run pytest tests/ -v`
 
 ---
 
-*This document represents the full state of QuntaTradeAI as of May 2026. The codebase is feature-rich but has critical wiring gaps between built modules and the live trading loop. The foundation is solid — the work ahead is integration, not invention.*
+*This document represents the full state of QuantatraderAI as of May 2026. The codebase is feature-rich but has critical wiring gaps between built modules and the live trading loop. The foundation is solid — the work ahead is integration, not invention.*
