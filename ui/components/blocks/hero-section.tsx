@@ -173,7 +173,7 @@ export function HeroSection() {
             transition={{ duration: 0.6, delay: 0.35 }}
             style={{ fontSize: 17, color: "rgba(255,255,255,0.38)", lineHeight: 1.65, maxWidth: 560, marginBottom: 40, margin: "0 auto 40px" }}
           >
-            {APP_NAME} connects to Hyperliquid, Binance, OANDA, and 100+ exchanges.
+            {APP_NAME} connects to Hyperliquid, Binance, OANDA, MetaTrader, and 100+ exchanges.
             Every decision is made by an LLM with full technical context and enforced
             by conservative risk rules before any order hits the wire.
           </motion.p>
