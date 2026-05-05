@@ -2,8 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["stripe", "ib_insync", "metaapi-cloud-sdk"],
-  // Move Turbopack cache to /tmp so it runs on the fast local filesystem
-  // (avoids the slow-filesystem hang on WSL/network drives)
+  async rewrites() {
+    const apiUrl = process.env.PYTHON_API_URL ?? "http://localhost:8000";
+    return [
+      { source: "/api/py/:path*", destination: `${apiUrl}/:path*` },
+    ];
+  },
 };
 
 // Wrap with Sentry only if SENTRY_DSN is set — no-op if missing
