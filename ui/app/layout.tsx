@@ -11,7 +11,20 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
   description: "Multi-venue AI trading agent. Connects to Hyperliquid, Binance, OANDA, MetaTrader, Alpaca, IBKR and 100+ exchanges. 24/7 autonomous trading with collective AI council decision-making.",
-  icons: { icon: "/icon.svg" },
+  icons: {
+    icon: [
+      { url: "/icon.svg",    type: "image/svg+xml" },
+      { url: "/favicon.ico", sizes: "32x32" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+    other: [
+      { rel: "mask-icon", url: "/safari-pinned-tab.svg", color: "#4ade80" },
+    ],
+  },
+  manifest: "/site.webmanifest",
+  themeColor: "#000000",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
