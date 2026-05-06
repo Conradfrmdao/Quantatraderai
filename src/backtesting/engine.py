@@ -55,27 +55,57 @@ def _rsi(closes: list[float], period: int = 14) -> float | None:
 
 
 def default_decide(context: dict) -> dict:
-    """Simple RSI-based rule. Good enough for smoke tests, not a strategy.
+    """Simple RSI mean-reversion rule for smoke tests.
 
-    Returns a trade dict matching the shape `RiskManager.validate_trade` expects:
+    Trades both long and short sides on perpetuals:
+      RSI < 30  → open long  (oversold bounce)
+      RSI > 70  → open short (overbought fade)
+      Flat when positioned in either direction until the opposite extreme is reached.
+
+    Returns a trade dict matching RiskManager.validate_trade shape:
       {action, allocation_usd, current_price, sl_price?, tp_price?}
     """
-    closes = context["closes"]
-    price = closes[-1]
-    rsi = _rsi(closes)
+    closes    = context["closes"]
+    price     = closes[-1]
+    rsi       = _rsi(closes)
     positions = context["account_state"]["positions"]
-    has_long = any(p["quantity"] > 0 for p in positions)
-    has_short = any(p["quantity"] < 0 for p in positions)
-    equity = context["account_state"]["total_value"]
+    equity    = context["account_state"]["total_value"]
+    alloc     = equity * 0.03  # 3% per trade
 
-    alloc = equity * 0.03  # 3% per trade
+    has_long  = any(float(p.get("quantity", 0)) > 0 for p in positions)
+    has_short = any(float(p.get("quantity", 0)) < 0 for p in positions)
 
     if rsi is None:
         return {"action": "hold"}
-    if rsi < 30 and not has_long:
-        return {"action": "buy", "allocation_usd": alloc, "current_price": price}
-    if rsi > 70 and has_long and not has_short:
+
+    # Enter long when oversold and no existing long
+    if rsi < 30 and not has_long and not has_short:
+        return {
+            "action": "buy",
+            "allocation_usd": alloc,
+            "current_price": price,
+            "sl_price": round(price * 0.975, 6),   # 2.5% stop
+            "tp_price": round(price * 1.05, 6),     # 5% target
+        }
+
+    # Enter short when overbought and no existing short
+    if rsi > 70 and not has_short and not has_long:
+        return {
+            "action": "sell",
+            "allocation_usd": alloc,
+            "current_price": price,
+            "sl_price": round(price * 1.025, 6),   # 2.5% stop above entry
+            "tp_price": round(price * 0.95, 6),    # 5% target below entry
+        }
+
+    # Close long when overbought
+    if rsi > 70 and has_long:
         return {"action": "sell", "allocation_usd": alloc, "current_price": price}
+
+    # Close short when oversold
+    if rsi < 30 and has_short:
+        return {"action": "buy", "allocation_usd": alloc, "current_price": price}
+
     return {"action": "hold"}
 
 
@@ -90,7 +120,7 @@ def _make_llm_decide_fn(symbol: str) -> "DecideFn":
     import asyncio
     import json as _json
     import logging as _logging
-    _log = _logging.getLogger("qunta.backtest.llm")
+    _log = _logging.getLogger("quantatraderai.backtest.llm")
 
     try:
         from src.agent.decision_maker import TradingAgent
@@ -106,15 +136,38 @@ def _make_llm_decide_fn(symbol: str) -> "DecideFn":
             equity = context["account_state"]["total_value"]
             rsi_v  = _rsi(closes)
 
+            # Build indicator context matching the live trading prompt structure
+            # so LLM backtest results are representative of live behavior.
+            from src.indicators.local_indicators import compute_all, latest, last_n
+            _candles_as_dicts = [
+                {"open": c, "high": c, "low": c, "close": c, "volume": 0}
+                for c in closes
+            ]
+            _inds = compute_all(_candles_as_dicts)
+
             ctx = _json.dumps({
                 "account":     context["account_state"],
                 "market_data": [{
                     "asset":         symbol,
                     "current_price": price,
-                    "rsi14":         rsi_v,
-                    "recent_closes": closes[-10:],
+                    "intraday": {
+                        "rsi14":  rsi_v,
+                        "ema20":  latest(_inds.get("ema20", [])),
+                        "macd":   latest(_inds.get("macd", [])),
+                        "atr14":  latest(_inds.get("atr14", [])),
+                    },
+                    "long_term": {
+                        "ema50":  latest(_inds.get("ema50", [])),
+                        "macd":   latest(_inds.get("macd", [])),
+                    },
+                    "recent_closes": closes[-20:],
+                    "open_interest": None,
+                    "funding_rate":  None,
                 }],
-                "instructions": {"assets": [symbol], "requirement": "Return strict JSON with trade_decisions array."},
+                "instructions": {
+                    "assets": [symbol],
+                    "requirement": "Return strict JSON with trade_decisions array.",
+                },
             })
             # Run the agent (sync API). It internally talks to the configured provider.
             result = agent.decide_trade([symbol], ctx) or {}
@@ -199,23 +252,33 @@ async def run_backtest(
             logging.debug("risk rejected at ts=%d: %s", bar.ts, reason)
             continue
 
-        side = "buy" if trade["action"] == "buy" else "sell"
         alloc_usd = float(trade["allocation_usd"])
-        qty = alloc_usd / bar.close
-        if trade["action"] == "sell":
-            # Treat "sell" as "close long" for the simple rule; a real strategy
-            # would distinguish close-long vs open-short.
-            pos = next((p for p in positions if p.quantity > 0), None)
-            if pos:
+        qty       = alloc_usd / bar.close
+        action    = trade["action"]
+
+        has_long  = any(p.quantity > 0 for p in positions)
+        has_short = any(p.quantity < 0 for p in positions)
+
+        if action == "sell":
+            if has_long:
+                # Close existing long first
                 await mock.close_position(symbol)
-                continue
-        await mock.place_order(
-            symbol,
-            side,  # type: ignore[arg-type]
-            qty,
-            order_type="market",
-            stop_loss=trade.get("sl_price"),
-        )
+            if not has_long:
+                # Open a new short position
+                await mock.place_order(
+                    symbol, "sell", qty, order_type="market",  # type: ignore[arg-type]
+                    stop_loss=trade.get("sl_price"),
+                )
+        elif action == "buy":
+            if has_short:
+                # Close existing short first
+                await mock.close_position(symbol)
+            if not has_short:
+                # Open a new long position
+                await mock.place_order(
+                    symbol, "buy", qty, order_type="market",  # type: ignore[arg-type]
+                    stop_loss=trade.get("sl_price"),
+                )
 
     # Close any residual position at the last bar
     await mock.close_position(symbol)
@@ -232,58 +295,80 @@ async def run_backtest_json(
     days: int = 30,
     initial_capital: float = 10_000.0,
     strategy: str = "rsi",
+    asset_class: str = "crypto_perp",
 ) -> dict:
-    """API-friendly wrapper — returns a JSON-serializable dict."""
+    """API-friendly wrapper — returns a JSON-serializable dict.
+
+    Runs a single backtest pass and collects both the performance report and
+    the per-trade fill table in one go (previously ran the simulation twice).
+    """
+    from src.backtesting.mock_venue import MockVenue
+
     bars_per_day = 86400 // TIMEFRAME_SECS.get(timeframe, 3600)
     lookback = days * bars_per_day
 
-    # Strategy selection — "rsi" is the classic mean-reversion rule; "llm" runs the
-    # configured LLM provider against each bar (slower but uses real AI signals).
     if strategy == "llm":
         decide_fn = _make_llm_decide_fn(symbol)
     else:
         decide_fn = default_decide
 
-    report = await run_backtest(
-        venue_name=venue,
-        symbol=symbol,
-        timeframe=timeframe,
-        lookback=lookback,
-        starting_equity=initial_capital,
-        decide=decide_fn,
-    )
+    candles: list[Candle] = await load_candles(venue, symbol, timeframe, lookback)
+    if len(candles) < 20:
+        raise RuntimeError(f"Need at least 20 bars; got {len(candles)}")
 
-    from src.backtesting.mock_venue import MockVenue as _MV  # for fill access
-    # Re-run quickly just to get fill list for trade table (report already computed)
-    candles = await load_candles(venue, symbol, timeframe, lookback)
-    mock = MockVenue(starting_balance=initial_capital)
-    risk = RiskManager(venue=venue.split(":")[0], asset_class="crypto_perp")
+    mock  = MockVenue(starting_balance=initial_capital)
+    risk  = RiskManager(venue=venue.split(":")[0], asset_class=asset_class)
     window = 20
-    fills_for_table = []
+    fills_for_table: list[dict] = []
+
     for i in range(window, len(candles)):
         bar = candles[i]
         mock.set_bar(symbol, bar)
-        closes = [c.close for c in candles[max(0, i - 100):i + 1]]
+        closes    = [c.close for c in candles[max(0, i - 100):i + 1]]
         balances  = await mock.get_balances()
         positions = await mock.get_positions()
         acc_state = {
-            "total_value": mock.equity(), "balance": balances[0].total if balances else 0.0,
-            "positions": [p.__dict__ for p in positions], "min_order_usd": 1.0,
+            "total_value": mock.equity(),
+            "balance":     balances[0].total if balances else 0.0,
+            "positions":   [p.__dict__ for p in positions],
+            "min_order_usd": 1.0,
         }
-        trade = decide_fn({"symbol": symbol, "ts": bar.ts, "closes": closes, "bar": bar.__dict__, "account_state": acc_state})
+        ctx = {"symbol": symbol, "ts": bar.ts, "closes": closes,
+               "bar": bar.__dict__, "account_state": acc_state}
+        trade = decide_fn(ctx)
         if trade.get("action", "hold") == "hold":
             continue
-        ok, _, trade = risk.validate_trade(trade, acc_state, initial_capital)
+        ok, reason, trade = risk.validate_trade(trade, acc_state, initial_capital)
         if not ok:
+            logging.debug("risk rejected at bar %d: %s", i, reason)
             continue
+
+        side    = "buy" if trade["action"] == "buy" else "sell"
+        alloc   = float(trade["allocation_usd"])
+        qty     = alloc / bar.close
+        if trade["action"] == "sell":
+            pos = next((p for p in positions if p.quantity > 0), None)
+            if pos:
+                await mock.close_position(symbol)
+                fills_for_table.append({
+                    "symbol": symbol, "action": "close",
+                    "entry": bar.close, "exit": bar.close, "pnl": 0.0, "bars": 1,
+                })
+            continue
+        await mock.place_order(symbol, side, qty, order_type="market",  # type: ignore[arg-type]
+                               stop_loss=trade.get("sl_price"))
         fills_for_table.append({
             "symbol": symbol, "action": trade["action"],
-            "entry": bar.close, "exit": bar.close,
-            "pnl": 0.0, "bars": 1,
+            "entry": bar.close, "exit": bar.close, "pnl": 0.0, "bars": 1,
         })
 
-    calmar = (report.total_return_pct / report.max_drawdown_pct) if report.max_drawdown_pct > 0 else 0.0
+    await mock.close_position(symbol)
+    mock.set_bar(symbol, candles[-1])
 
+    from src.backtesting.report import build_report
+    report = build_report(mock.equity_curve, mock.fills, initial_capital)
+
+    calmar = (report.total_return_pct / report.max_drawdown_pct) if report.max_drawdown_pct > 0 else 0.0
     equity_curve = [
         {"t": str(ts), "equity": eq}
         for ts, eq in (report.equity_curve if hasattr(report, "equity_curve") else [])
@@ -303,7 +388,7 @@ async def run_backtest_json(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="QuntaTradeAI backtest runner")
+    parser = argparse.ArgumentParser(description="QuantatraderAI backtest runner")
     parser.add_argument("--venue", default="hyperliquid", help="hyperliquid | ccxt[:exchange] | oanda")
     parser.add_argument("--symbol", required=True, help="Symbol in the venue's native format")
     parser.add_argument("--timeframe", default="1h")

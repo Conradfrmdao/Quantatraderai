@@ -19,21 +19,75 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-logger = logging.getLogger("qunta.intel.calendar")
+logger = logging.getLogger("quantatraderai.intel.calendar")
 
 _cache: list[dict[str, Any]] = []
 _cache_ts: float = 0.0
 _CACHE_TTL = 3600.0  # refresh hourly
 
-# High-impact event name keywords (case-insensitive)
-_HIGH_IMPACT_KEYWORDS = (
-    "nonfarm", "non-farm", "cpi", "fomc", "federal reserve",
-    "interest rate", "gdp", "ecb", "boe", "bank of england",
-    "bank of japan", "boj", "payroll", "unemployment", "inflation",
-    "pce", "ppi", "retail sales",
+# High-impact event keywords → relevant currencies.
+# None means "always relevant regardless of pair" (e.g. broad USD events affect all USD pairs).
+_HIGH_IMPACT_EVENTS: list[tuple[tuple[str, ...], set[str] | None]] = [
+    # (keywords, relevant_currencies | None for global)
+    (("nonfarm", "non-farm", "payroll"), {"USD"}),
+    (("fomc", "federal reserve", "fed funds"), {"USD"}),
+    (("cpi",), None),           # CPI exists for every currency — filter at call-site
+    (("pce", "ppi"), {"USD"}),
+    (("gdp",), None),
+    (("ecb", "european central bank"), {"EUR"}),
+    (("boe", "bank of england"), {"GBP"}),
+    (("boj", "bank of japan"), {"JPY"}),
+    (("snb", "swiss national bank"), {"CHF"}),
+    (("bank of canada", "boc rate"), {"CAD"}),
+    (("rba", "reserve bank of australia"), {"AUD"}),
+    (("rbnz", "reserve bank of new zealand"), {"NZD"}),
+    (("interest rate",), None),
+    (("unemployment",), None),
+    (("inflation",), None),
+    (("retail sales",), None),
+]
+
+# All high-impact keywords flattened (for fast pre-filter)
+_ALL_KEYWORDS: tuple[str, ...] = tuple(
+    kw for keywords, _ in _HIGH_IMPACT_EVENTS for kw in keywords
 )
 
 _PAUSE_WINDOW_SECONDS = 300  # 5 minutes before + 5 minutes after
+
+
+def _extract_currencies(symbols: list[str]) -> set[str]:
+    """Extract 3-letter currency codes from FOREX symbols like EUR_USD → {EUR, USD}."""
+    currencies: set[str] = set()
+    for sym in symbols:
+        clean = sym.upper().replace("_", "").replace("/", "").replace("-", "")
+        if len(clean) == 6:
+            currencies.add(clean[:3])
+            currencies.add(clean[3:])
+    return currencies
+
+
+def _event_affects_symbols(event_name: str, traded_currencies: set[str]) -> bool:
+    """Return True if this event is relevant to the traded currency pairs.
+
+    If traded_currencies is empty (non-FOREX or unknown), all events pass through.
+    """
+    if not traded_currencies:
+        return True
+    name = event_name.lower()
+    for keywords, event_currencies in _HIGH_IMPACT_EVENTS:
+        if not any(kw in name for kw in keywords):
+            continue
+        # Event matched a keyword group
+        if event_currencies is None:
+            # Global event (CPI, GDP, etc.) — check if any traded currency appears in name
+            for cur in traded_currencies:
+                if cur.lower() in name:
+                    return True
+        else:
+            # Currency-specific event — relevant only if we trade that currency
+            if event_currencies & traded_currencies:
+                return True
+    return False
 
 
 async def _fetch_events() -> list[dict[str, Any]]:
@@ -83,16 +137,21 @@ def _event_ts(event: dict) -> float | None:
 async def should_pause(symbols: list[str] | None = None) -> tuple[bool, str]:
     """Return (True, reason) if the agent should hold flat due to an upcoming event.
 
-    Checks whether any high-impact event is within ±PAUSE_WINDOW_SECONDS of now.
-    `symbols` is reserved for future per-symbol filtering (e.g. skip USD events
-    for non-USD pairs).
+    For FOREX symbols (e.g. ["EUR_USD", "GBP_JPY"]), only pauses for events that
+    affect the traded currencies.  Non-FOREX / unknown symbols pass all events.
     """
     events = await get_upcoming_events()
     now_ts  = datetime.now(timezone.utc).timestamp()
+    traded_currencies = _extract_currencies(symbols or [])
 
     for event in events:
-        name = str(event.get("name", event.get("event", ""))).lower()
-        if not any(kw in name for kw in _HIGH_IMPACT_KEYWORDS):
+        name = str(event.get("name", event.get("event", "")))
+        name_lc = name.lower()
+        # Fast pre-filter: must contain at least one high-impact keyword
+        if not any(kw in name_lc for kw in _ALL_KEYWORDS):
+            continue
+        # Currency-aware relevance check
+        if not _event_affects_symbols(name_lc, traded_currencies):
             continue
 
         evt_ts = _event_ts(event)
@@ -102,9 +161,9 @@ async def should_pause(symbols: list[str] | None = None) -> tuple[bool, str]:
         secs_away = evt_ts - now_ts
         if abs(secs_away) <= _PAUSE_WINDOW_SECONDS:
             if secs_away >= 0:
-                reason = f"Pausing: '{event.get('name', name)}' in {secs_away/60:.1f}min"
+                reason = f"Pausing: '{name}' in {secs_away/60:.1f}min"
             else:
-                reason = f"Pausing: '{event.get('name', name)}' just released ({abs(secs_away)/60:.1f}min ago)"
+                reason = f"Pausing: '{name}' just released ({abs(secs_away)/60:.1f}min ago)"
             logger.info("CALENDAR: %s", reason)
             return True, reason
 

@@ -13,20 +13,27 @@ Set LLM_PROVIDER and LLM_MODEL in .env.
 import asyncio
 import json
 import logging
+import os
+import pathlib
 from datetime import datetime
 
 from src.agent.providers.factory import get_provider
 from src.config_loader import CONFIG
 from src.indicators.local_indicators import compute_all, last_n, latest
 
+_LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(pathlib.Path(__file__).parent.parent.parent / "logs")))
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_LLM_LOG = str(_LOG_DIR / "llm_requests.log")
+
 
 class TradingAgent:
     """High-level trading agent that delegates reasoning to an LLM provider."""
 
-    def __init__(self, hyperliquid=None):
+    def __init__(self, hyperliquid=None, venue_context: str = "crypto"):
         self.provider = get_provider()
         self.model = self.provider.model
         self.hyperliquid = hyperliquid
+        self.venue_context = venue_context  # "crypto" | "forex" | "stocks"
         self.max_tokens = int(CONFIG.get("max_tokens") or 4096)
         self.system_prompt_addendum: str = ""  # set by strategy persona on agent start
 
@@ -79,103 +86,127 @@ class TradingAgent:
         """Decide for multiple assets in one call."""
         return self._decide(context, assets=assets)
 
+    # ── Venue-specific system prompts ─────────────────────────────────────────
+
+    _FOREX_SYSTEM_PROMPT = (
+        "You are a professional FOREX TRADER and quantitative analyst managing spot currency positions "
+        "on a retail broker (OANDA or MetaTrader). You operate under real bid-ask spreads, pip-based "
+        "profit measurement, and account margin constraints.\n\n"
+        "Trading pairs: {assets}\n\n"
+        "You will receive market context including per-pair indicator metrics (RSI, MACD, EMA), "
+        "active positions, account balance, and hard-enforced risk limits.\n\n"
+        "Always use the 'current time' to respect trading sessions and cooldowns.\n\n"
+        "FOREX-specific rules:\n"
+        "1) Spread cost: Every round-trip on a major pair costs ~1-3 pips. TP must exceed spread + SL risk.\n"
+        "2) Pip sizing: Most pairs: 1 pip = 0.0001. JPY pairs: 1 pip = 0.01. Use 5 decimal TP/SL.\n"
+        "3) Sessions: London/NY overlap (12:00-16:00 UTC) = peak liquidity — tightest spreads, best setups. "
+        "Asian session (00:00-09:00 UTC) = lower liquidity — widen TP/SL for JPY/AUD/NZD pairs.\n"
+        "4) Macro events: Central bank decisions and data releases (NFP, CPI) cause 50-150 pip moves. "
+        "If context shows an upcoming event, reduce size or hold.\n"
+        "5) Correlation: EUR/USD and GBP/USD are ~0.85 correlated. USD/JPY often moves opposite EUR/USD. "
+        "XAU/USD is inversely correlated with USD. Avoid large concurrent same-direction positions in correlated pairs.\n"
+        "6) No funding rate, no liquidation price. This is spot FX — hold as long as margin allows.\n"
+        "7) Minimum TP:SL ratio = 1.5:1 in pips. Do not enter if reward < 1.5× risk.\n\n"
+        "Core policy:\n"
+        "1) Require multi-timeframe confluence before entry (≥2 timeframes agree on direction).\n"
+        "2) Do not chase: if price moved >0.5×ATR since last bar close, wait for a pullback.\n"
+        "3) Cooldown: after opening or closing a position, wait ≥3 bars before reversing. Encode in exit_plan.\n"
+        "4) Prefer limit orders for entries to avoid full spread cost; use market only for urgent exits.\n"
+        "5) If thesis weakens but is not invalidated, tighten SL to breakeven before full close.\n\n"
+        "Decision discipline:\n"
+        "- Choose one per pair: buy / sell / hold.\n"
+        "- allocation_usd is notional size (system converts to lots/units automatically).\n"
+        "- BUY: tp_price > current_price, sl_price < current_price. Min distance: spread + 5 pips.\n"
+        "- SELL: opposite. A mandatory SL at 0.5% from entry is auto-applied if you omit one.\n"
+        "- exit_plan must include at least ONE explicit price-based invalidation trigger.\n\n"
+        "Output contract\n"
+        "- Output ONLY a strict JSON object (no markdown, no code fences) with exactly two properties:\n"
+        "  • \"reasoning\": step-by-step analysis including session, spread cost, and pip targets.\n"
+        "  • \"trade_decisions\": array matching the provided assets list.\n"
+        "- Each item: asset, action, allocation_usd, order_type, limit_price, tp_price, sl_price, exit_plan, rationale.\n"
+        "- Do not emit Markdown or extra properties.\n"
+    )
+
+    _CRYPTO_SYSTEM_PROMPT = (
+        "You are a rigorous QUANTITATIVE TRADER and interdisciplinary MATHEMATICIAN-ENGINEER optimizing risk-adjusted returns for perpetual futures under real execution, margin, and funding constraints.\n"
+        "You will receive market + account context for SEVERAL assets: {assets}\n"
+        "Including: per-asset intraday (5m) and higher-timeframe (4h) metrics, Active Trades with Exit Plans, Recent Trading History, Risk management limits (hard-enforced).\n\n"
+        "Always use the 'current time' provided in the user message to evaluate time-based conditions.\n\n"
+        "Your goal: decisive, first-principles decisions per asset that minimize churn while capturing edge.\n\n"
+        "Core policy (low-churn, position-aware)\n"
+        "1) Respect prior plans: Do NOT close or flip early unless the explicit exit_plan invalidation has occurred.\n"
+        "2) Hysteresis: Flip direction only if BOTH higher-TF structure AND intraday confirmation (decisive break >0.5×ATR + momentum) support the new direction.\n"
+        "3) Cooldown: After any direction change, self-impose ≥3 bars cooldown. Encode in exit_plan.\n"
+        "4) Funding is a tilt, not a trigger: Only factor funding when it exceeds expected edge over your hold horizon (>~0.25×ATR).\n"
+        "5) RSI extremes ≠ reversal: Require structure + momentum confirmation. Prefer tightening stops over instant flips.\n"
+        "6) Prefer adjustments over exits: Tighten stop, trail TP, or reduce size before closing.\n\n"
+        "Decision discipline:\n"
+        "- Choose: buy / sell / hold per asset.\n"
+        "- You control allocation_usd (system caps it per risk limits).\n"
+        "- order_type: \"market\" (default) or \"limit\" (MUST set limit_price for limit orders).\n"
+        "- BUY: tp_price > current_price, sl_price < current_price. SELL: opposite. Mandatory SL auto-applied if omitted.\n"
+        "- exit_plan: at least ONE explicit invalidation trigger + optional cooldown guidance.\n\n"
+        "Leverage policy (perpetual futures): system enforces hard cap. Reduce in high-vol or funding spikes.\n\n"
+        "{tool_section}"
+        "Reasoning recipe: Structure (trend, EMAs, HH/HL), Momentum (MACD, RSI slope), Volatility (ATR), Positioning (funding, OI). Favor 4h+5m alignment.\n\n"
+        "Output contract\n"
+        "- Output ONLY a strict JSON object (no markdown) with exactly two properties:\n"
+        "  • \"reasoning\": long-form step-by-step analysis.\n"
+        "  • \"trade_decisions\": array matching the assets list.\n"
+        "- Each item: asset, action, allocation_usd, order_type, limit_price, tp_price, sl_price, exit_plan, rationale.\n"
+        "- Do not emit Markdown or extra properties.\n"
+    )
+
     def _decide(self, context, assets):
-        """Dispatch decision request to Claude and enforce output contract."""
-        system_prompt = (
-            "You are a rigorous QUANTITATIVE TRADER and interdisciplinary MATHEMATICIAN-ENGINEER optimizing risk-adjusted returns for perpetual futures under real execution, margin, and funding constraints.\n"
-            "You will receive market + account context for SEVERAL assets, including:\n"
-            f"- assets = {json.dumps(list(assets))}\n"
-            "- per-asset intraday (5m) and higher-timeframe (4h) metrics\n"
-            "- Active Trades with Exit Plans\n"
-            "- Recent Trading History\n"
-            "- Risk management limits (hard-enforced by the system, not just guidelines)\n\n"
-            "Always use the 'current time' provided in the user message to evaluate any time-based conditions, such as cooldown expirations or timed exit plans.\n\n"
-            "Your goal: make decisive, first-principles decisions per asset that minimize churn while capturing edge.\n\n"
-            "Aggressively pursue setups where calculated risk is outweighed by expected edge; size positions so downside is controlled while upside remains meaningful.\n\n"
-            "Core policy (low-churn, position-aware)\n"
-            "1) Respect prior plans: If an active trade has an exit_plan with explicit invalidation (e.g., \"close if 4h close above EMA50\"), DO NOT close or flip early unless that invalidation (or a stronger one) has occurred.\n"
-            "2) Hysteresis: Require stronger evidence to CHANGE a decision than to keep it. Only flip direction if BOTH:\n"
-            "   a) Higher-timeframe structure supports the new direction (e.g., 4h EMA20 vs EMA50 and/or MACD regime), AND\n"
-            "   b) Intraday structure confirms with a decisive break beyond ~0.5×ATR (recent) and momentum alignment (MACD or RSI slope).\n"
-            "   Otherwise, prefer HOLD or adjust TP/SL.\n"
-            "3) Cooldown: After opening, adding, reducing, or flipping, impose a self-cooldown of at least 3 bars of the decision timeframe (e.g., 3×5m = 15m) before another direction change, unless a hard invalidation occurs. Encode this in exit_plan (e.g., \"cooldown_bars:3 until 2025-10-19T15:55Z\"). You must honor your own cooldowns on future cycles.\n"
-            "4) Funding is a tilt, not a trigger: Do NOT open/close/flip solely due to funding unless expected funding over your intended holding horizon meaningfully exceeds expected edge (e.g., > ~0.25×ATR). Consider that funding accrues discretely and slowly relative to 5m bars.\n"
-            "5) Overbought/oversold ≠ reversal by itself: Treat RSI extremes as risk-of-pullback. You need structure + momentum confirmation to bet against trend. Prefer tightening stops or taking partial profits over instant flips.\n"
-            "6) Prefer adjustments over exits: If the thesis weakens but is not invalidated, first consider: tighten stop (e.g., to a recent swing or ATR multiple), trail TP, or reduce size. Flip only on hard invalidation + fresh confluence.\n\n"
-            "Decision discipline (per asset)\n"
-            "- Choose one: buy / sell / hold.\n"
-            "- Proactively harvest profits when price action presents a clear, high-quality opportunity that aligns with your thesis.\n"
-            "- You control allocation_usd (but the system will cap it — see risk limits below).\n"
-            "- Order type: set order_type to \"market\" for immediate execution, or \"limit\" for resting orders.\n"
-            "  • For limit orders, you MUST set limit_price. Use limit orders when you want better entry prices (e.g., buying a dip, selling a bounce).\n"
-            "  • For market orders, limit_price should be null.\n"
-            "  • Default is \"market\" if omitted.\n"
-            "- TP/SL sanity:\n"
-            "  • BUY: tp_price > current_price, sl_price < current_price\n"
-            "  • SELL: tp_price < current_price, sl_price > current_price\n"
-            "  If sensible TP/SL cannot be set, use null and explain the logic. A mandatory SL will be auto-applied if you don't set one.\n"
-            "- exit_plan must include at least ONE explicit invalidation trigger and may include cooldown guidance you will follow later.\n\n"
-            "Leverage policy (perpetual futures)\n"
-            "- You can use leverage, but the system enforces a hard cap. Stay within the limits.\n"
-            "- In high volatility (elevated ATR) or during funding spikes, reduce or avoid leverage.\n"
-            "- Treat allocation_usd as notional exposure; keep it consistent with safe leverage and available margin.\n\n"
-            "Tool usage\n"
-            "- Use the fetch_indicator tool whenever an additional datapoint could sharpen your thesis; parameters: indicator (ema/sma/rsi/macd/bbands/atr/adx/obv/vwap/stoch_rsi/all), asset (e.g. \"BTC\", \"OIL\", \"GOLD\"), interval (\"5m\"/\"4h\"), optional period.\n"
-            "- Indicators are computed locally from Hyperliquid candle data — works for ALL perp markets (crypto, commodities, indices).\n"
-            "- Incorporate tool findings into your reasoning, but NEVER paste raw tool responses into the final JSON — summarize the insight instead.\n"
-            "- Use tools to upgrade your analysis; lack of confidence is a cue to query them before deciding.\n\n"
-            "Reasoning recipe (first principles)\n"
-            "- Structure (trend, EMAs slope/cross, HH/HL vs LH/LL), Momentum (MACD regime, RSI slope), Liquidity/volatility (ATR, volume), Positioning tilt (funding, OI).\n"
-            "- Favor alignment across 4h and 5m. Counter-trend scalps require stronger intraday confirmation and tighter risk.\n\n"
-            "Output contract\n"
-            "- Output ONLY a strict JSON object (no markdown, no code fences) with exactly two properties:\n"
-            "  • \"reasoning\": long-form string capturing detailed, step-by-step analysis.\n"
-            "  • \"trade_decisions\": array ordered to match the provided assets list.\n"
-            "- Each item inside trade_decisions must contain the keys: asset, action, allocation_usd, order_type, limit_price, tp_price, sl_price, exit_plan, rationale.\n"
-            "  • order_type: \"market\" (default) or \"limit\"\n"
-            "  • limit_price: required if order_type is \"limit\", null otherwise\n"
-            "- Do not emit Markdown or any extra properties.\n"
-        )
+        """Dispatch decision request to LLM and enforce output contract."""
+        is_forex = self.venue_context == "forex"
+        enable_tools = CONFIG.get("enable_tool_calling", True)
+        assets_str = json.dumps(list(assets))
+
+        if is_forex:
+            system_prompt = self._FOREX_SYSTEM_PROMPT.replace("{assets}", assets_str)
+            tools: list = []  # fetch_indicator is Hyperliquid-only; not valid for FOREX
+        else:
+            _tool_section = (
+                "Tool usage\n"
+                "- Use the fetch_indicator tool to sharpen your thesis. Parameters: indicator (ema/sma/rsi/macd/bbands/atr/adx/obv/vwap/stoch_rsi/all), asset (e.g. \"BTC\", \"OIL\", \"GOLD\"), interval (\"5m\"/\"4h\"), optional period.\n"
+                "- Indicators are computed from Hyperliquid candle data — works for all perp markets.\n"
+                "- Summarize tool findings in reasoning; never paste raw tool output into final JSON.\n\n"
+                if enable_tools else
+                "Tool usage\n"
+                "- No external tools available. Base analysis on provided market data.\n\n"
+            )
+            system_prompt = (
+                self._CRYPTO_SYSTEM_PROMPT
+                .replace("{assets}", assets_str)
+                .replace("{tool_section}", _tool_section)
+            )
+            tools = [{
+                "name": "fetch_indicator",
+                "description": (
+                    "Fetch technical indicators from Hyperliquid candle data. "
+                    "Works for all Hyperliquid perp markets (BTC, ETH, OIL, GOLD, SPX, etc.). "
+                    "Available: ema, sma, rsi, macd, bbands, atr, adx, obv, vwap, stoch_rsi, all."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "indicator": {"type": "string", "enum": ["ema", "sma", "rsi", "macd", "bbands", "atr", "adx", "obv", "vwap", "stoch_rsi", "all"]},
+                        "asset": {"type": "string", "description": "Hyperliquid symbol, e.g. BTC, ETH, OIL"},
+                        "interval": {"type": "string", "enum": ["1m", "5m", "15m", "1h", "4h", "1d"]},
+                        "period": {"type": "integer", "description": "Indicator period (optional)"},
+                    },
+                    "required": ["indicator", "asset", "interval"],
+                },
+            }]
+
         if self.system_prompt_addendum:
             system_prompt = self.system_prompt_addendum + "\n\n" + system_prompt
-
-        tools = [{
-            "name": "fetch_indicator",
-            "description": (
-                "Fetch technical indicators computed locally from Hyperliquid candle data. "
-                "Works for ALL Hyperliquid perp markets including crypto (BTC, ETH, SOL), "
-                "commodities (OIL, GOLD, SILVER), indices (SPX), and more. "
-                "Available indicators: ema, sma, rsi, macd, bbands, atr, adx, obv, vwap, stoch_rsi, all. "
-                "Returns the latest values and recent series."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "indicator": {
-                        "type": "string",
-                        "enum": ["ema", "sma", "rsi", "macd", "bbands", "atr", "adx", "obv", "vwap", "stoch_rsi", "all"],
-                    },
-                    "asset": {
-                        "type": "string",
-                        "description": "Hyperliquid asset symbol, e.g. BTC, ETH, OIL, GOLD, SPX",
-                    },
-                    "interval": {
-                        "type": "string",
-                        "enum": ["1m", "5m", "15m", "1h", "4h", "1d"],
-                    },
-                    "period": {
-                        "type": "integer",
-                        "description": "Indicator period (default varies by indicator)",
-                    },
-                },
-                "required": ["indicator", "asset", "interval"],
-            },
-        }]
 
         messages = [{"role": "user", "content": context}]
 
         def _log_request(model, messages_to_log):
-            with open("llm_requests.log", "a", encoding="utf-8") as f:
+            with open(_LLM_LOG, "a", encoding="utf-8") as f:
                 f.write(f"\n\n=== {datetime.now()} ===\n")
                 f.write(f"Model: {model}\n")
                 f.write(f"Messages count: {len(messages_to_log)}\n")
@@ -184,8 +215,6 @@ class TradingAgent:
                 content_str = str(last.get("content", ""))[:500]
                 f.write(f"Last message role: {last.get('role')}\n")
                 f.write(f"Last message content (truncated): {content_str}\n")
-
-        enable_tools = CONFIG.get("enable_tool_calling", False)
 
         def _call_llm(msgs, use_tools=True):
             """Call the LLM with automatic failover through the provider chain."""
@@ -204,7 +233,7 @@ class TradingAgent:
                         logging.warning(
                             "LLM failover succeeded on attempt %d via %s", attempt + 1, prov.name
                         )
-                    with open("llm_requests.log", "a", encoding="utf-8") as f:
+                    with open(_LLM_LOG, "a", encoding="utf-8") as f:
                         f.write(f"Provider: {prov.name} | stop_reason: {response.stop_reason}\n")
                         f.write(f"Usage: input={response.input_tokens}, output={response.output_tokens}\n")
                     return response
@@ -317,7 +346,7 @@ class TradingAgent:
                 response = _call_llm(messages)
             except Exception as e:
                 logging.error("LLM provider error: %s", e)
-                with open("llm_requests.log", "a", encoding="utf-8") as f:
+                with open(_LLM_LOG, "a", encoding="utf-8") as f:
                     f.write(f"API Error: {e}\n")
                 break
 

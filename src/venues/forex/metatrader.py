@@ -25,7 +25,7 @@ from src.venues.models import (
     AssetClass, Balance, Candle, Order, Position, SymbolMeta, Ticker,
 )
 
-logger = logging.getLogger("qunta.venues.metatrader")
+logger = logging.getLogger("quantatraderai.venues.metatrader")
 
 # MetaAPI timeframe mapping
 _TF_MAP = {
@@ -162,6 +162,16 @@ class MetaTraderVenue(Venue):
 
     # ── Orders ────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _to_lots(units: float, lot_size: float = 100_000.0) -> float:
+        """Convert base-currency units (alloc_usd / price) to MT lots.
+
+        Standard lot = 100,000 units.  MetaAPI volume parameter is in lots.
+        Minimum tradeable volume is 0.01 lots (micro-lot).
+        """
+        lots = round(units / lot_size, 2)
+        return max(0.01, lots)
+
     async def place_order(
         self,
         symbol: str,
@@ -173,30 +183,34 @@ class MetaTraderVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        # quantity arrives as alloc_usd / price (base-currency units).
+        # MetaAPI expects lots; convert here so callers stay venue-agnostic.
+        lots = self._to_lots(quantity)
+
         if self._is_paper:
-            logger.info("[PAPER/MT] %s %s qty=%s", side.upper(), symbol, quantity)
+            logger.info("[PAPER/MT] %s %s lots=%.2f (units=%.0f)", side.upper(), symbol, lots, quantity)
             return Order(
                 order_id="paper", symbol=symbol, side=side,  # type: ignore[arg-type]
                 order_type=order_type,  # type: ignore[arg-type]
-                quantity=quantity, status="paper",
+                quantity=lots, status="paper",
             )
         conn = await self._get_conn()
         opts: dict = {}
         if stop_loss:
-            opts["stopLoss"] = stop_loss
+            opts["stopLoss"] = round(stop_loss, 5)
         if take_profit:
-            opts["takeProfit"] = take_profit
+            opts["takeProfit"] = round(take_profit, 5)
 
         if side == "buy":
-            result = await conn.create_market_buy_order(symbol, quantity, **opts)
+            result = await conn.create_market_buy_order(symbol, lots, **opts)
         else:
-            result = await conn.create_market_sell_order(symbol, quantity, **opts)
+            result = await conn.create_market_sell_order(symbol, lots, **opts)
 
         order_id = result.get("orderId", result.get("positionId", "unknown"))
         return Order(
             order_id=str(order_id), symbol=symbol,
             side=side, order_type="market",  # type: ignore[arg-type]
-            quantity=quantity,
+            quantity=lots,
             stop_loss=stop_loss, take_profit=take_profit,
             status="filled",
         )

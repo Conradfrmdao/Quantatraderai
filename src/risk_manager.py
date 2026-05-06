@@ -1,4 +1,4 @@
-"""Centralized risk management for QuntaTradeAI.
+"""Centralized risk management for QuantatraderAI.
 
 All safety guards are enforced here, independent of LLM decisions.
 Limits are loaded from risk.yaml with per-(venue, asset_class) overrides;
@@ -11,6 +11,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config_loader import CONFIG
+
+
+class _ConfigProxy:
+    """Dict-like proxy that maps server.py's risk_mgr.config['x'] pattern
+    directly to RiskManager instance attributes so they stay in sync."""
+
+    _KEYS = {
+        "max_position_pct", "max_loss_per_position_pct", "max_leverage",
+        "max_total_exposure_pct", "daily_loss_circuit_breaker_pct",
+        "mandatory_sl_pct", "max_concurrent_positions", "min_balance_reserve_pct",
+    }
+
+    def __init__(self, rm: "RiskManager"):
+        object.__setattr__(self, "_rm", rm)
+
+    def get(self, key: str, default=None):
+        return getattr(self._rm, key, default)
+
+    def __getitem__(self, key: str):
+        if key not in self._KEYS:
+            raise KeyError(key)
+        return getattr(self._rm, key)
+
+    def __setitem__(self, key: str, value):
+        if key in self._KEYS:
+            existing = getattr(self._rm, key, value)
+            setattr(self._rm, key, type(existing)(value))
+
+    def update(self, d: dict):
+        for k, v in d.items():
+            self[k] = v
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._KEYS
+
+    def __bool__(self) -> bool:
+        return True
 
 
 def _load_yaml_config(path: str) -> dict:
@@ -30,12 +67,21 @@ def _load_yaml_config(path: str) -> dict:
 
 
 def _resolve_limits(yaml_cfg: dict, venue: str | None, asset_class: str | None) -> dict:
-    """Merge yaml default + matching override for (venue, asset_class)."""
+    """Merge yaml default + matching override for (venue, asset_class).
+
+    Matching order:
+      1. Exact venue match  (e.g. override venue="binance" matches "binance")
+      2. Prefix match        (e.g. override venue="binance" matches "binance:futures")
+    First match wins.
+    """
     merged = dict(yaml_cfg.get("default") or {})
+    venue_norm = (venue or "").lower().split(":")[0]  # strip sub-type for matching
     for override in yaml_cfg.get("overrides") or []:
         if not isinstance(override, dict):
             continue
-        if override.get("venue") == venue and override.get("asset_class") == asset_class:
+        ov = (override.get("venue") or "").lower()
+        ac = override.get("asset_class")
+        if ov == venue_norm and ac == asset_class:
             merged.update({k: v for k, v in override.items() if k not in {"venue", "asset_class"}})
             break
     return merged
@@ -88,6 +134,8 @@ class RiskManager:
         self.daily_high_date = None
         self.circuit_breaker_active = False
         self.circuit_breaker_date = None
+
+        self.config = _ConfigProxy(self)
 
         logging.info(
             "RISK: venue=%s asset_class=%s limits=pos<=%.1f%% lev<=%.1fx SL=%.2f%% DD=%.1f%%",
@@ -146,6 +194,31 @@ class RiskManager:
             )
         return True, ""
 
+    def check_portfolio_leverage(
+        self, positions: list[dict], new_alloc_usd: float, balance: float
+    ) -> tuple[bool, str]:
+        """Portfolio-level leverage: (total open notional + new alloc) / balance.
+
+        Catches aggregate over-leverage that individual per-trade checks miss when
+        many small trades pile up across positions.
+        """
+        if balance <= 0:
+            return False, "Balance is zero or negative"
+        existing_notional = 0.0
+        for p in positions:
+            qty   = abs(float(p.get("quantity") or p.get("szi") or 0))
+            entry = float(p.get("entry_price") or p.get("entryPx") or 0)
+            existing_notional += qty * entry
+        total_notional = existing_notional + new_alloc_usd
+        portfolio_lev  = total_notional / balance if balance > 0 else 0.0
+        if portfolio_lev > self.max_leverage:
+            return False, (
+                f"Portfolio leverage {portfolio_lev:.1f}x "
+                f"(existing ${existing_notional:.0f} + new ${new_alloc_usd:.0f} "
+                f"on ${balance:.0f} balance) exceeds max {self.max_leverage}x"
+            )
+        return True, ""
+
     def check_daily_drawdown(self, account_value: float) -> tuple[bool, str]:
         self._reset_daily_if_needed(account_value)
         if self.circuit_breaker_active:
@@ -188,10 +261,12 @@ class RiskManager:
         if sl_price is not None:
             return sl_price
         sl_distance = entry_price * (self.mandatory_sl_pct / 100.0)
+        # Use 5 decimal places to preserve pip-level precision for FOREX
+        # (safe for crypto too — no rounding artefacts at this precision)
         if is_buy:
-            return round(entry_price - sl_distance, 2)
+            return round(entry_price - sl_distance, 5)
         else:
-            return round(entry_price + sl_distance, 2)
+            return round(entry_price + sl_distance, 5)
 
     # ------------------------------------------------------------------
     # Force-close losing positions
@@ -279,6 +354,10 @@ class RiskManager:
         if not ok:
             return False, reason, trade
 
+        ok, reason = self.check_portfolio_leverage(positions, alloc_usd, balance)
+        if not ok:
+            return False, reason, trade
+
         active_count = sum(
             1 for p in positions
             if abs(float(p.get("szi") or p.get("quantity") or 0)) > 0
@@ -311,4 +390,5 @@ class RiskManager:
             "max_concurrent_positions": self.max_concurrent_positions,
             "min_balance_reserve_pct": self.min_balance_reserve_pct,
             "circuit_breaker_active": self.circuit_breaker_active,
+            "portfolio_leverage_check": True,
         }

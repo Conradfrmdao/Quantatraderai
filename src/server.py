@@ -1,4 +1,4 @@
-"""QuntaTradeAI API Server — FastAPI + WebSocket.
+"""QuantatraderAI API Server — FastAPI + WebSocket.
 
 Standalone production server.  Start with:
     poetry run python src/server.py
@@ -73,7 +73,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
 )
-logger = logging.getLogger("qunta.server")
+logger = logging.getLogger("quantatraderai.server")
 
 # M16: Sentry error tracking — optional, activate by setting SENTRY_DSN in env
 _SENTRY_DSN = os.getenv("SENTRY_DSN")
@@ -365,29 +365,56 @@ async def _broadcast(event: dict, user_id: str | None = None):
         _ws_user_map.pop(ws, None)
 
 
-# ── Binance price stream with exponential backoff ─────────────────────────────
+# ── Price streaming — Binance WebSocket or venue polling ─────────────────────
 
-async def _stream_prices(symbols: list[str], timeframe: str):
-    """Subscribe to Binance public kline stream with exponential backoff reconnect."""
+async def _poll_prices(s: "AgentState", symbols: list[str], interval_secs: int = 5):
+    """Ticker polling fallback for non-Binance venues (Hyperliquid, CCXT non-Binance, etc.).
+
+    Polls every `interval_secs` seconds using the venue's get_ticker() method so
+    price_cache stays fresh without requiring a dedicated WebSocket connection.
+    """
+    s.log(f"Price polling started for {symbols} (venue={s.venue_name})")
+    while s.status == "running":
+        if s.venue is None:
+            await asyncio.sleep(interval_secs)
+            continue
+        for sym in symbols:
+            try:
+                ticker = await s.venue.get_ticker(sym)
+                price  = ticker.last or 0.0
+                key    = sym.replace("/", "")
+                s.price_cache[key] = price
+                await _broadcast({
+                    "type":   "price_update",
+                    "symbol": key,
+                    "price":  price,
+                }, s.user_id)
+            except Exception as e:
+                s.log(f"Price poll error {sym}: {e}")
+        await asyncio.sleep(interval_secs)
+
+
+async def _stream_prices_binance(s: "AgentState", symbols: list[str], timeframe: str):
+    """Subscribe to Binance public kline WebSocket stream with exponential backoff."""
     import aiohttp as ah
 
-    normalised = [s.lower().replace("/", "") for s in symbols]
-    streams    = "/".join(f"{s}@kline_{timeframe}" for s in normalised)
+    normalised = [sym.lower().replace("/", "") for sym in symbols]
+    streams    = "/".join(f"{sym}@kline_{timeframe}" for sym in normalised)
     url        = f"wss://stream.binance.com:9443/stream?streams={streams}"
 
     retry_delay = 1.0
     max_delay   = 30.0
     fail_count  = 0
 
-    while _state.status == "running":
+    while s.status == "running":
         try:
             async with ah.ClientSession() as session:
                 async with session.ws_connect(url, heartbeat=20) as ws:
-                    _state.log(f"Price stream connected: {symbols}")
-                    retry_delay = 1.0  # reset on successful connect
+                    s.log(f"Binance price stream connected: {symbols}")
+                    retry_delay = 1.0
                     fail_count  = 0
                     async for msg in ws:
-                        if _state.status != "running":
+                        if s.status != "running":
                             break
                         if msg.type == ah.WSMsgType.TEXT:
                             data  = json.loads(msg.data)
@@ -404,9 +431,9 @@ async def _stream_prices(symbols: list[str], timeframe: str):
                                 "close":  price,
                                 "volume": float(kline["v"]),
                             }
-                            _state.price_cache[raw_sym] = price
+                            s.price_cache[raw_sym] = price
                             key   = f"{raw_sym}:{timeframe}"
-                            cache = _state.candle_cache.setdefault(key, [])
+                            cache = s.candle_cache.setdefault(key, [])
                             if cache and cache[-1]["time"] == candle["time"]:
                                 cache[-1] = candle
                             elif not cache or candle["time"] > cache[-1]["time"]:
@@ -419,12 +446,12 @@ async def _stream_prices(symbols: list[str], timeframe: str):
                                 "price":     price,
                                 "candle":    candle,
                                 "timeframe": timeframe,
-                            })
+                            }, s.user_id)
         except Exception as e:
-            if _state.status != "running":
+            if s.status != "running":
                 break
             fail_count += 1
-            _state.log(f"Price stream error (attempt {fail_count}): {e} — retry in {retry_delay:.0f}s")
+            s.log(f"Binance stream error (attempt {fail_count}): {e} — retry in {retry_delay:.0f}s")
             if fail_count >= 5:
                 await _notifier.emit(TradingEvent(
                     kind="decision_error",
@@ -433,6 +460,22 @@ async def _stream_prices(symbols: list[str], timeframe: str):
                 ))
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_delay)
+
+
+async def _stream_prices(s: "AgentState", symbols: list[str], timeframe: str):
+    """Route price streaming to the correct backend based on venue.
+
+    Binance → Binance public kline WebSocket (low latency, push-based).
+    All others → ticker polling every 5 s (universal, slightly higher latency).
+    """
+    vname = (s.venue_name or "").lower()
+    if "binance" in vname:
+        await _stream_prices_binance(s, symbols, timeframe)
+    else:
+        # Poll interval: use half the trading timeframe capped at 10s
+        iv_secs = _interval_seconds(timeframe) // 2
+        poll_secs = max(3, min(iv_secs, 10))
+        await _poll_prices(s, symbols, interval_secs=poll_secs)
 
 
 # ── Dead man's switch ─────────────────────────────────────────────────────────
@@ -499,78 +542,104 @@ async def _mirror_to_followers(leader_id: str, symbol: str, action: str,
                 delay *= 2
 
 
-async def _dead_mans_switch():
-    """H9: Two-stage dead man's switch.
+async def _dead_mans_switch_for(s: "AgentState"):
+    """Two-stage dead man's switch for a single AgentState.
 
-    Stage 1 — WARN (15 min silence): emit alert and pause agent, but DO NOT close positions.
-              This handles transient API hangs where positions should remain open.
-    Stage 2 — ACT (30 min silence): close all positions and stop the agent.
-              Only reached if the hang persists — implies process/network death.
+    Stage 1 — WARN (15 min silence): alert + broadcast paused, hold positions.
+    Stage 2 — ACT  (30 min silence): close all positions and stop the agent.
     """
-    _WARN_LIMIT = 900   # 15 min — alert + pause (API likely hung, not dead)
-    _KILL_LIMIT = 1800  # 30 min — close positions (agent likely dead)
+    _WARN_LIMIT = 900
+    _KILL_LIMIT = 1800
     _warned = False
 
     while True:
         await asyncio.sleep(60)
-        if _state.status != "running" or _state.last_tick_at is None:
+        if s.status != "running" or s.last_tick_at is None:
             _warned = False
             continue
 
-        elapsed = (datetime.now(timezone.utc) - _state.last_tick_at).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - s.last_tick_at).total_seconds()
 
-        # Stage 1: warn at 15 min
         if elapsed >= _WARN_LIMIT and not _warned:
             _warned = True
-            _state.log(f"DEAD MAN'S WARNING: no tick for {elapsed/60:.0f}min — possible API hang")
+            s.log(f"DEAD MAN'S WARNING: no tick for {elapsed/60:.0f}min — possible API hang")
             await _notifier.emit(TradingEvent(
                 kind="decision_error",
-                venue=_state.venue_name or "unknown",
-                message=f"WARNING: Agent silent for {elapsed/60:.0f} min. Positions held. Will close at 30 min.",
+                venue=s.venue_name or "unknown",
+                message=f"WARNING: Agent (user={s.user_id or 'global'}) silent for {elapsed/60:.0f} min. Will close at 30 min.",
             ))
-            await _broadcast({
-                "type":    "status_update",
-                "status":  "paused",
-                "reason":  "dead_mans_warning",
-                "elapsed": int(elapsed),
-            })
+            await _broadcast({"type": "status_update", "status": "paused",
+                               "reason": "dead_mans_warning", "elapsed": int(elapsed)}, s.user_id)
             continue
 
-        # Stage 2: act at 30 min
         if elapsed < _KILL_LIMIT:
             continue
 
         _warned = False
-        _state.log(f"DEAD MAN'S SWITCH: no tick for {elapsed/60:.0f}min — closing all positions")
+        s.log(f"DEAD MAN'S SWITCH: no tick for {elapsed/60:.0f}min — closing all positions")
         await _notifier.emit(TradingEvent(
             kind="circuit_breaker_tripped",
-            venue=_state.venue_name or "unknown",
-            message=f"Dead man's switch activated after {elapsed/60:.0f} min silence. Closing positions.",
+            venue=s.venue_name or "unknown",
+            message=f"Dead man's switch fired for user={s.user_id or 'global'} after {elapsed/60:.0f} min silence.",
         ))
 
-        if _state.venue and _state.positions:
-            for pos in list(_state.positions):
+        if s.venue and s.positions:
+            for pos in list(s.positions):
                 sym = pos.get("symbol", "")
                 qty = abs(float(pos.get("quantity", 0)))
-                if qty > 0 and not _state.is_paper:
+                if qty > 0 and not s.is_paper:
                     try:
-                        await _state.venue.close_position(sym, qty)
-                        _state.log(f"Dead man's: closed {sym} qty={qty}")
+                        await s.venue.close_position(sym, qty)
+                        s.log(f"Dead man's: closed {sym} qty={qty}")
                     except Exception as e:
-                        _state.log(f"Dead man's close error {sym}: {e}")
+                        s.log(f"Dead man's close error {sym}: {e}")
 
-        _state.status = "stopped"
-        await _broadcast({"type": "status_update", "status": "stopped", "reason": "dead_mans_switch"})
-        if _state.user_id:
+        s.status = "stopped"
+        await _broadcast({"type": "status_update", "status": "stopped",
+                          "reason": "dead_mans_switch"}, s.user_id)
+        if s.user_id:
             try:
                 from src.services.supabase_reader import upsert_agent_run
                 await upsert_agent_run(
-                    _state.user_id, _state.venue_name, _state.symbols, _state.timeframe,
-                    _state.is_paper, _state.market, False,
+                    s.user_id, s.venue_name, s.symbols, s.timeframe,
+                    s.is_paper, s.market, False,
                 )
             except Exception:
                 pass
         break
+
+
+async def _dead_mans_switch():
+    """Launch per-state dead man's switches for all running agents.
+
+    Monitors the legacy global _state plus every per-user state in _states.
+    Each state gets its own independent watch loop so a hung per-user agent
+    doesn't block detection for other users.
+    """
+    _launched: set[str] = set()  # tracks which user_ids already have a watcher
+
+    while True:
+        await asyncio.sleep(30)
+        # Global legacy state
+        if _state.status == "running" and "global" not in _launched:
+            _launched.add("global")
+            asyncio.create_task(_dead_mans_switch_for(_state))
+
+        # Per-user states
+        for uid, s in list(_states.items()):
+            if s.status == "running" and uid not in _launched:
+                _launched.add(uid)
+                asyncio.create_task(_dead_mans_switch_for(s))
+
+        # Clean up stopped states from the tracking set so they can restart
+        for uid in list(_launched):
+            if uid == "global":
+                if _state.status != "running":
+                    _launched.discard("global")
+            else:
+                s = _states.get(uid)
+                if s is None or s.status != "running":
+                    _launched.discard(uid)
 
 
 # ── Single trading tick ───────────────────────────────────────────────────────
@@ -681,6 +750,61 @@ async def _tick_for(s: "AgentState"):
     ]
     await _broadcast({"type": "account_update", "data": s.account}, s.user_id)
 
+    # ── Force-close positions that breach max_loss_per_position_pct ──────────
+    if s.risk_mgr and not s.is_paper:
+        positions_raw = [p.__dict__ for p in positions]
+        to_close = s.risk_mgr.check_losing_positions(positions_raw)
+        for ptc in to_close:
+            sym  = ptc.get("coin") or ptc.get("symbol", "")
+            size = ptc.get("size", 0)
+            is_long = ptc.get("is_long", True)
+            s.log(f"RISK FORCE-CLOSE: {sym} at {ptc['loss_pct']:.1f}% loss (PnL: ${ptc['pnl']:.2f})")
+            try:
+                await s.venue.close_position(sym, size)
+                s.timeline_event("blocked", sym,
+                    f"Force-closed by risk manager: {ptc['loss_pct']:.1f}% loss")
+                await _notifier.emit(TradingEvent(
+                    kind="risk_block",
+                    venue=s.venue_name,
+                    symbol=sym,
+                    message=f"Force-closed {sym}: loss {ptc['loss_pct']:.1f}% exceeded limit",
+                ))
+                if s.user_id:
+                    asyncio.create_task(_persist_audit(
+                        s.user_id, "force_close", sym, "sell" if is_long else "buy",
+                        {"loss_pct": ptc["loss_pct"], "pnl": ptc["pnl"]},
+                    ))
+            except Exception as fc_err:
+                s.log(f"Force-close error {sym}: {fc_err}")
+
+    _is_forex = s.venue_name in ("oanda", "metatrader")
+
+    # ── FOREX market hours guard — skip ticks during weekend close ────────
+    if _is_forex:
+        _now_utc = datetime.now(timezone.utc)
+        _wd = _now_utc.weekday()  # 0=Mon … 6=Sun
+        # Forex is closed: Fri 22:00 UTC → Sun 22:00 UTC
+        _closed = (
+            _wd == 5  # all Saturday
+            or (_wd == 6 and _now_utc.hour < 22)   # Sunday before 22:00 UTC
+            or (_wd == 4 and _now_utc.hour >= 22)   # Friday after 22:00 UTC
+        )
+        if _closed:
+            s.log("FOREX market closed (weekend) — skipping tick")
+            return
+
+    # ── For FOREX, refresh price cache via REST ticker (no Binance stream) ─
+    if _is_forex:
+        for sym in s.symbols:
+            try:
+                ticker = await s.venue.get_ticker(sym)
+                mid = ((ticker.bid + ticker.ask) / 2
+                       if (ticker.bid and ticker.ask) else ticker.last)
+                if mid and mid > 0:
+                    s.price_cache[sym.replace("/", "")] = mid
+            except Exception as _te:
+                s.log(f"Ticker poll error {sym}: {_te}")
+
     market_sections = []
     for sym in s.symbols:
         try:
@@ -690,6 +814,8 @@ async def _tick_for(s: "AgentState"):
             s.candle_cache[key] = raw
             inds   = compute_all(raw)
             px_key = sym.replace("/", "")
+            # For crypto: stream provides real-time price; only fill gap from candle.
+            # For FOREX: ticker polling above already set the price; candle is fallback.
             if px_key not in s.price_cache and candles:
                 s.price_cache[px_key] = candles[-1].close
             rsi_val  = round_or_none(latest(inds.get("rsi14", [])), 2)
@@ -697,12 +823,11 @@ async def _tick_for(s: "AgentState"):
             ema_val  = round_or_none(latest(inds.get("ema20", [])), 2)
             market_sections.append({
                 "asset":         sym,
-                "current_price": round(s.price_cache.get(px_key, 0), 4),
+                "current_price": round(s.price_cache.get(px_key, 0), 5 if _is_forex else 4),
                 "rsi14":         rsi_val,
                 "ema20":         ema_val,
                 "macd":          macd_val,
             })
-            # Timeline: emit signal events for notable indicator readings
             if rsi_val is not None:
                 if rsi_val < 30:
                     s.timeline_event("signal", sym, f"RSI {rsi_val:.1f} — oversold zone entered")
@@ -712,6 +837,10 @@ async def _tick_for(s: "AgentState"):
                 s.timeline_event("signal", sym, f"MACD {macd_val:+.4f} detected")
         except Exception as e:
             s.log(f"Data error {sym}: {e}")
+
+    # ── Intel feeds (calendar + sentiment) ────────────────────────────────
+    # macro must be initialised BEFORE the intel block that may write to it
+    macro: dict = {}
 
     # ── Phase 5 intelligence: MTF confluence + news + correlation ─────────
     intel_sections: list[dict] = []
@@ -740,30 +869,31 @@ async def _tick_for(s: "AgentState"):
         except Exception as e:
             s.log(f"Correlation error: {e}")
 
-    # ── Intel feeds (calendar + sentiment) ────────────────────────────────
-    macro: dict = {}
     try:
         from src.intel.economic_calendar import should_pause, next_event_summary
         pause, pause_reason = await should_pause(s.symbols)
         if pause:
             s.log(f"CALENDAR PAUSE: {pause_reason}")
+            s.last_tick_at = datetime.now(timezone.utc)  # prevent dead man's switch false-positive
             await _notifier.emit(TradingEvent(
-                kind="info", venue="binance",
+                kind="info", venue=s.venue_name or "unknown",
                 message=pause_reason,
             ))
-            return  # skip this tick entirely
+            return
         next_evt = await next_event_summary()
         if next_evt:
             macro["next_event"] = next_evt
     except Exception as e:
         s.log(f"Calendar check error: {e}")
 
-    try:
-        from src.intel.sentiment import get_fear_greed
-        fng = await get_fear_greed()
-        macro["crypto_fear_greed"] = fng
-    except Exception as e:
-        s.log(f"Sentiment fetch error: {e}")
+    # Crypto Fear & Greed is not relevant for FOREX pairs
+    if not _is_forex:
+        try:
+            from src.intel.sentiment import get_fear_greed
+            fng = await get_fear_greed()
+            macro["crypto_fear_greed"] = fng
+        except Exception as e:
+            s.log(f"Sentiment fetch error: {e}")
 
     # ── RAG memory retrieval ─────────────────────────────────────────────
     rag_context = ""
@@ -1205,8 +1335,14 @@ async def _run_loop_for(s: "AgentState"):
     s.log(f"Agent started — symbols={s.symbols} tf={s.timeframe} paper={s.is_paper}")
     await _broadcast({"type": "status_update", "status": "running", "paper": s.is_paper}, s.user_id)
 
-    s._price_task        = asyncio.create_task(_stream_prices(s.symbols, s.timeframe))
-    s._deadman_task      = asyncio.create_task(_dead_mans_switch())
+    # Only stream Binance prices for crypto venues; FOREX uses REST polling in _tick_for
+    _forex_venues = ("oanda", "metatrader", "ibkr", "alpaca")
+    if s.venue_name not in _forex_venues:
+        s._price_task = asyncio.create_task(_stream_prices(s, s.symbols, s.timeframe))
+    else:
+        s._price_task = None  # no Binance stream for FOREX
+
+    s._deadman_task      = asyncio.create_task(_dead_mans_switch_for(s))
     s._llm_worker_task   = asyncio.create_task(_llm_worker(s))
     s._order_worker_task = asyncio.create_task(_order_worker(s))
 
@@ -1282,7 +1418,7 @@ async def _run_loop():
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
-app = FastAPI(title="QuntaTradeAI API", version="1.0.0")
+app = FastAPI(title="QuantatraderAI API", version="1.0.0")
 
 # ── CORS — lock down to your frontend domain in production ────────────────────
 # Set ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
@@ -1547,10 +1683,10 @@ async def get_account(userId: Optional[str] = None):
 @app.get("/api/positions")
 async def get_positions(userId: Optional[str] = None):
     s = get_state(userId)
-    # Return paper positions when in paper mode and agent ran at least one tick
-    if s.is_paper and s.paper_positions and not s.positions:
-        return {"positions": s.paper_positions}
-    return {"positions": s.positions}
+    # Always return paper positions in paper mode (real exchange positions are irrelevant)
+    if s.is_paper:
+        return {"positions": s.paper_positions, "is_paper": True}
+    return {"positions": s.positions, "is_paper": False}
 
 
 @app.get("/api/risk")
@@ -1767,6 +1903,7 @@ class StartRequest(BaseModel):
     maxDailyLossPct:  float = 0.0            # 0: disabled; e.g. 5.0 = stop after 5% daily loss
     maxTradesPerDay:  int   = 0              # 0: no limit
     lossCooldownCount: int  = 0             # pause after N consecutive losses
+    paperCapital:      float = 10_000.0      # simulated starting balance for paper mode
 
     @field_validator("symbols")
     @classmethod
@@ -1869,6 +2006,7 @@ async def _do_start(
     max_daily_loss_pct: float = 0.0,
     max_trades_per_day: int   = 0,
     loss_cooldown_count: int  = 0,
+    paper_capital:      float = 10_000.0,
 ) -> dict:
     # H-G: Defense-in-depth — re-validate plan even if the Next.js proxy was bypassed.
     # If a FREE-tier user somehow reaches this endpoint with is_paper=False, force paper.
@@ -1961,7 +2099,8 @@ async def _do_start(
             asset_class = _ASSET_CLASS.get(v_key, "crypto_spot")
             final_state.venue = get_venue(venue_name)
         final_state.risk_mgr = RiskManager(venue=v_key, asset_class=asset_class)
-        final_state.ai_agent = TradingAgent(hyperliquid=None)
+        _venue_ctx = "forex" if asset_class == "forex" else "crypto"
+        final_state.ai_agent = TradingAgent(hyperliquid=None, venue_context=_venue_ctx)
     except Exception as e:
         final_state.status = "error"
         final_state.error  = str(e)
@@ -1995,9 +2134,10 @@ async def _do_start(
     final_state.timeline            = deque(maxlen=200)
     # Reset paper trading simulation on every fresh start
     if is_paper:
-        final_state.paper_balance   = 10_000.0
+        _cap = max(100.0, float(paper_capital or 10_000.0))
+        final_state.paper_balance   = _cap
         final_state.paper_positions = []
-        final_state.initial_equity  = 10_000.0
+        final_state.initial_equity  = _cap
 
     # Strategy persona — apply risk overrides and inject prompt addendum
     if strategy_type:
@@ -2045,6 +2185,7 @@ async def start_agent(req: StartRequest):
         max_daily_loss_pct=req.maxDailyLossPct,
         max_trades_per_day=req.maxTradesPerDay,
         loss_cooldown_count=req.lossCooldownCount,
+        paper_capital=req.paperCapital,
     )
 
 
@@ -2735,5 +2876,5 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
 
 if __name__ == "__main__":
     port = int(os.getenv("API_PORT", "8000"))
-    logger.info("Starting QuntaTradeAI API server on port %d", port)
+    logger.info("Starting QuantatraderAI API server on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")

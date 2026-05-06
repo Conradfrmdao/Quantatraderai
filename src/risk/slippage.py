@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import os
 
-logger = logging.getLogger("qunta.slippage")
+logger = logging.getLogger("quantatraderai.slippage")
 
 
 async def estimate_slippage_pct(
@@ -21,17 +21,31 @@ async def estimate_slippage_pct(
     qty_usd: float,
     venue_name: str = "binance",
 ) -> float:
-    """Fetch order book from Binance and estimate market-order slippage %.
+    """Estimate market-order slippage / spread cost as a fraction (e.g. 0.002 = 0.2%).
 
-    Returns slippage as a fraction (e.g. 0.002 = 0.2%).
-    Falls back to 0.05% (5 bps) if the order book is unavailable.
+    - CEX crypto (Binance/Bybit/OKX): walks the live order book.
+    - FOREX (OANDA/MetaTrader): returns a spread-based estimate by pair tier.
+    - All others: falls back to 5 bps.
     """
     DEFAULT_SLIP = 0.0005  # 5 bps — conservative for liquid markets
     if qty_usd <= 0:
         return 0.0
 
+    # FOREX: use spread tiers (no CEX order book available).
+    # Major pairs (EUR/USD, GBP/USD, USD/JPY, USD/CHF, AUD/USD, USD/CAD, NZD/USD) ~10 bps.
+    # XAU/USD and minors: ~20 bps.  Exotics: ~50 bps.
+    if venue_name in ("oanda", "metatrader"):
+        sym_upper = symbol.upper().replace("_", "").replace("/", "").replace("-", "")
+        _MAJORS = {"EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"}
+        _METALS = {"XAUUSD", "XAGUSD", "XPTUSD"}
+        if sym_upper in _MAJORS:
+            return 0.0010  # ~10 bps / 1 pip on a major
+        if sym_upper in _METALS:
+            return 0.0020  # gold/silver spreads are wider
+        return 0.0050  # exotic pairs
+
     if venue_name not in ("binance", "bybit", "okx"):
-        return DEFAULT_SLIP  # only supported for centralised venues
+        return DEFAULT_SLIP  # only CEX order-book walk is supported
 
     try:
         import aiohttp as ah

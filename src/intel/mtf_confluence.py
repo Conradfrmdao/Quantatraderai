@@ -14,7 +14,7 @@ from typing import Any
 
 from src.indicators.local_indicators import compute_all, latest
 
-logger = logging.getLogger("qunta.intel.mtf")
+logger = logging.getLogger("quantatraderai.intel.mtf")
 
 _TIMEFRAMES = ("1h", "4h", "1d")
 
@@ -31,8 +31,10 @@ def _bias(inds: dict) -> str:
     bear = 0
 
     if rsi is not None:
-        if rsi < 40: bull += 1
-        elif rsi > 60: bear += 1
+        # RSI > 55 = bullish momentum; RSI < 45 = bearish momentum
+        # Neutral band 45-55 to avoid noise at midpoint
+        if rsi > 55: bull += 1
+        elif rsi < 45: bear += 1
 
     if macd is not None and sig is not None:
         if macd > sig: bull += 1
