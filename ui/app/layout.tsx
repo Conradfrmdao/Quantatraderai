@@ -11,22 +11,6 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
   description: "Multi-venue AI trading agent. Connects to Hyperliquid, Binance, OANDA, MetaTrader, Alpaca, IBKR and 100+ exchanges. 24/7 autonomous trading with collective AI council decision-making.",
-  icons: {
-    icon: [
-      { url: "/icon.svg?v=3",          type: "image/svg+xml" },
-      { url: "/favicon-32x32.png?v=3", sizes: "32x32",  type: "image/png" },
-      { url: "/favicon-16x16.png?v=3", sizes: "16x16",  type: "image/png" },
-      { url: "/favicon-48x48.png?v=3", sizes: "48x48",  type: "image/png" },
-      { url: "/favicon.ico?v=3",       sizes: "any",     type: "image/x-icon" },
-    ],
-    apple: [
-      { url: "/apple-touch-icon.png?v=3", sizes: "180x180", type: "image/png" },
-    ],
-    other: [
-      { rel: "mask-icon", url: "/safari-pinned-tab.svg?v=3", color: "#4ade80" },
-    ],
-  },
-  manifest: "/site.webmanifest",
   themeColor: "#000000",
 };
 
@@ -34,6 +18,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <ClerkProvider afterSignOutUrl="/">
       <html lang="en" className="h-full">
+        <head>
+          <link rel="icon"             href="/favicon.ico"           sizes="any" />
+          <link rel="icon"             href="/icon.svg"              type="image/svg+xml" />
+          <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+          <link rel="manifest"         href="/site.webmanifest" />
+        </head>
         <body className={`${inter.className} min-h-full`}>
           <ToastProvider>
             <SignOutGuard />
