@@ -1,21 +1,12 @@
-import posthog from "posthog-js";
-import { PostHog } from "posthog-node";
+"use client";
+
+// Client-side PostHog — safe to import in any component
+// Server-side: import from @/lib/posthog-server instead
 
 export const POSTHOG_TOKEN = process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN ?? "";
 export const POSTHOG_HOST  = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com";
 
-// ── Server-side singleton ──────────────────────────────────────────────────
-// Reused across API route calls — always call shutdown() after use
-let _serverClient: PostHog | null = null;
-
-export function getServerPostHog(): PostHog {
-  if (!_serverClient) {
-    _serverClient = new PostHog(POSTHOG_TOKEN, { host: POSTHOG_HOST });
-  }
-  return _serverClient;
-}
-
-// ── Typed event catalogue ──────────────────────────────────────────────────
+// Typed event catalogue
 export type PHEvent =
   | { event: "agent_started";        props: { venue: string; assets: string; interval: string } }
   | { event: "agent_stopped";        props: { reason: string } }
@@ -25,8 +16,8 @@ export type PHEvent =
   | { event: "onboarding_completed"; props: { mode: "beginner" | "expert"; plan: string; venue: string } }
   | { event: "error_displayed";      props: { message: string; location: string } };
 
-// Client-side capture — import and call anywhere in client components
-export function capture(e: PHEvent) {
+export async function capture(e: PHEvent) {
   if (typeof window === "undefined") return;
+  const { default: posthog } = await import("posthog-js");
   posthog.capture(e.event, e.props);
 }
