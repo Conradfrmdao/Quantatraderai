@@ -282,6 +282,16 @@ export default function BacktestPage() {
 
   const [symbol,    setSymbol]    = useState("BTC/USDT");
   const [venue,     setVenue]     = useState("binance");
+
+  // When venue changes to FOREX, default to a sensible FOREX symbol
+  const handleVenueChange = useCallback((v: string) => {
+    setVenue(v);
+    if (v === "oanda")      setSymbol("EUR_USD");
+    else if (v === "metatrader") setSymbol("EURUSD");
+    else if (v === "alpaca")     setSymbol("AAPL");
+    else if (v === "binance" || v === "bybit" || v === "okx" || v === "kraken" || v === "coinbase" || v === "hyperliquid")
+      setSymbol("BTC/USDT");
+  }, []);
   const [timeframe, setTimeframe] = useState("1h");
   const [days,      setDays]      = useState("30");
   const [capital,   setCapital]   = useState("10000");
@@ -371,10 +381,22 @@ export default function BacktestPage() {
               Backtest Configuration
             </p>
             <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(6,1fr)", gap: 14, marginBottom: 20 }}>
-              <div><label style={labelStyle}>Symbol</label><input style={inputStyle} value={symbol} onChange={e => setSymbol(e.target.value)} placeholder="BTC/USDT" /></div>
+              <div>
+                <label style={labelStyle}>Symbol</label>
+                <input style={inputStyle} value={symbol} onChange={e => setSymbol(e.target.value)}
+                  placeholder={venue === "oanda" ? "EUR_USD" : venue === "metatrader" ? "EURUSD" : "BTC/USDT"} />
+              </div>
               <div><label style={labelStyle}>Venue</label>
-                <DarkSelect value={venue} onChange={setVenue}
-                  options={["binance","hyperliquid","bybit","okx","oanda","metatrader","alpaca"].map(v => ({ value: v, label: v }))} />
+                <DarkSelect value={venue} onChange={handleVenueChange}
+                  options={[
+                    { value: "binance",     label: "Binance" },
+                    { value: "hyperliquid", label: "Hyperliquid" },
+                    { value: "bybit",       label: "Bybit" },
+                    { value: "okx",         label: "OKX" },
+                    { value: "oanda",       label: "OANDA (Forex)" },
+                    { value: "metatrader",  label: "MetaTrader (Forex)" },
+                    { value: "alpaca",      label: "Alpaca (Stocks)" },
+                  ]} />
               </div>
               <div><label style={labelStyle}>Timeframe</label>
                 <DarkSelect value={timeframe} onChange={setTimeframe}

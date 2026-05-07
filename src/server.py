@@ -879,6 +879,14 @@ async def _tick_for(s: "AgentState"):
                 kind="info", venue=s.venue_name or "unknown",
                 message=pause_reason,
             ))
+            # Tell the frontend so the UI shows "Paused — calendar event" rather than silent inaction
+            await _broadcast({
+                "type":   "status_update",
+                "status": "paused",
+                "reason": "calendar_pause",
+                "detail": pause_reason,
+                "paper":  s.is_paper,
+            }, s.user_id)
             return
         next_evt = await next_event_summary()
         if next_evt:
@@ -2007,21 +2015,32 @@ async def _do_start(
     max_trades_per_day: int   = 0,
     loss_cooldown_count: int  = 0,
     paper_capital:      float = 10_000.0,
+    _requested_paper:   bool  = True,  # caller's original is_paper before plan check
 ) -> dict:
+    # Timeframe whitelist — rejects garbage strings before they reach the venue
+    _VALID_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
+    if timeframe not in _VALID_TIMEFRAMES:
+        return {"ok": False, "error": f"Invalid timeframe '{timeframe}'. Valid: {sorted(_VALID_TIMEFRAMES)}"}
+
     # H-G: Defense-in-depth — re-validate plan even if the Next.js proxy was bypassed.
-    # If a FREE-tier user somehow reaches this endpoint with is_paper=False, force paper.
+    forced_paper_warning: str | None = None
     if user_id:
         try:
             plan = await _get_user_plan(user_id)
             if not _plan_allows(plan, "liveTrading") and not is_paper:
                 logger.warning(
-                    "Forcing paper mode: user %s is on plan %s which disallows liveTrading.",
+                    "Forcing paper mode: user %s on plan %s — liveTrading not allowed.",
                     user_id, plan,
                 )
-                is_paper = True  # silently downgrade rather than reject — agent still starts
+                is_paper = True
+                forced_paper_warning = (
+                    f"Your {plan} plan does not include live trading. "
+                    "Agent started in paper mode. Upgrade to go live."
+                )
         except Exception as e:
             logger.warning("Plan re-validation failed (forcing paper): %s", e)
             is_paper = True
+            forced_paper_warning = "Plan check failed — started in paper mode for safety."
 
     # BETA LIVE CAP — hard server-side dollar ceiling during beta.
     # Set BETA_LIVE_CAP_USD=0 in .env to remove after public launch.
@@ -2166,7 +2185,10 @@ async def _do_start(
             {"venue": v_key, "symbols": symbols, "timeframe": timeframe, "is_paper": is_paper},
         ))
 
-    return {"ok": True, "venue": v_key, "symbols": symbols, "timeframe": timeframe, "paper": is_paper}
+    result: dict = {"ok": True, "venue": v_key, "symbols": symbols, "timeframe": timeframe, "paper": is_paper}
+    if forced_paper_warning:
+        result["warning"] = forced_paper_warning
+    return result
 
 
 @app.post("/api/agent/start")
@@ -2186,6 +2208,7 @@ async def start_agent(req: StartRequest):
         max_trades_per_day=req.maxTradesPerDay,
         loss_cooldown_count=req.lossCooldownCount,
         paper_capital=req.paperCapital,
+        _requested_paper=req.isPaper,
     )
 
 
@@ -2236,6 +2259,9 @@ async def stop_agent(body: dict = {}):
     s.status = "stopping"
     if s._loop_task:
         s._loop_task.cancel()
+    s.status = "stopped"
+    # Broadcast so all connected WebSocket clients update immediately
+    await _broadcast({"type": "status_update", "status": "stopped", "reason": "user_stop", "paper": s.is_paper}, s.user_id)
     if s.user_id:
         try:
             from src.services.supabase_reader import upsert_agent_run
@@ -2424,6 +2450,7 @@ class BacktestRequest(BaseModel):
     days:            int   = 30
     initial_capital: float = 10_000.0
     strategy:        str   = "rsi"   # "rsi" | "llm"
+    asset_class:     str   = ""      # auto-detected from venue when blank
 
 
 @app.get("/api/rag-memory")
@@ -2566,6 +2593,9 @@ async def run_backtest(req: BacktestRequest):
     """Run a strategy backtest and return equity curve + metrics."""
     try:
         from src.backtesting.engine import run_backtest_json
+        # Resolve asset_class: use provided value or auto-detect from venue name
+        v_key = req.venue.lower().split(":")[0]
+        resolved_ac = req.asset_class or _ASSET_CLASS.get(v_key, "crypto_perp")
         result = await run_backtest_json(
             venue=req.venue,
             symbol=req.symbol,
@@ -2573,6 +2603,7 @@ async def run_backtest(req: BacktestRequest):
             days=req.days,
             initial_capital=req.initial_capital,
             strategy=req.strategy,
+            asset_class=resolved_ac,
         )
         return result
     except Exception as e:

@@ -69,10 +69,10 @@ function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null)
 }
 
 interface AccountData   { balance: number; equity: number; initial_equity: number; total_return_pct: number; open_positions: number; sharpe: number }
-interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage: number; liquidation_price: number }[] }
+interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage?: number; liquidation_price?: number }[]; is_paper?: boolean }
 interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
-interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number }[] }[] }
+interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean }[] }[] }
 
 export default function Dashboard() {
   // SECURITY: every piece of state is keyed off Clerk session ID.
@@ -93,6 +93,7 @@ export default function Dashboard() {
   const [strategyType, setStrategyType]     = useState<string>("MOMENTUM_HUNTER");
   const [timeframe, setTimeframe]           = useState<string>("5m");
   const [market, setMarket]                 = useState<string>("spot");
+  const [paperCapital, setPaperCapital]     = useState<number>(10000);
   const [showGuards, setShowGuards]         = useState(false);
   const [minConfidence, setMinConfidence]   = useState(0);    // 0-100
   const [maxDailyLoss, setMaxDailyLoss]     = useState(0);    // 0-100 %
@@ -107,6 +108,19 @@ export default function Dashboard() {
   const venueSymbols = VENUE_SYMBOLS[venueType] ?? VENUE_SYMBOLS.BINANCE;
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [chartVenueType, setChartVenueType] = useState("BINANCE");
+
+  // When the active venue changes (or loads for the first time), sync the default
+  // symbol and chart venue type so a FOREX user sees EUR/USD not BTC/USDT.
+  useEffect(() => {
+    if (!venuesLoading && activeVenue) {
+      const defaultSym = VENUE_SYMBOLS[venueType]?.[0] ?? "BTCUSDT";
+      setSymbol(defaultSym);
+      setChartVenueType(venueType);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [venueType, venuesLoading]);
+
+  const isForexVenue = venueType === "OANDA" || venueType === "METATRADER";
 
   const toast = useToast();
 
@@ -143,8 +157,15 @@ export default function Dashboard() {
     if (lastEvent.type === "positions_update") {
       positions.set(lastEvent as unknown as PositionsData);
     }
-    if (lastEvent.type === "decision") {
+    if (lastEvent.type === "decision" || lastEvent.type === "decisions_update") {
       decisions.refresh();
+    }
+    if (lastEvent.type === "trade_executed") {
+      positions.refresh();
+      account.refresh();
+    }
+    if (lastEvent.type === "status_update") {
+      status.refresh();
     }
   }, [lastEvent, symbol]);
 
@@ -171,6 +192,7 @@ export default function Dashboard() {
         maxDailyLossPct:  maxDailyLoss,
         maxTradesPerDay:  maxTradesDay,
         lossCooldownCount: lossCooldown,
+        paperCapital:     paperCapital,
       };
       const res = await fetch("/api/agent/start", {
         method: "POST",
@@ -305,6 +327,7 @@ export default function Dashboard() {
             isPaper:           activeVenue?.isPaper ?? true,
             venueName:         VENUE_LABEL[venueType] ?? venueType,
             market:            market,
+            paperCapital:      paperCapital,
             minConfidencePct:  minConfidence,
             maxDailyLossPct:   maxDailyLoss,
             maxTradesPerDay:   maxTradesDay,
@@ -327,25 +350,53 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Phase 5: Live Trading warning banner */}
-      {running && activeVenue && !activeVenue.isPaper && (
-        <div style={{
-          background: "linear-gradient(90deg, rgba(239,68,68,0.15), rgba(251,146,60,0.12))",
-          borderBottom: "1px solid rgba(239,68,68,0.35)",
-          padding: "7px 20px", display: "flex",
-          alignItems: "center", justifyContent: "center", gap: 8,
-        }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#ef4444",
-            display: "inline-block", flexShrink: 0 }} />
-          <span style={{ fontSize: 11, fontWeight: 700, color: "#fca5a5",
-            letterSpacing: "0.08em", textTransform: "uppercase" }}>
-            Live Trading Active — Real money at risk
-          </span>
-          <a href="/settings?tab=venues" style={{ marginLeft: 4, fontSize: 10,
-            color: "rgba(252,165,165,0.55)", textDecoration: "underline" }}>
-            Switch to paper
-          </a>
-        </div>
+      {/* Mode banner — shows clearly whether agent is in paper or live mode */}
+      {running && (
+        activeVenue && !activeVenue.isPaper ? (
+          /* LIVE mode — red urgent banner */
+          <div style={{
+            background: "linear-gradient(90deg, rgba(239,68,68,0.15), rgba(251,146,60,0.12))",
+            borderBottom: "1px solid rgba(239,68,68,0.35)",
+            padding: "8px 20px", display: "flex", alignItems: "center",
+            justifyContent: "center", gap: 10,
+          }}>
+            <motion.span animate={{ opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }}
+              style={{ width: 7, height: 7, borderRadius: "50%", background: "#ef4444",
+                display: "inline-block", flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#fca5a5",
+              letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              LIVE TRADING — Real money at risk. AI is placing real orders.
+            </span>
+            <a href="/settings?tab=venues" style={{ marginLeft: 4, fontSize: 10,
+              color: "rgba(252,165,165,0.55)", textDecoration: "underline" }}>
+              Switch to paper
+            </a>
+          </div>
+        ) : (
+          /* PAPER mode — green calm banner */
+          <div style={{
+            background: "rgba(74,222,128,0.04)",
+            borderBottom: "1px solid rgba(74,222,128,0.15)",
+            padding: "7px 20px", display: "flex", alignItems: "center",
+            justifyContent: "center", gap: 10,
+          }}>
+            <span style={{ fontSize: 9, fontWeight: 700, color: "#4ade80",
+              background: "rgba(74,222,128,0.12)", border: "1px solid rgba(74,222,128,0.25)",
+              padding: "2px 8px", borderRadius: 4, letterSpacing: "0.1em" }}>
+              PAPER TRADING
+            </span>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)" }}>
+              Simulated trades only — no real money at risk.
+              Balance: <strong style={{ color: "#4ade80" }}>
+                ${(acc?.equity ?? paperCapital).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+              </strong> (virtual)
+            </span>
+            <a href="/settings?tab=venues" style={{ fontSize: 10,
+              color: "rgba(74,222,128,0.5)", textDecoration: "underline" }}>
+              Switch to live
+            </a>
+          </div>
+        )
       )}
 
       {/* ── Guard Settings Drawer ──────────────────────────────────── */}
@@ -362,6 +413,25 @@ export default function Dashboard() {
                 textTransform: "uppercase", letterSpacing: "0.08em" }}>
                 Guard Settings
               </span>
+              {/* Paper capital — only relevant for paper mode */}
+              {(activeVenue?.isPaper ?? true) && (
+                <div title="Simulated starting balance for paper trading">
+                  <p style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>
+                    Paper Capital: ${paperCapital.toLocaleString()}
+                  </p>
+                  <select value={paperCapital} onChange={e => setPaperCapital(Number(e.target.value))}
+                    style={{ background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.2)",
+                      borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "#4ade80", cursor: "pointer" }}>
+                    <option value={1000}>$1,000</option>
+                    <option value={5000}>$5,000</option>
+                    <option value={10000}>$10,000</option>
+                    <option value={25000}>$25,000</option>
+                    <option value={50000}>$50,000</option>
+                    <option value={100000}>$100,000</option>
+                  </select>
+                </div>
+              )}
+
               {[
                 { label: `Min Confidence: ${minConfidence}%`, value: minConfidence, set: setMinConfidence, min: 0, max: 95, tip: "Skip trades below this confidence" },
                 { label: `Max Daily Loss: ${maxDailyLoss > 0 ? maxDailyLoss + "%" : "Off"}`, value: maxDailyLoss, set: setMaxDailyLoss, min: 0, max: 30, tip: "Stop after X% daily loss" },
@@ -415,7 +485,15 @@ export default function Dashboard() {
           {displayPrice && !isMobile && (
             <span style={{ fontSize: 11, color: "rgba(255,255,255,0.65)", fontVariantNumeric: "tabular-nums",
               flexShrink: 0, whiteSpace: "nowrap" }}>
-              {symbol.replace("USDT", "")} <strong>${displayPrice.toLocaleString("en-US", { maximumFractionDigits: 0 })}</strong>
+              {symbol.replace(/_/g, "/").replace("USDT", "")}{" "}
+              <strong>
+                {isForexVenue
+                  // FOREX: show 4–5 decimal places, no $ prefix (it's a rate not a USD price)
+                  ? displayPrice.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 5 })
+                  // Crypto/stocks: rounded, $ prefix
+                  : `$${displayPrice.toLocaleString("en-US", { maximumFractionDigits: displayPrice >= 1000 ? 0 : 2 })}`
+                }
+              </strong>
             </span>
           )}
 
@@ -443,15 +521,17 @@ export default function Dashboard() {
                 <option value="1h">1h</option>
                 <option value="4h">4h</option>
               </select>
-              {/* Spot/Futures — only relevant for Binance */}
-              <select value={market} onChange={e => setMarket(e.target.value)}
-                title="spot = standard Binance account, futures = requires Binance Futures account"
-                style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
-                  cursor: "pointer", maxWidth: 68 }}>
-                <option value="spot">Spot</option>
-                <option value="futures">Futures</option>
-              </select>
+              {/* Spot/Futures — only relevant for Binance/CCXT, not FOREX */}
+              {!isForexVenue && (
+                <select value={market} onChange={e => setMarket(e.target.value)}
+                  title="spot = standard account, futures = requires Binance Futures account"
+                  style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
+                    cursor: "pointer", maxWidth: 68 }}>
+                  <option value="spot">Spot</option>
+                  <option value="futures">Futures</option>
+                </select>
+              )}
               {/* Guards — icon+label compact */}
               <button onClick={() => setShowGuards(g => !g)}
                 title="Guard settings: confidence gate, loss limits"
@@ -694,7 +774,7 @@ export default function Dashboard() {
                 <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.8)", letterSpacing: "0.02em" }}>Open Positions</span>
                 <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 10px", borderRadius: 20 }}>{pos.length}</span>
               </div>
-              <PositionsTable positions={pos} />
+              <PositionsTable positions={pos} isPaper={positions.data?.is_paper ?? activeVenue?.isPaper} venueType={venueType} />
             </motion.section>
           </div>
 
@@ -716,6 +796,79 @@ export default function Dashboard() {
                   {connected ? "● live" : "polling"}
                 </span>
               </div>
+              {/* Last AI Decision — prominent card */}
+              {running && decisions.data?.decisions?.[0] && (() => {
+                const latest = decisions.data!.decisions[0];
+                const d = latest.trade_decisions?.[0];
+                if (!d) return null;
+                const isBuy = d.action === "buy";
+                const isSell = d.action === "sell";
+                const isHold = d.action === "hold" || (!isBuy && !isSell);
+                const color = isBuy ? "#4ade80" : isSell ? "#ef4444" : "rgba(255,255,255,0.4)";
+                const bg    = isBuy ? "rgba(74,222,128,0.06)" : isSell ? "rgba(239,68,68,0.06)" : "rgba(255,255,255,0.02)";
+                const border= isBuy ? "rgba(74,222,128,0.2)"  : isSell ? "rgba(239,68,68,0.2)"  : "rgba(255,255,255,0.07)";
+                const conf  = d.confidence ? Math.round(Number(d.confidence) * 100) : null;
+                return (
+                  <div style={{ background: bg, border: `1px solid ${border}`,
+                    borderRadius: 12, padding: "14px 16px", marginBottom: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between",
+                      alignItems: "flex-start", gap: 10 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ fontSize: 9, fontWeight: 700, color,
+                            background: `${color}18`, border: `1px solid ${color}30`,
+                            padding: "2px 8px", borderRadius: 4, letterSpacing: "0.1em",
+                            textTransform: "uppercase" as const }}>
+                            AI {d.action.toUpperCase()}
+                          </span>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>
+                            {d.asset}
+                          </span>
+                          {d.allocation_usd > 0 && !isHold && (
+                            <span style={{ fontSize: 12, color: "rgba(255,255,255,0.5)" }}>
+                              ${Number(d.allocation_usd).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                            </span>
+                          )}
+                          {conf !== null && (
+                            <span style={{ fontSize: 10, color: conf >= 70 ? "#4ade80" : conf >= 50 ? "#fbbf24" : "#f87171",
+                              marginLeft: "auto" }}>
+                              {conf}% confidence
+                            </span>
+                          )}
+                        </div>
+                        <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.55 }}>
+                          <strong style={{ color: "rgba(255,255,255,0.7)" }}>Why:</strong>{" "}
+                          {String(d.rationale ?? "No rationale provided").slice(0, 200)}
+                        </p>
+                        {(d.tp_price || d.sl_price) && !isHold && (
+                          <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
+                            {d.tp_price && (
+                              <span style={{ fontSize: 10, color: "#4ade80" }}>
+                                TP:{" "}
+                                {isForexVenue
+                                  ? Number(d.tp_price).toFixed(5)
+                                  : `$${Number(d.tp_price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                              </span>
+                            )}
+                            {d.sl_price && (
+                              <span style={{ fontSize: 10, color: "#ef4444" }}>
+                                SL:{" "}
+                                {isForexVenue
+                                  ? Number(d.sl_price).toFixed(5)
+                                  : `$${Number(d.sl_price).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <p style={{ fontSize: 9, color: "rgba(255,255,255,0.2)", marginTop: 6 }}>
+                      {new Date(latest.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                      {" · AI reasoning based on RSI, MACD, EMA + macro sentiment"}
+                    </p>
+                  </div>
+                );
+              })()}
               <DecisionsFeed decisions={decisions.data?.decisions ?? []} />
             </motion.section>
 
