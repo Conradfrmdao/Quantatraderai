@@ -2,6 +2,16 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["stripe", "ib_insync", "metaapi-cloud-sdk"],
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.quantatraderai.com" }],
+        destination: "https://quantatraderai.com/:path*",
+        permanent: true,
+      },
+    ];
+  },
   async rewrites() {
     const apiUrl = process.env.PYTHON_API_URL ?? "http://localhost:8000";
     return [
