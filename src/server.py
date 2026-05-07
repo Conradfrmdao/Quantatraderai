@@ -263,8 +263,10 @@ class AgentState:
 
         self.start_time:     datetime | None = None
         self.initial_equity: float   | None = None
-        self.paper_balance:  float          = 10_000.0  # simulated balance for paper trading
-        self.paper_positions: list[dict]    = []         # simulated open positions
+        self.paper_balance:  float          = 10_000.0
+        self.paper_positions: list[dict]    = []
+        # Lock protecting paper_positions and paper_balance from concurrent tick + order writes
+        self._paper_lock: asyncio.Lock      = asyncio.Lock()
         self.trade_log:      list[dict]      = []
         self.tick_count:     int             = 0
         self.error:          str | None      = None
@@ -689,12 +691,11 @@ async def _tick_for(s: "AgentState"):
         return
 
     if s.is_paper:
-        # Paper mode: use simulated balance — never the real exchange balance.
-        # Real balance is often $0 which causes the AI to refuse all trades.
-        # Paper trades update s.paper_balance so P&L is tracked correctly.
-        balance   = s.paper_balance
-        pnl_total = sum(p.get("unrealized_pnl", 0.0) for p in s.paper_positions)
-        equity    = balance + pnl_total
+        # Hold the lock briefly to get a consistent snapshot of the paper account.
+        async with s._paper_lock:
+            balance   = s.paper_balance
+            pnl_total = sum(p.get("unrealized_pnl", 0.0) for p in s.paper_positions)
+        equity = balance + pnl_total
     else:
         usdt      = next((b for b in balances if b.currency in ("USDT", "USD", "BUSD")), None)
         balance   = usdt.available if usdt else 0.0
@@ -1057,45 +1058,46 @@ async def _tick_for(s: "AgentState"):
             qty = alloc / price
             pnl = 0.0
 
-            if action == "buy":
-                s.paper_balance -= alloc
-                s.paper_positions.append({
-                    "symbol": sym, "quantity": qty, "entry_price": price,
-                    "current_price": price, "unrealized_pnl": 0.0,
-                    "sl_price": dec.get("sl_price"), "tp_price": dec.get("tp_price"),
-                })
-            elif action == "sell":
-                # Close matching paper position
-                matched = next((p for p in s.paper_positions if p["symbol"] == sym), None)
-                if matched:
-                    pnl = (price - matched["entry_price"]) * matched["quantity"]
-                    s.paper_balance += matched["quantity"] * price
-                    s.paper_positions = [p for p in s.paper_positions if p["symbol"] != sym]
-                    s.trade_log.append({"action": "sell", "price": price, "qty": qty, "pnl": pnl})
-                    if pnl < 0: s.consecutive_losses += 1
-                    else:       s.consecutive_losses = 0
-                    s.daily_loss_usd += pnl
-                else:
-                    s.log(f"[PAPER] SELL {sym} — no open position to close")
-                    continue
+            # Lock so tick loop and any concurrent order can't corrupt paper state.
+            async with s._paper_lock:
+                if action == "buy":
+                    s.paper_balance -= alloc
+                    s.paper_positions.append({
+                        "symbol": sym, "quantity": qty, "entry_price": price,
+                        "current_price": price, "unrealized_pnl": 0.0,
+                        "sl_price": dec.get("sl_price"), "tp_price": dec.get("tp_price"),
+                    })
+                elif action == "sell":
+                    matched = next((p for p in s.paper_positions if p["symbol"] == sym), None)
+                    if matched:
+                        pnl = (price - matched["entry_price"]) * matched["quantity"]
+                        s.paper_balance += matched["quantity"] * price
+                        s.paper_positions = [p for p in s.paper_positions if p["symbol"] != sym]
+                        s.trade_log.append({"action": "sell", "price": price, "qty": qty, "pnl": pnl})
+                        if pnl < 0: s.consecutive_losses += 1
+                        else:       s.consecutive_losses = 0
+                        s.daily_loss_usd += pnl
+                    else:
+                        s.log(f"[PAPER] SELL {sym} — no open position to close")
+                        continue
 
-            s.trade_log.append({"action": action, "price": price, "qty": qty, "pnl": pnl})
-            s.daily_trade_count += 1
+                s.trade_log.append({"action": action, "price": price, "qty": qty, "pnl": pnl})
+                s.daily_trade_count += 1
+                for p in s.paper_positions:
+                    cp = s.price_cache.get(p["symbol"].replace("/", ""), p["entry_price"])
+                    p["current_price"]  = cp
+                    p["unrealized_pnl"] = (cp - p["entry_price"]) * p["quantity"]
+                _bal_snapshot = s.paper_balance
+
             s.timeline_event("executed", sym,
-                f"[Paper] {action.upper()} {qty:.6f} @ ${price:.2f} | balance=${s.paper_balance:.2f}",
+                f"[Paper] {action.upper()} {qty:.6f} @ ${price:.2f} | balance=${_bal_snapshot:.2f}",
                 action=action)
             s.log(f"[PAPER] {action.upper()} {sym} qty={qty:.6f} @ ${price:.2f} "
-                  f"balance=${s.paper_balance:.2f} — {dec.get('rationale','')[:60]}")
+                  f"balance=${_bal_snapshot:.2f} — {dec.get('rationale','')[:60]}")
             await _broadcast({"type": "trade_executed", "data": {
                 "symbol": sym, "action": action, "price": price, "qty": qty,
                 "venue": s.venue_name, "paper": True,
             }}, s.user_id)
-
-            # Update paper positions' current prices
-            for p in s.paper_positions:
-                cp = s.price_cache.get(p["symbol"].replace("/",""), p["entry_price"])
-                p["current_price"]  = cp
-                p["unrealized_pnl"] = (cp - p["entry_price"]) * p["quantity"]
 
         return
 
@@ -2109,22 +2111,28 @@ async def _do_start(
     # Resolve per-user state — never mutate the global _state for a specific user.
     final_state = get_state(user_id) if user_id else _state
 
+    # Build venue, risk manager, and agent BEFORE touching state — if any step
+    # fails, final_state is completely unchanged (atomic swap on success only).
     try:
-        # Construct venue via registry
         if v_key == "binance":
             asset_class = "crypto_perp" if market == "futures" else "crypto_spot"
-            final_state.venue = get_venue(f"binance:{market}")
+            _new_venue  = get_venue(f"binance:{market}")
         else:
             asset_class = _ASSET_CLASS.get(v_key, "crypto_spot")
-            final_state.venue = get_venue(venue_name)
-        final_state.risk_mgr = RiskManager(venue=v_key, asset_class=asset_class)
+            _new_venue  = get_venue(venue_name)
+        _new_risk  = RiskManager(venue=v_key, asset_class=asset_class)
         _venue_ctx = "forex" if asset_class == "forex" else "crypto"
-        final_state.ai_agent = TradingAgent(hyperliquid=None, venue_context=_venue_ctx)
+        _new_agent = TradingAgent(hyperliquid=None, venue_context=_venue_ctx)
     except Exception as e:
-        final_state.status = "error"
-        final_state.error  = str(e)
-        logger.exception("Venue init failed")
+        # State is untouched — the previous running agent (if any) remains valid.
+        final_state.error = str(e)
+        logger.exception("Venue init failed — state rolled back, previous agent unaffected")
         return {"ok": False, "error": f"Venue init failed: {e}"}
+
+    # All three succeeded — commit atomically.
+    final_state.venue    = _new_venue
+    final_state.risk_mgr = _new_risk
+    final_state.ai_agent = _new_agent
 
     final_state.symbols        = symbols
     final_state.timeframe      = timeframe
@@ -2133,12 +2141,18 @@ async def _do_start(
     final_state.venue_name     = v_key
     final_state.status         = "running"
     final_state.user_id        = user_id
+    # ── Full state reset — prevents any bleed from a previous session ────────
     final_state.decisions.clear()
     final_state.trade_log.clear()
-    final_state.account        = {}
-    final_state.positions      = []
-    final_state.initial_equity = None
-    final_state.tick_count     = 0
+    final_state.logs.clear()
+    final_state.timeline            = deque(maxlen=200)
+    final_state.account             = {}
+    final_state.positions           = []
+    final_state.initial_equity      = None   # set fresh on first tick
+    final_state.prev_position_pnl   = {}     # prevents ghost close-events from old positions
+    final_state.price_cache         = {}     # stale prices skew first-tick equity
+    final_state.candle_cache        = {}
+    final_state.tick_count          = 0
     final_state.error               = None
     final_state.last_tick_at        = datetime.now(timezone.utc)
     final_state.min_confidence_pct  = min_confidence_pct
@@ -2150,13 +2164,13 @@ async def _do_start(
     final_state.daily_trade_count   = 0
     final_state.consecutive_losses  = 0
     final_state.day_reset_at        = datetime.now(timezone.utc).date().isoformat()
-    final_state.timeline            = deque(maxlen=200)
     # Reset paper trading simulation on every fresh start
     if is_paper:
         _cap = max(100.0, float(paper_capital or 10_000.0))
-        final_state.paper_balance   = _cap
-        final_state.paper_positions = []
-        final_state.initial_equity  = _cap
+        async with final_state._paper_lock:
+            final_state.paper_balance   = _cap
+            final_state.paper_positions = []
+        final_state.initial_equity = _cap
 
     # Strategy persona — apply risk overrides and inject prompt addendum
     if strategy_type:

@@ -21,7 +21,7 @@ async def _show(venue_name: str) -> None:
     positions = await venue.get_positions()
     risk = RiskManager(venue=venue_name.split(":")[0], asset_class=getattr(venue, "asset_class", None))
 
-    print(f"=== QuntaTradeAI status — venue={venue_name} ===")
+    print(f"=== QuantatraderAI status — venue={venue_name} ===")
     print("\nBalances:")
     for b in balances:
         print(f"  {b.currency}: total={b.total:.4f} available={b.available:.4f}")
@@ -41,7 +41,7 @@ async def _show(venue_name: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="QuntaTradeAI status CLI")
+    parser = argparse.ArgumentParser(description="QuantatraderAI status CLI")
     parser.add_argument("--venue", default=CONFIG.get("venue") or "hyperliquid")
     args = parser.parse_args()
     asyncio.run(_show(args.venue))

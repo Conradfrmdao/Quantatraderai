@@ -39,7 +39,7 @@ from src.venues.models import (
     Ticker,
 )
 
-logger = logging.getLogger("qunta.venues.polymarket")
+logger = logging.getLogger("quantatraderai.venues.polymarket")
 
 
 class PolymarketVenue(Venue):

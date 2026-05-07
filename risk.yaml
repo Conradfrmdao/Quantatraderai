@@ -1,4 +1,4 @@
-# QuntaTradeAI risk configuration.
+# QuantatraderAI risk configuration.
 #
 # Per-(venue, asset_class) overrides. The `default` block is applied
 # when no matching override is found. Env vars in .env are the outermost
@@ -33,6 +33,20 @@ overrides:
   - venue: ccxt
     asset_class: crypto_perp
     max_leverage: 3.0
+
+  - venue: binance
+    asset_class: crypto_perp
+    # Binance USD-M futures: allow up to 5x leverage (safer than the 20x exchange max)
+    max_leverage: 5.0
+    mandatory_sl_pct: 2.0
+    max_position_pct: 3.0
+    max_loss_per_position_pct: 6.0
+
+  - venue: binance
+    asset_class: crypto_spot
+    max_leverage: 1.0          # spot: no leverage
+    max_position_pct: 5.0
+    mandatory_sl_pct: 3.0
 
   - venue: oanda
     asset_class: forex

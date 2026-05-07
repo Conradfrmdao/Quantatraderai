@@ -72,7 +72,7 @@ PERSONAS: dict[StrategyTypeId, StrategyPersona] = {
         style="momentum",
         risk_profile="moderate",
         typical_hold="4-24 hours",
-        win_rate_range="52-62%",
+        win_rate_range="indicative only — backtest before live use",
         indicator_focus=["RSI", "MACD", "EMA", "ATR"],
         risk_overrides={
             "max_position_pct":  3.5,
@@ -100,7 +100,7 @@ PERSONAS: dict[StrategyTypeId, StrategyPersona] = {
         style="scalping",
         risk_profile="aggressive",
         typical_hold="< 2 hours",
-        win_rate_range="58-70%",
+        win_rate_range="indicative only — backtest before live use",
         indicator_focus=["RSI", "Bollinger Bands", "Stoch-RSI", "Volume"],
         risk_overrides={
             "max_position_pct":        2.0,
@@ -130,7 +130,7 @@ PERSONAS: dict[StrategyTypeId, StrategyPersona] = {
         style="swing",
         risk_profile="conservative",
         typical_hold="1-3 days",
-        win_rate_range="45-55%",
+        win_rate_range="indicative only — backtest before live use",
         indicator_focus=["EMA", "Support/Resistance", "Volume", "Bollinger Bands"],
         risk_overrides={
             "max_position_pct":  5.0,
@@ -161,7 +161,7 @@ PERSONAS: dict[StrategyTypeId, StrategyPersona] = {
         style="news",
         risk_profile="aggressive",
         typical_hold="1-8 hours",
-        win_rate_range="50-60%",
+        win_rate_range="indicative only — backtest before live use",
         indicator_focus=["News Sentiment", "Fear/Greed", "Economic Calendar", "RSI"],
         risk_overrides={
             "max_position_pct":  3.0,

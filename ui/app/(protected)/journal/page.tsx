@@ -45,7 +45,7 @@ function exportCsv(trades: Trade[]) {
   const blob   = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
   const url    = URL.createObjectURL(blob);
   const a      = document.createElement("a");
-  a.href = url; a.download = `qunta_trades_${Date.now()}.csv`; a.click();
+  a.href = url; a.download = `quantatrader_trades_${Date.now()}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -54,6 +54,7 @@ export default function JournalPage() {
 
   const [trades, setTrades]   = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadErr, setLoadErr] = useState(false);
   const [symbol,  setSymbol]  = useState("");
   const [action,  setAction]  = useState("");
   const [from,    setFrom]    = useState("");
@@ -66,10 +67,15 @@ export default function JournalPage() {
     if (action) params.set("action", action);
     if (from)   params.set("from", from);
     if (to)     params.set("to", to);
+    setLoadErr(false);
     const res = await fetch(`/api/trades?${params}`).catch(() => null);
-    if (res?.ok) {
-      const data = await res.json() as { trades: Trade[] };
+    if (!res) {
+      setLoadErr(true);
+    } else if (res.ok) {
+      const data = await res.json().catch(() => ({ trades: [] })) as { trades: Trade[] };
       setTrades(data.trades ?? []);
+    } else {
+      setLoadErr(true);
     }
     setLoading(false);
   }, [symbol, action, from, to]);
@@ -154,6 +160,11 @@ export default function JournalPage() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={9} style={{ padding: 24, color: "var(--muted)", textAlign: "center" }}>Loading…</td></tr>
+              ) : loadErr ? (
+                <tr><td colSpan={9} style={{ padding: 24, textAlign: "center" }}>
+                  <span style={{ color: "var(--red)", fontSize: 13 }}>Failed to load trades.</span>
+                  <button onClick={load} style={{ marginLeft: 12, fontSize: 12, color: "var(--muted)", background: "none", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}>Retry</button>
+                </td></tr>
               ) : trades.length === 0 ? (
                 <tr><td colSpan={9} style={{ padding: 24, color: "var(--muted)", textAlign: "center" }}>No trades yet</td></tr>
               ) : trades.map(t => (

@@ -4,9 +4,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Check, ChevronDown, ChevronUp, X, ExternalLink } from "lucide-react";
 import Link from "next/link";
 
-const STORAGE_KEY    = "qt:checklist_dismissed";
-const ONBOARDING_KEY = "qt:onboarding";
-const DAYS_TO_SHOW   = 14;
+const DAYS_TO_SHOW = 14;
+// Namespace every localStorage key per userId — prevents user B seeing user A's data.
+const ukey = (base: string, uid: string) => `${base}:${uid}`;
 
 interface CheckItem {
   id:      string;
@@ -60,43 +60,45 @@ const ITEMS: CheckItem[] = [
   },
 ];
 
-export function GettingStartedChecklist() {
+export function GettingStartedChecklist({ userId }: { userId?: string | null }) {
   const [visible,   setVisible]   = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [done,      setDone]      = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !userId) return;
 
-    // Don't show if dismissed
+    const STORAGE_KEY    = ukey("qt:checklist_dismissed", userId);
+    const ONBOARDING_KEY = ukey("qt:onboarding", userId);
+
     if (localStorage.getItem(STORAGE_KEY)) return;
 
-    // Only show if onboarded within the last N days
     try {
-      const ob = JSON.parse(localStorage.getItem(ONBOARDING_KEY) ?? "{}");
+      const ob  = JSON.parse(localStorage.getItem(ONBOARDING_KEY) ?? "{}");
       const age = Date.now() - (ob.completedAt ?? 0);
       if (age > DAYS_TO_SHOW * 24 * 60 * 60 * 1000) return;
     } catch { return; }
 
-    // Read done states
     const doneMap: Record<string, boolean> = {};
     for (const item of ITEMS) {
-      doneMap[item.id] = !!localStorage.getItem(item.doneKey);
+      doneMap[item.id] = !!localStorage.getItem(ukey(item.doneKey, userId));
     }
     setDone(doneMap);
     setVisible(true);
-  }, []);
+  }, [userId]);
 
   const completedCount = Object.values(done).filter(Boolean).length;
   const allDone = completedCount === ITEMS.length;
 
   function dismiss() {
-    localStorage.setItem(STORAGE_KEY, "1");
+    if (!userId) return;
+    localStorage.setItem(ukey("qt:checklist_dismissed", userId), "1");
     setVisible(false);
   }
 
   function markDone(id: string, doneKey: string) {
-    localStorage.setItem(doneKey, "1");
+    if (!userId) return;
+    localStorage.setItem(ukey(doneKey, userId), "1");
     setDone(prev => ({ ...prev, [id]: true }));
   }
 
@@ -135,7 +137,7 @@ export function GettingStartedChecklist() {
               </p>
               {!collapsed && (
                 <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
-                  {allDone ? "You've completed all steps 🎉" : "Complete these to get the most out of QuntaTradeAI"}
+                  {allDone ? "You've completed all steps 🎉" : "Complete these to get the most out of QuantatraderAI"}
                 </p>
               )}
             </div>
@@ -217,7 +219,7 @@ export function GettingStartedChecklist() {
                 <div style={{ padding: "12px 16px", textAlign: "center",
                   borderTop: "1px solid rgba(255,255,255,0.05)" }}>
                   <p style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>
-                    🎉 All done! You&apos;re a QuntaTradeAI pro now.{" "}
+                    🎉 All done! You&apos;re a QuantatraderAI pro now.{" "}
                     <button onClick={dismiss}
                       style={{ color: "#4ade80", background: "none", border: "none",
                         cursor: "pointer", fontSize: 12, textDecoration: "underline" }}>

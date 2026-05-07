@@ -1,4 +1,4 @@
-"""Centralized environment variable loading for QuntaTradeAI."""
+"""Centralized environment variable loading for QuantatraderAI."""
 
 import json
 import os
@@ -81,6 +81,7 @@ CONFIG = {
     "ccxt_api_key": _get_env("CCXT_API_KEY"),
     "ccxt_api_secret": _get_env("CCXT_API_SECRET"),
     "ccxt_sandbox": _get_bool("CCXT_SANDBOX", True),
+    "ccxt_market": _get_env("CCXT_MARKET", "spot"),  # spot | futures — drives asset_class + risk limits
 
     # OANDA (forex)
     "oanda_api_token": _get_env("OANDA_API_TOKEN"),
@@ -93,7 +94,7 @@ CONFIG = {
     "llm_provider": _get_env("LLM_PROVIDER", "anthropic"),
     "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-6"),
     "max_tokens": _get_int("MAX_TOKENS", 4096),
-    "enable_tool_calling": _get_bool("ENABLE_TOOL_CALLING", False),
+    "enable_tool_calling": _get_bool("ENABLE_TOOL_CALLING", True),
     "thinking_enabled": _get_bool("THINKING_ENABLED", False),
     "thinking_budget_tokens": _get_int("THINKING_BUDGET_TOKENS", 10000),
 

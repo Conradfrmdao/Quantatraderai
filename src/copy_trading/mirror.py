@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
-logger = logging.getLogger("qunta.copy_trading")
+logger = logging.getLogger("quantatraderai.copy_trading")
 
 
 async def get_followers(leader_user_id: str) -> list[dict[str, Any]]:
@@ -116,6 +116,35 @@ async def mirror_trade(
                     "reason": f"No price for {mapped_symbol} on {follower_venue_name}",
                 })
                 continue
+
+            # Run the follower's own RiskManager before placing — the follower's
+            # account may already be over-exposed regardless of the leader's action.
+            from src.risk_manager import RiskManager as _RM
+            _follower_risk = _RM(venue=follower_venue_name)
+            _follower_positions = await venue.get_positions()
+            _follower_account_state = {
+                "total_value": balance,
+                "balance": balance,
+                "positions": [p.__dict__ for p in _follower_positions],
+                "min_order_usd": 10.0,
+            }
+            _trade_proposal = {
+                "action": action,
+                "allocation_usd": alloc_usd,
+                "current_price": price,
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+            }
+            _risk_ok, _risk_reason, _trade_proposal = _follower_risk.validate_trade(
+                _trade_proposal, _follower_account_state, balance
+            )
+            if not _risk_ok:
+                results.append({
+                    "follower": follower_clerk_id, "ok": False,
+                    "reason": f"Risk manager blocked copy trade: {_risk_reason}",
+                })
+                continue
+            alloc_usd = float(_trade_proposal.get("allocation_usd", alloc_usd))
 
             qty = alloc_usd / price
             await venue.place_order(

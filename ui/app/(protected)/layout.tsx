@@ -22,7 +22,7 @@ export default async function ProtectedLayout({
         letterSpacing: "0.04em",
         background: "#080808",
       }}>
-        QuntaTradeAI is not a financial advisor. All AI decisions are informational only and do not
+        QuantatraderAI is not a financial advisor. All AI decisions are informational only and do not
         constitute financial advice. Trading involves risk — never invest money you cannot afford to lose.
         Past performance does not guarantee future results.
       </footer>

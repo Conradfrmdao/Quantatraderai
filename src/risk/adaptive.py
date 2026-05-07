@@ -14,7 +14,7 @@ import logging
 import os
 import math
 
-logger = logging.getLogger("qunta.adaptive_risk")
+logger = logging.getLogger("quantatraderai.adaptive_risk")
 
 _cache: dict[str, tuple[float, float]] = {}  # user_id → (pct, timestamp)
 _CACHE_TTL = 300  # seconds

@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any
 
-logger = logging.getLogger("qunta.intel.sentiment")
+logger = logging.getLogger("quantatraderai.intel.sentiment")
 
 _fng_cache: dict[str, Any] = {}
 _fng_cache_ts: float = 0.0

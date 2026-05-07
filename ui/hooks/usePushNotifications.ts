@@ -9,7 +9,7 @@ type NotifEvent = {
   paper?: boolean;
 };
 
-const STORAGE_KEY = "qunta_notif_permission";
+const STORAGE_KEY = "quantatrader_notif_permission";
 
 export function usePushNotifications(enabled = true) {
   const permissionRef = useRef<NotificationPermission>("default");
@@ -29,16 +29,18 @@ export function usePushNotifications(enabled = true) {
     return result === "granted";
   }, []);
 
-  const notify = useCallback((title: string, body: string, icon?: string) => {
+  const notify = useCallback((title: string, body: string, icon?: string, tag?: string) => {
     if (!enabled) return;
     if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (document.visibilityState === "visible") return;  // only notify when tab is hidden
     if (Notification.permission !== "granted") return;
     try {
+      // Use a unique tag so rapid-fire trade notifications don't replace each other.
+      // Only use a shared tag for non-trade events (risk alerts, status) so those
+      // coalesce correctly (you only need the latest one).
       const n = new Notification(title, {
         body,
         icon: icon ?? "/favicon.ico",
-        tag: "qunta-trade",
+        tag: tag ?? `qt-${Date.now()}`,
       } as NotificationOptions);
       n.onclick = () => { window.focus(); n.close(); };
     } catch { /* Safari may reject in some contexts */ }
@@ -50,23 +52,28 @@ export function usePushNotifications(enabled = true) {
       case "trade_executed": {
         const d = evt.data ?? {};
         const action = String(d.action ?? "").toUpperCase();
-        const symbol = String(d.symbol ?? "");
-        const price  = d.price ? `@ $${Number(d.price).toLocaleString()}` : "";
+        const sym    = String(d.symbol ?? "");
+        const priceStr = d.price ? `@ $${Number(d.price).toLocaleString()}` : "";
         notify(
-          `${action} ${symbol} ${price}`,
-          `Trade executed on ${d.venue ?? "your venue"}`,
+          `${action} ${sym} ${priceStr}`.trim(),
+          `Trade executed on ${String(d.venue ?? "your venue")}`,
+          undefined,
+          `qt-trade-${Date.now()}`,
         );
         break;
       }
       case "circuit_breaker_tripped":
-        notify("⚠️ Risk Alert", evt.message ?? "A trade was blocked by the risk manager.");
+        notify("Risk Alert", evt.message ?? "A trade was blocked by the risk manager.", undefined, "qt-risk");
         break;
       case "decision_error":
-        notify("⚠️ Agent Error", evt.message ?? "The AI encountered an error.");
+        notify("Agent Error", evt.message ?? "The AI encountered an error.", undefined, "qt-error");
         break;
       case "status_update":
         if (evt.status === "stopped") {
-          notify("Agent Stopped", "Your QuntaTradeAI agent has stopped.");
+          notify("Agent Stopped", "Your QuantatraderAI agent has stopped.", undefined, "qt-status");
+        } else if (evt.status === "paused") {
+          const detail = (evt as unknown as { detail?: string }).detail;
+          notify("Agent Paused", detail ?? "Agent is paused.", undefined, "qt-status");
         }
         break;
     }

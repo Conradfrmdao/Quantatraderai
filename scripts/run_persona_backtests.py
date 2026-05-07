@@ -227,7 +227,7 @@ async def main():
     interval_hours = {"1h": 1, "4h": 4, "1d": 24}.get(args.interval, 4)
     limit = min(args.days * 24 // interval_hours, 1000)
 
-    print(f"\n📊 QuntaTradeAI Persona Backtester")
+    print(f"\n📊 QuantatraderAI Persona Backtester")
     print(f"   Symbol:   {args.symbol}")
     print(f"   Interval: {args.interval}  |  Days: {args.days}  |  Candles: {limit}")
     print(f"   Capital:  ${args.capital:,.0f}\n")

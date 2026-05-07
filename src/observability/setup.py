@@ -83,24 +83,24 @@ def get_metrics():
     try:
         from prometheus_client import Histogram, Gauge, Counter
         tick_duration = Histogram(
-            "qunta_tick_duration_seconds",
+            "quantatrader_tick_duration_seconds",
             "Time to complete one trading tick",
             buckets=[0.1, 0.5, 1, 2, 5, 10, 30],
         )
         llm_duration = Histogram(
-            "qunta_llm_response_seconds",
+            "quantatrader_llm_response_seconds",
             "LLM response time",
             ["provider"],
             buckets=[0.1, 0.5, 1, 2, 5, 15, 30],
         )
         order_duration = Histogram(
-            "qunta_order_fill_seconds",
+            "quantatrader_order_fill_seconds",
             "Order placement latency",
             ["venue"],
             buckets=[0.05, 0.1, 0.5, 1, 5],
         )
-        ws_clients = Gauge("qunta_websocket_clients", "Connected WebSocket clients")
-        agent_running = Gauge("qunta_agent_running", "1 if agent is running")
+        ws_clients = Gauge("quantatrader_websocket_clients", "Connected WebSocket clients")
+        agent_running = Gauge("quantatrader_agent_running", "1 if agent is running")
         _metrics_initialised = True
         return {
             "tick_duration":  tick_duration,

@@ -14,7 +14,7 @@ import os
 import uuid
 from typing import Any
 
-logger = logging.getLogger("qunta.persistence")
+logger = logging.getLogger("quantatraderai.persistence")
 
 _DB_TIMEOUT = 6
 

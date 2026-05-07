@@ -9,15 +9,14 @@ import {
 } from "lucide-react";
 import { LogoWordmark } from "@/components/Logo";
 
-// ── Storage keys ────────────────────────────────────────────────────────────
-const ONBOARDING_DONE_KEY  = "qt:onboarding_done_v2";
-const ONBOARDING_PROG_KEY  = "qt:onboarding_progress";
+// ── Storage keys — namespaced per userId to prevent cross-user data leakage ─
+const _ukey = (base: string, uid?: string | null) => uid ? `${base}:${uid}` : base;
 
-export function markOnboardingDone() {
-  try { localStorage.setItem(ONBOARDING_DONE_KEY, "1"); } catch { /* private mode */ }
+export function markOnboardingDone(userId?: string | null) {
+  try { localStorage.setItem(_ukey("qt:onboarding_done_v2", userId), "1"); } catch { /* private mode */ }
 }
-export function hasCompletedOnboarding() {
-  try { return !!localStorage.getItem(ONBOARDING_DONE_KEY); } catch { return false; }
+export function hasCompletedOnboarding(userId?: string | null) {
+  try { return !!localStorage.getItem(_ukey("qt:onboarding_done_v2", userId)); } catch { return false; }
 }
 
 // ── Steps for BEGINNER mode ─────────────────────────────────────────────────
@@ -145,10 +144,11 @@ export default function OnboardingPage() {
     try {
       await user!.update({ firstName: firstName.trim(), lastName: lastName.trim() || undefined });
       try {
-        localStorage.setItem("qt:onboarding", JSON.stringify({
+        const uid = user?.id ?? null;
+        localStorage.setItem(_ukey("qt:onboarding", uid), JSON.stringify({
           venueType, goal, planChoice, mode, completedAt: Date.now(),
         }));
-        markOnboardingDone();
+        markOnboardingDone(uid);
       } catch { /* private mode */ }
       await fetch("/api/auth/refresh", { method: "POST", credentials: "same-origin" }).catch(() => {});
       if (planChoice !== "FREE" && mode === "beginner") {
@@ -196,7 +196,7 @@ export default function OnboardingPage() {
                 <Rocket size={26} style={{ color: "#4ade80" }} />
               </div>
               <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}>
-                Welcome to QuntaTradeAI
+                Welcome to QuantatraderAI
               </h1>
               <p style={{ fontSize: 14, color: "rgba(255,255,255,0.45)", lineHeight: 1.6 }}>
                 How familiar are you with AI trading platforms?
@@ -338,7 +338,7 @@ export default function OnboardingPage() {
                       <div style={{ padding: "10px 14px", background: "rgba(74,222,128,0.05)",
                         border: "1px solid rgba(74,222,128,0.12)", borderRadius: 10, marginBottom: 4 }}>
                         <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.6 }}>
-                          QuntaTradeAI is an <strong style={{ color: "rgba(255,255,255,0.8)" }}>autonomous AI trading agent</strong>.
+                          QuantatraderAI is an <strong style={{ color: "rgba(255,255,255,0.8)" }}>autonomous AI trading agent</strong>.
                           Once started, it monitors markets 24/7 and places trades on your behalf.
                           You are always in control — you can stop it instantly at any time.
                         </p>
@@ -442,7 +442,7 @@ export default function OnboardingPage() {
                         <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6, marginBottom: 8 }}>
                           An <strong style={{ color: "rgba(255,255,255,0.8)" }}>exchange</strong> is where
                           cryptocurrency or stocks are bought and sold.
-                          QuntaTradeAI connects to your exchange account using an{" "}
+                          QuantatraderAI connects to your exchange account using an{" "}
                           <Tip label="What is an API key?">
                             An API key is like a password that lets our AI read your balances and place
                             trades. You create it in your exchange&apos;s settings. We recommend enabling

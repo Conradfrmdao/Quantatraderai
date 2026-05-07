@@ -22,7 +22,7 @@ from typing import Any
 
 from src.config_loader import CONFIG
 
-logger = logging.getLogger("qunta.council")
+logger = logging.getLogger("quantatraderai.council")
 
 COUNCIL_PROVIDERS = [
     {"name": "groq",      "key_config": "groq_api_key",      "model": "llama-3.3-70b-versatile"},
@@ -66,11 +66,16 @@ def _available_providers() -> list[dict]:
 
 
 async def _ask_provider(provider_cfg: dict, assets: list[str], context: str) -> MemberOpinion:
-    """Ask a single provider for trade decisions and return its opinion."""
+    """Ask a single provider for trade decisions and return its opinion.
+
+    provider.complete() is a blocking HTTP call.  Running it via asyncio.to_thread
+    lets asyncio.gather() fire all three council members truly in parallel instead
+    of sequentially, cutting council latency from ~3×single to ~1×single.
+    """
+    import asyncio as _asyncio
     from src.agent.providers.factory import get_provider
     try:
         provider = get_provider(provider_name=provider_cfg["name"], model=provider_cfg["model"])
-        # Build a minimal system prompt for council members
         system = (
             "You are a disciplined quantitative trader. Given market context, "
             "return ONLY valid JSON with this structure:\n"
@@ -80,7 +85,10 @@ async def _ask_provider(provider_cfg: dict, assets: list[str], context: str) -> 
         )
         import json
         messages = [{"role": "user", "content": f"Assets: {json.dumps(assets)}\n\nContext:\n{context}"}]
-        resp = provider.complete(system=system, messages=messages, max_tokens=1024)
+        # Run blocking HTTP call in a thread so council members fire in parallel
+        resp = await _asyncio.to_thread(
+            provider.complete, system=system, messages=messages, max_tokens=1024
+        )
         raw_text = resp.content if hasattr(resp, "content") else str(resp)
         # Find JSON in the response
         start = raw_text.find("{")

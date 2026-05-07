@@ -31,8 +31,7 @@ from src.venues.models import (
 
 class CcxtVenue(Venue):
     name = "ccxt"
-    # asset_class set dynamically per symbol; default to spot
-    asset_class = "crypto_spot"
+    asset_class = "crypto_spot"  # overridden in __init__ based on CCXT_MARKET env
 
     def __init__(self, exchange_name: str | None = None):
         try:
@@ -65,6 +64,15 @@ class CcxtVenue(Venue):
                 logging.warning("CCXT %s does not support sandbox mode: %s", exchange_id, e)
         self.exchange_id = exchange_id
         self.name = f"ccxt:{exchange_id}"
+
+        # Detect whether this instance handles perps or spot so the RiskManager
+        # loads the correct risk.yaml override block.  CCXT_MARKET=futures (or
+        # "perpetual") means perps; anything else (or unset) means spot.
+        _market = (os.environ.get("CCXT_MARKET") or CONFIG.get("ccxt_market") or "spot").lower()
+        if _market in ("futures", "perpetual", "perp", "swap"):
+            self.asset_class = "crypto_perp"
+        else:
+            self.asset_class = "crypto_spot"
 
     # CCXT's sync calls wrapped in to_thread keep the adapter async-compatible.
     async def _call(self, fn, *args, **kwargs):

@@ -23,7 +23,7 @@ from src.venues.models import (
     AssetClass, Balance, Candle, Order, Position, SymbolMeta, Ticker,
 )
 
-logger = logging.getLogger("qunta.venues.ibkr")
+logger = logging.getLogger("quantatraderai.venues.ibkr")
 
 _TF_MAP = {
     "1m": "1 min", "5m": "5 mins", "15m": "15 mins", "30m": "30 mins",

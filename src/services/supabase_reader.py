@@ -10,7 +10,7 @@ import logging
 import os
 from typing import Any
 
-logger = logging.getLogger("qunta.db")
+logger = logging.getLogger("quantatraderai.db")
 
 _DB_TIMEOUT = 10
 

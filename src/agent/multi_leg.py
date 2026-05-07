@@ -18,7 +18,7 @@ import logging
 import re
 from typing import Any
 
-logger = logging.getLogger("qunta.multi_leg")
+logger = logging.getLogger("quantatraderai.multi_leg")
 
 
 def _parse_condition(text: str, indicators: dict[str, Any]) -> bool:

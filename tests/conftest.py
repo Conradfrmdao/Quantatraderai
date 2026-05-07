@@ -1,4 +1,4 @@
-"""Shared fixtures for QuntaTradeAI test suite.
+"""Shared fixtures for QuantatraderAI test suite.
 
 Provides:
   - base_candles       — 20 synthetic OHLCV candles

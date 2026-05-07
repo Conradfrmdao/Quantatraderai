@@ -48,7 +48,7 @@ const Tip = ({ children }: { children: React.ReactNode }) => (
 );
 
 const TOC = [
-  { id: "how-it-works",  label: "How QuntaTradeAI Works" },
+  { id: "how-it-works",  label: "How QuantatraderAI Works" },
   { id: "ai-council",    label: "The AI Council" },
   { id: "venues",        label: "Supported Venues" },
   { id: "quickstart",   label: "Getting Started" },
@@ -103,7 +103,7 @@ export default function DocsPage() {
           <div style={{ marginBottom: 52 }}>
             <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)" }}>Documentation</span>
             <h1 style={{ fontSize: "clamp(26px, 4vw, 38px)", fontWeight: 800, letterSpacing: "-0.03em", marginTop: 8, marginBottom: 10 }}>
-              QuntaTradeAI Docs
+              QuantatraderAI Docs
             </h1>
             <p style={{ fontSize: 15, color: "rgba(255,255,255,0.38)", lineHeight: 1.6 }}>
               Everything you need to connect your exchange, configure risk, and let the AI trade on your behalf — no technical background required.
@@ -111,9 +111,9 @@ export default function DocsPage() {
           </div>
 
           {/* ── How it works ── */}
-          <Section id="how-it-works" title="How QuntaTradeAI Works">
+          <Section id="how-it-works" title="How QuantatraderAI Works">
             <P>
-              QuntaTradeAI is a fully autonomous trading agent that connects to your exchange accounts
+              QuantatraderAI is a fully autonomous trading agent that connects to your exchange accounts
               and trades on your behalf around the clock. Every few minutes the system:
             </P>
             <ul style={{ listStyle: "none", marginBottom: 16 }}>
@@ -132,7 +132,7 @@ export default function DocsPage() {
           {/* ── AI Council ── */}
           <Section id="ai-council" title="The AI Council — Collective Intelligence">
             <P>
-              Most AI trading tools rely on a single model. QuntaTradeAI uses a{" "}
+              Most AI trading tools rely on a single model. QuantatraderAI uses a{" "}
               <strong style={{ color: "rgba(255,255,255,0.7)" }}>multi-model consensus architecture</strong>.
               Several independent AI agents, each with different training data and reasoning styles,
               analyse the same market snapshot simultaneously and vote on what to do.
@@ -233,7 +233,7 @@ export default function DocsPage() {
           {/* ── Connect venues ── */}
           <Section id="connect" title="Connecting Your Exchange — API Key Guide">
             <P>
-              QuntaTradeAI connects to exchanges via API keys. You always stay in control — the agent can
+              QuantatraderAI connects to exchanges via API keys. You always stay in control — the agent can
               only place and close orders, <strong style={{ color: "rgba(255,255,255,0.7)" }}>never withdraw funds</strong>.
               Follow the guide for your exchange:
             </P>
@@ -301,9 +301,9 @@ export default function DocsPage() {
                   "Log in to TWS / IB Gateway and go to Edit → Global Configuration → API → Settings.",
                   "Enable 'ActiveX and Socket Clients'. Note the port (default 7497 for paper, 7496 for live).",
                   "Set 'Client ID' to 0 or any unique number (used to identify the app connection).",
-                  "In QuntaTradeAI Settings → Connected Venues, add IBKR and set host (127.0.0.1), port, and client ID.",
+                  "In QuantatraderAI Settings → Connected Venues, add IBKR and set host (127.0.0.1), port, and client ID.",
                 ],
-                tip: "IBKR requires TWS or IB Gateway to be running on the same machine as the QuntaTradeAI backend. It is not compatible with cloud-only deployments. Use IB Gateway (lighter than TWS) for server use.",
+                tip: "IBKR requires TWS or IB Gateway to be running on the same machine as the QuantatraderAI backend. It is not compatible with cloud-only deployments. Use IB Gateway (lighter than TWS) for server use.",
               },
               {
                 name: "Polymarket (Prediction Markets)",
@@ -377,7 +377,7 @@ export default function DocsPage() {
           <Section id="paper" title="Paper Trading — Test Without Risk">
             <P>
               <strong style={{ color: "rgba(255,255,255,0.7)" }}>
-                QuntaTradeAI lets you run the full system — live AI council, real market data, real signals —
+                QuantatraderAI lets you run the full system — live AI council, real market data, real signals —
                 without risking any money.
               </strong>{" "}
               In paper trading mode, every decision is logged and simulated positions are tracked on the
@@ -421,7 +421,7 @@ export default function DocsPage() {
           <Section id="faq" title="FAQ">
             {[
               {
-                q: "Do I need any technical knowledge to use QuntaTradeAI?",
+                q: "Do I need any technical knowledge to use QuantatraderAI?",
                 a: "No. Setup takes about 5 minutes — create an account, connect your exchange API key, and click Start Agent. Everything else is automatic.",
               },
               {
@@ -450,7 +450,7 @@ export default function DocsPage() {
               },
               {
                 q: "What is the minimum amount I need to start?",
-                a: "There is no minimum set by QuntaTradeAI. Each exchange has its own minimum order size (typically $10–$50 per trade). With a 3% max position size, you would need at least $300–$1,000 to place a meaningful first trade.",
+                a: "There is no minimum set by QuantatraderAI. Each exchange has its own minimum order size (typically $10–$50 per trade). With a 3% max position size, you would need at least $300–$1,000 to place a meaningful first trade.",
               },
             ].map(({ q, a }) => (
               <div key={q} style={{ marginBottom: 24, paddingBottom: 24, borderBottom: "1px solid rgba(255,255,255,0.05)" }}>

@@ -1,6 +1,6 @@
-# QuntaTradeAI — Complete Product Guide
+# QuantatraderAI — Complete Product Guide
 
-> **What is QuntaTradeAI?**
+> **What is QuantatraderAI?**
 > An autonomous AI trading agent that monitors financial markets 24/7, analyses
 > live data, makes buy/sell decisions using multiple AI models, and executes trades
 > on your connected exchange — all automatically, while you sleep.
@@ -40,7 +40,7 @@ You watch everything happen in real time on the dashboard.
 ### The full flow
 
 ```
-You                          QuntaTradeAI                    Exchange
+You                          QuantatraderAI                    Exchange
 ──────                       ────────────                    ────────
 Connect Binance API key  →   Encrypts & stores key (AES-256)
 Set persona: Momentum   →   Loads Momentum Hunter risk profile
@@ -148,7 +148,7 @@ because one provider is down.
 
 ## 4. Supported Exchanges
 
-QuntaTradeAI connects to your exchange using an **API key** — a read/trade key
+QuantatraderAI connects to your exchange using an **API key** — a read/trade key
 that you generate in your exchange settings. We never ask for withdrawal access.
 
 | Exchange | Asset class | Notes |
@@ -632,5 +632,5 @@ Browser ──WSS───→ Python WebSocket server (real-time updates)
 
 ---
 
-*QuntaTradeAI — Not financial advice. Past performance does not guarantee future results.
+*QuantatraderAI — Not financial advice. Past performance does not guarantee future results.
 All trading involves risk. Start with paper trading.*

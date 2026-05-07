@@ -19,7 +19,7 @@ from src.venues.models import (
     AssetClass, Balance, Candle, Order, Position, SymbolMeta, Ticker,
 )
 
-logger = logging.getLogger("qunta.venues.alpaca")
+logger = logging.getLogger("quantatraderai.venues.alpaca")
 
 _TF_MAP = {
     "1m": "1Min", "5m": "5Min", "15m": "15Min", "30m": "30Min",

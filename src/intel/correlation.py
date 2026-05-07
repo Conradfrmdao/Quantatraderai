@@ -13,7 +13,7 @@ import logging
 import math
 from typing import Any
 
-logger = logging.getLogger("qunta.intel.correlation")
+logger = logging.getLogger("quantatraderai.intel.correlation")
 
 MAX_CORRELATION = 0.8   # above this, halve the allocation
 WINDOW          = 30    # bars for rolling correlation

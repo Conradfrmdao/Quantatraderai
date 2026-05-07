@@ -27,7 +27,7 @@ import logging
 import os
 from typing import Any
 
-logger = logging.getLogger("qunta.memory.rag")
+logger = logging.getLogger("quantatraderai.memory.rag")
 
 _EMBED_DIM = 1536   # text-embedding-3-small
 _TOP_K     = 5

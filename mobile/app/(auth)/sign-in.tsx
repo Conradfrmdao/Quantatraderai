@@ -28,7 +28,7 @@ export default function SignInScreen() {
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={s.root}>
-      <Text style={s.logo}>QuntaTradeAI</Text>
+      <Text style={s.logo}>QuantatraderAI</Text>
       <Text style={s.sub}>AI-powered trading platform</Text>
       <TextInput style={s.input} placeholder="Email" placeholderTextColor="#555" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
       <TextInput style={s.input} placeholder="Password" placeholderTextColor="#555" value={password} onChangeText={setPassword} secureTextEntry />

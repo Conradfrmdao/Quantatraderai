@@ -52,7 +52,7 @@ def test_wrong_encryption_key_cannot_decrypt(monkeypatch):
 def test_inject_venue_env_does_not_log_keys(mock_env, caplog):
     """_inject_venue_env sets os.environ but must not log the actual key value."""
     from src.server import _inject_venue_env
-    with caplog.at_level(logging.DEBUG, logger="qunta"):
+    with caplog.at_level(logging.DEBUG, logger="quantatrader"):
         _inject_venue_env(
             "binance", "futures", True,
             _FAKE_BINANCE_KEY, _FAKE_BINANCE_SECRET,

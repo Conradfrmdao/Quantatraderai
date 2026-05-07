@@ -7,7 +7,7 @@
 const IS_PROD = process.env.NODE_ENV === "production";
 
 const REQUIRED_PROD: { key: string; hint: string }[] = [
-  { key: "NEXT_PUBLIC_APP_URL",   hint: "Set to your public domain, e.g. https://quntatradeai.com" },
+  { key: "NEXT_PUBLIC_APP_URL",   hint: "Set to your public domain, e.g. https://quantatraderai.com" },
   { key: "STRIPE_SECRET_KEY",     hint: "Get from stripe.com → Developers → API keys" },
   { key: "STRIPE_WEBHOOK_SECRET", hint: "Get from stripe.com → Webhooks → your endpoint → Signing secret" },
   { key: "STRIPE_PRICE_STARTER",  hint: "Get from stripe.com → Products → Starter price ID" },

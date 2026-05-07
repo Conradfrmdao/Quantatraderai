@@ -1,6 +1,6 @@
-# QuntaTradeAI — Implementation Plan
+# QuantatraderAI — Implementation Plan
 
-> Full implementation of `qunta_godmode_warroom.html`.
+> Full implementation of `quantatrader_godmode_warroom.html`.
 > **Payments/Stripe is the LAST phase** as requested.
 > Phases are ordered by dependency + risk (close known holes first, then compound).
 
@@ -324,7 +324,7 @@ If a phase is too large for one sitting, I'll split it and checkpoint mid-way.
 
 ### 9.2 White-label
 - Env-driven theming in [ui/app/globals.css](ui/app/globals.css) (custom CSS variable values per tenant).
-- Subdomain routing middleware: `tenant1.qunta.ai` → loads tenant config from DB.
+- Subdomain routing middleware: `tenant1.quantatraderai.com` → loads tenant config from DB.
 - Custom logo upload in admin panel.
 
 **Deliverable:** Copy trading works. Enterprise customers get subdomain + branded UI.

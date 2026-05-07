@@ -21,16 +21,30 @@ const EVENT_COLOR: Record<string, string> = {
   circuit_breaker: "#fbbf24",
 };
 
+function escapeCsvField(value: string): string {
+  if (value.includes('"') || value.includes(",") || value.includes("\n")) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 function exportCsv(logs: AuditEntry[]) {
   const header = "Date,Event,Symbol,Action,Data";
-  const rows   = logs.map(l =>
-    [new Date(l.createdAt).toISOString(), l.event, l.symbol ?? "", l.action ?? "",
-      JSON.stringify(JSON.parse(l.data || "{}")).replace(/,/g, ";")].join(",")
-  );
+  const rows = logs.map(l => {
+    let dataStr = "";
+    try { dataStr = JSON.stringify(JSON.parse(l.data || "{}")); } catch { dataStr = l.data ?? ""; }
+    return [
+      new Date(l.createdAt).toISOString(),
+      l.event,
+      l.symbol ?? "",
+      l.action ?? "",
+      escapeCsvField(dataStr),
+    ].join(",");
+  });
   const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement("a"); a.href = url;
-  a.download = `qunta_audit_${Date.now()}.csv`; a.click();
+  a.download = `quantatrader_audit_${Date.now()}.csv`; a.click();
   URL.revokeObjectURL(url);
 }
 
@@ -95,16 +109,29 @@ export default function AuditPage() {
           <span style={{ fontSize: 11, color: "var(--muted)" }}>immutable · append-only</span>
         </div>
 
-        <div style={{ marginBottom: 18 }}>
-          <select value={filter} onChange={e => setFilter(e.target.value)} style={{
-            padding: "8px 12px", borderRadius: 8, fontSize: 12,
-            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-            color: "#fff", outline: "none", appearance: "none" }}>
+        <div style={{ marginBottom: 18, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {/* Event-type dropdown: server-side reload with pagination reset */}
+          <select
+            value={eventFilter}
+            onChange={e => { setEventFilter(e.target.value); setPage(0); setLogs([]); }}
+            style={{
+              padding: "8px 12px", borderRadius: 8, fontSize: 12,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              color: "#fff", outline: "none", appearance: "none" }}>
             <option value="">All events</option>
-            {["decision","order","risk_block","agent_start","agent_stop","kill_switch"].map(e => (
-              <option key={e} value={e}>{e.replace("_"," ")}</option>
+            {["decision","order","risk_block","agent_start","agent_stop","kill_switch","force_close"].map(e => (
+              <option key={e} value={e}>{e.replace(/_/g, " ")}</option>
             ))}
           </select>
+          {/* Free-text search over loaded rows */}
+          <input
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Search symbol / action…"
+            style={{
+              padding: "8px 12px", borderRadius: 8, fontSize: 12,
+              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+              color: "#fff", outline: "none", minWidth: 180 }} />
         </div>
 
         <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} style={{ overflowX: "auto" }}>

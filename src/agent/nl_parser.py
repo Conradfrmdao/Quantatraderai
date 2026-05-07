@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger("qunta.agent.nl_parser")
+logger = logging.getLogger("quantatraderai.agent.nl_parser")
 
 
 @dataclass

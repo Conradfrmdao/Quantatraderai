@@ -16,7 +16,7 @@ from pathlib import Path
 from src.venues.models import Candle
 from src.venues.registry import get_venue
 
-CACHE_DIR = Path(os.environ.get("QUNTA_BACKTEST_CACHE", ".backtest_cache"))
+CACHE_DIR = Path(os.environ.get("QUANTATRADER_BACKTEST_CACHE", ".backtest_cache"))
 
 
 def _cache_path(venue: str, symbol: str, timeframe: str, lookback: int) -> Path:

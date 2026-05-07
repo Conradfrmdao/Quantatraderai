@@ -97,16 +97,20 @@ class BinanceVenue(Venue):
             self.asset_class = "crypto_spot"
             self.name = "binance:spot"
 
-        # Paper trading is simulated entirely in the agent tick loop —
-        # we use the LIVE Binance endpoint for read-only price/balance data
-        # regardless of paper mode. Never set sandbox mode:
-        #   - Futures testnet was deprecated by Binance in 2024
-        #   - Spot testnet requires separate testnet API keys (not your live keys)
-        # Setting sandbox mode causes -2008 "Invalid API key" on both endpoints.
+        # Paper trading: use live endpoint for read-only price/balance data.
+        # Real order placement is blocked at the venue level when is_paper=True —
+        # server.py also guards this, but double-gating here prevents accidents
+        # when BinanceVenue is used outside the server (scripts, tests, etc.).
+        #
+        # Do NOT call client.set_sandbox_mode():
+        #   - Futures testnet (testnet.binancefuture.com) requires separate testnet keys
+        #   - Spot testnet requires separate testnet keys
+        # Setting sandbox mode with live keys causes -2008 "Invalid API key".
+        self.is_paper = sandbox
         if sandbox:
             logging.info(
-                "Binance %s paper mode: using live endpoint for price data. "
-                "Trade execution is simulated locally (no real orders placed).", market
+                "Binance %s paper mode: price data from live endpoint; "
+                "place_order() is a no-op (no real orders will be sent).", market
             )
 
     # ---- helpers --------------------------------------------------------
@@ -218,6 +222,25 @@ class BinanceVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        if self.is_paper:
+            logging.info(
+                "Binance PAPER: simulated %s %s qty=%s price=%s (no real order sent)",
+                side.upper(), symbol, quantity, price,
+            )
+            return Order(
+                order_id="paper",
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                status="filled",
+                filled_quantity=quantity,
+                avg_fill_price=price,
+            )
+
         # Set leverage on futures before placing
         if self._market == "futures" and leverage and self.client.has.get("setLeverage"):
             try:
@@ -258,6 +281,17 @@ class BinanceVenue(Venue):
             return False
 
     async def close_position(self, symbol: str, quantity: float | None = None) -> Order | None:
+        if self.is_paper:
+            logging.info("Binance PAPER: simulated close_position %s qty=%s", symbol, quantity)
+            return Order(
+                order_id="paper",
+                symbol=symbol,
+                side="sell",
+                order_type="market",
+                quantity=quantity or 0,
+                status="filled",
+                filled_quantity=quantity or 0,
+            )
         if self._market == "spot":
             # Spot: check balance and sell
             bal = await self.get_balances()

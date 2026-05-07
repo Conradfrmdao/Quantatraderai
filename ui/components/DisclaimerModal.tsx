@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Shield, AlertTriangle, X } from "lucide-react";
 
-const STORAGE_KEY = "qunta_risk_ack_v1";
+const STORAGE_KEY = "quantatrader_risk_ack_v1";
 
 interface Props {
   onAccept?: () => void;
@@ -70,7 +70,7 @@ export function DisclaimerModal({ onAccept }: Props) {
                   Important Risk Disclosure
                 </h2>
                 <p style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 1.5 }}>
-                  Please read carefully before using QuntaTradeAI
+                  Please read carefully before using QuantatraderAI
                 </p>
               </div>
             </div>
@@ -82,7 +82,7 @@ export function DisclaimerModal({ onAccept }: Props) {
               fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.7,
             }}>
               <p style={{ marginBottom: 10 }}>
-                QuntaTradeAI is an <strong style={{ color: "rgba(255,255,255,0.7)" }}>automated AI trading tool</strong>,
+                QuantatraderAI is an <strong style={{ color: "rgba(255,255,255,0.7)" }}>automated AI trading tool</strong>,
                 not a financial advisor. Trading involves substantial risk of loss.
               </p>
               <p>

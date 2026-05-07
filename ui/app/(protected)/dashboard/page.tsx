@@ -152,10 +152,12 @@ export default function Dashboard() {
       if (ev.symbol?.toUpperCase() === symbol.toUpperCase()) setLivePrice(ev.price);
     }
     if (lastEvent.type === "account_update") {
-      account.set(lastEvent as unknown as AccountData);
+      const ev = lastEvent as { type: string; data?: AccountData };
+      if (ev.data) account.set(ev.data);
     }
     if (lastEvent.type === "positions_update") {
-      positions.set(lastEvent as unknown as PositionsData);
+      const ev = lastEvent as { type: string; data?: PositionsData };
+      if (ev.data) positions.set(ev.data);
     }
     if (lastEvent.type === "decision" || lastEvent.type === "decisions_update") {
       decisions.refresh();
@@ -204,7 +206,9 @@ export default function Dashboard() {
         const msg = (err as { error?: string }).error ?? `Failed (HTTP ${res.status})`;
         toast(msg, res.status === 402 ? "warning" : "error");
       } else {
+        const data = await res.json().catch(() => ({})) as { warning?: string };
         toast(`Agent started on ${VENUE_LABEL[venueType] ?? venueType}`, "success");
+        if (data.warning) toast(data.warning, "warning");
       }
       setTimeout(() => { status.refresh(); setAgentLoading(false); }, 1200);
     } catch {
@@ -262,9 +266,9 @@ export default function Dashboard() {
   // SECURITY: clear history immediately on user switch (no leakage between users)
   useEffect(() => { setEquityHistory([]); }, [sessionKey]);
   useEffect(() => {
-    if (!decisions.data?.decisions || !account.data?.equity) return;
+    if (!account.data?.equity) return;
     setEquityHistory((prev) => {
-      const point = { t: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), equity: account.data!.equity };
+      const point = { t: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), equity: account.data?.equity ?? 0 };
       return [...prev, point].slice(-40);
     });
   }, [decisions.data, account.data]);
@@ -295,7 +299,9 @@ export default function Dashboard() {
   const isUp     = (acc?.total_return_pct ?? 0) >= 0;
   const running  = status.data?.status === "running";
 
-  const displayPrice = livePrice ?? pos.find((p) => p.symbol === symbol)?.current_price;
+  // Normalise both sides: strip slashes and uppercase so "BTC/USDT", "BTCUSDT", "BTC" all match.
+  const _normSym = (s: string) => s.toUpperCase().replace(/[/\-_]/g, "");
+  const displayPrice = livePrice ?? pos.find((p) => _normSym(p.symbol) === _normSym(symbol))?.current_price;
 
   // M3: Backend connectivity check — banner shown if Python is unreachable
   // After the first poll completes, status.data should be populated. If it's still null

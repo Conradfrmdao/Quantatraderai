@@ -13,6 +13,7 @@ export interface StartConfig {
   isPaper:          boolean;
   venueName:        string;
   market:           string;
+  paperCapital:     number;
   minConfidencePct: number;
   maxDailyLossPct:  number;
   maxTradesPerDay:  number;
@@ -165,8 +166,11 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
             {/* Settings rows */}
             <Row icon={Shield}
               label="Mode"
-              value={config.isPaper ? "Paper (simulated)" : "Live trading"}
-              color={config.isPaper ? "#4ade80" : "#ef4444"} />
+              value={config.isPaper
+                ? `Paper — $${config.paperCapital.toLocaleString()} simulated`
+                : "Live trading — real money"}
+              color={config.isPaper ? "#4ade80" : "#ef4444"}
+              sub={config.isPaper ? "No real money at risk" : undefined} />
 
             <Row icon={TrendingUp}
               label="Venue"
@@ -219,7 +223,7 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
             </div>
             <p style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", lineHeight: 1.6 }}>
               {isLive
-                ? "I understand that automated trading involves risk, that I may lose money, and that I am solely responsible for all trading decisions made by QuntaTradeAI on my behalf."
+                ? "I understand that automated trading involves risk, that I may lose money, and that I am solely responsible for all trading decisions made by QuantatraderAI on my behalf."
                 : "I understand this agent will place simulated trades and I am reviewing the settings above."}
             </p>
           </motion.label>

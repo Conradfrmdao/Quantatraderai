@@ -53,7 +53,7 @@ export default function DashboardScreen() {
     <ScrollView style={s.root} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}>
       {/* Header */}
       <View style={s.header}>
-        <Text style={s.logo}>QuntaTradeAI</Text>
+        <Text style={s.logo}>QuantatraderAI</Text>
         <TouchableOpacity onPress={() => signOut().then(() => router.replace("/(auth)/sign-in"))}>
           <Text style={s.signOut}>Sign out</Text>
         </TouchableOpacity>

@@ -63,8 +63,8 @@ class OpenRouterProvider(LLMProvider):
                 f"{_BASE_URL}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
-                    "HTTP-Referer": "https://github.com/QuntaTradeAI",
-                    "X-Title": "QuntaTradeAI",
+                    "HTTP-Referer": "https://github.com/QuantatraderAI",
+                    "X-Title": "QuantatraderAI",
                 },
                 json=payload,
                 timeout=60,

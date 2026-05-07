@@ -7,7 +7,8 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from src.agent.decision_maker import TradingAgent
 from src.indicators.local_indicators import compute_all, last_n, latest
 from src.risk_manager import RiskManager
-from src.trading.hyperliquid_api import HyperliquidAPI
+from src.venues.registry import get_venue
+from src.venues.crypto.hyperliquid import HyperliquidVenue as _HLVenue
 import asyncio
 import logging
 from collections import deque, OrderedDict
@@ -23,6 +24,12 @@ from src.utils.prompt_utils import json_default, round_or_none, round_series
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Resolve the project root regardless of working directory so log files always
+# land in the same place whether launched via CLI, Docker, or IDE.
+_PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+_LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(_PROJECT_ROOT / "logs")))
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def clear_terminal():
@@ -45,8 +52,8 @@ def main():
     """Parse CLI args, bootstrap dependencies, and launch the trading loop."""
     clear_terminal()
     parser = argparse.ArgumentParser(
-        prog="qunta",
-        description="QuntaTradeAI — Claude-powered multi-venue AI trading agent.",
+        prog="quantatrader",
+        description="QuantatraderAI — Claude-powered multi-venue AI trading agent.",
     )
     parser.add_argument("--venue", type=str, default=None,
                         help="hyperliquid (default) | ccxt[:<exchange>] | oanda. "
@@ -72,9 +79,20 @@ def main():
     if not args.assets or not args.interval:
         parser.error("Please provide --assets and --interval, or set ASSETS and INTERVAL in .env")
 
-    hyperliquid = HyperliquidAPI()
-    agent = TradingAgent(hyperliquid=hyperliquid)
-    risk_mgr = RiskManager()
+    venue_name = (args.venue or CONFIG.get("venue") or "hyperliquid").lower()
+    venue = get_venue(venue_name)
+    # _hl_api: HyperliquidAPI handle for HL-specific features (OI, funding, fills,
+    # TP/SL trigger orders, open orders).  None for non-Hyperliquid venues.
+    _hl_api = venue.api if isinstance(venue, _HLVenue) else None
+    # Legacy alias so HL-specific code blocks below stay readable
+    hyperliquid = _hl_api
+
+    agent   = TradingAgent(hyperliquid=_hl_api)
+    risk_mgr = RiskManager(
+        venue=venue_name.split(":")[0],
+        asset_class=venue.asset_class,
+    )
+    print(f"Venue: {venue.name}  asset_class: {venue.asset_class}")
 
 
     start_time = datetime.now(timezone.utc)
@@ -82,7 +100,9 @@ def main():
     trade_log = []  # For Sharpe: list of returns
     active_trades = []  # {'asset','is_long','amount','entry_price','tp_oid','sl_oid','exit_plan'}
     recent_events = deque(maxlen=200)
-    diary_path = "diary.jsonl"
+    diary_path      = str(_LOG_DIR / "diary.jsonl")
+    decisions_path  = str(_LOG_DIR / "decisions.jsonl")
+    prompts_path    = str(_LOG_DIR / "prompts.log")
     initial_account_value = None
     # Perp mid-price history sampled each loop (authoritative, avoids spot/perp basis mismatch)
     price_history = {}
@@ -97,63 +117,79 @@ def main():
         """Main trading loop that gathers data, calls the agent, and executes trades."""
         nonlocal invocation_count, initial_account_value
 
-        # Pre-load meta cache for correct order sizing
-        await hyperliquid.get_meta_and_ctxs()
-        # Pre-load HIP-3 dex meta for any dex:asset in the asset list
-        hip3_dexes = set()
-        for a in args.assets:
-            if ":" in a:
-                hip3_dexes.add(a.split(":")[0])
-        for dex in hip3_dexes:
-            await hyperliquid.get_meta_and_ctxs(dex=dex)
-            add_event(f"Loaded HIP-3 meta for dex: {dex}")
+        # Pre-load Hyperliquid meta cache for correct order sizing (HL-only)
+        if _hl_api:
+            await _hl_api.get_meta_and_ctxs()
+            hip3_dexes = {a.split(":")[0] for a in args.assets if ":" in a}
+            for dex in hip3_dexes:
+                await _hl_api.get_meta_and_ctxs(dex=dex)
+                add_event(f"Loaded HIP-3 meta for dex: {dex}")
 
         while True:
             invocation_count += 1
             minutes_since_start = (datetime.now(timezone.utc) - start_time).total_seconds() / 60
 
-            # Global account state
-            state = await hyperliquid.get_user_state()
-            total_value = state.get('total_value') or state['balance'] + sum(p.get('pnl', 0) for p in state['positions'])
-            sharpe = calculate_sharpe(trade_log)
+            # Global account state — use Venue abstraction (works for all venues)
+            _balances  = await venue.get_balances()
+            _positions = await venue.get_positions()
+            balance = next(
+                (b.available for b in _balances if b.currency in ("USDC","USDT","USD","BUSD")),
+                sum(b.total for b in _balances) if _balances else 0.0,
+            )
+            pnl_total  = sum(p.unrealized_pnl for p in _positions)
+            total_value = balance + pnl_total
 
+            # Build a normalized state dict that RiskManager.validate_trade expects
+            state = {
+                "total_value": total_value,
+                "balance": balance,
+                "positions": [
+                    {
+                        "symbol":        p.symbol,
+                        "quantity":      p.quantity,
+                        "entry_price":   p.entry_price,
+                        "unrealized_pnl": p.unrealized_pnl,
+                        "leverage":      p.leverage,
+                    }
+                    for p in _positions
+                ],
+                "min_order_usd": 11.0,
+            }
+
+            sharpe = calculate_sharpe(trade_log)
             account_value = total_value
             if initial_account_value is None:
                 initial_account_value = account_value
             total_return_pct = ((account_value - initial_account_value) / initial_account_value * 100.0) if initial_account_value else 0.0
 
             positions = []
-            for pos_wrap in state['positions']:
-                pos = pos_wrap
-                coin = pos.get('coin')
-                current_px = await hyperliquid.get_current_price(coin) if coin else None
+            for p in _positions:
+                try:
+                    ticker   = await venue.get_ticker(p.symbol)
+                    current_px = ticker.last
+                except Exception:
+                    current_px = p.entry_price
                 positions.append({
-                    "symbol": coin,
-                    "quantity": round_or_none(pos.get('szi'), 6),
-                    "entry_price": round_or_none(pos.get('entryPx'), 2),
-                    "current_price": round_or_none(current_px, 2),
-                    "liquidation_price": round_or_none(pos.get('liquidationPx') or pos.get('liqPx'), 2),
-                    "unrealized_pnl": round_or_none(pos.get('pnl'), 4),
-                    "leverage": pos.get('leverage')
+                    "symbol":            p.symbol,
+                    "quantity":          round_or_none(p.quantity, 6),
+                    "entry_price":       round_or_none(p.entry_price, 2),
+                    "current_price":     round_or_none(current_px, 2),
+                    "liquidation_price": round_or_none(p.liquidation_price, 2),
+                    "unrealized_pnl":    round_or_none(p.unrealized_pnl, 4),
+                    "leverage":          p.leverage,
                 })
 
             # --- RISK: Force-close positions that exceed max loss ---
             try:
-                positions_to_close = risk_mgr.check_losing_positions(state['positions'])
+                positions_to_close = risk_mgr.check_losing_positions(state["positions"])
                 for ptc in positions_to_close:
                     coin = ptc["coin"]
                     size = ptc["size"]
-                    is_long = ptc["is_long"]
                     add_event(f"RISK FORCE-CLOSE: {coin} at {ptc['loss_pct']}% loss (PnL: ${ptc['pnl']})")
                     try:
-                        if is_long:
-                            await hyperliquid.place_sell_order(coin, size)
-                        else:
-                            await hyperliquid.place_buy_order(coin, size)
-                        await hyperliquid.cancel_all_orders(coin)
-                        # Remove from active trades
+                        await venue.close_position(coin, size)
                         for tr in active_trades[:]:
-                            if tr.get('asset') == coin:
+                            if tr.get("asset") == coin:
                                 active_trades.remove(tr)
                         with open(diary_path, "a") as f:
                             f.write(json.dumps({
@@ -178,34 +214,34 @@ def main():
             except Exception:
                 pass
 
+            # Open orders — Hyperliquid only (other venues expose this differently)
             open_orders_struct = []
-            try:
-                open_orders = await hyperliquid.get_open_orders()
-                for o in open_orders[:50]:
-                    open_orders_struct.append({
-                        "coin": o.get('coin'),
-                        "oid": o.get('oid'),
-                        "is_buy": o.get('isBuy'),
-                        "size": round_or_none(o.get('sz'), 6),
-                        "price": round_or_none(o.get('px'), 2),
-                        "trigger_price": round_or_none(o.get('triggerPx'), 2),
-                        "order_type": o.get('orderType')
-                    })
-            except Exception:
-                open_orders = []
+            open_orders: list = []
+            if _hl_api:
+                try:
+                    open_orders = await _hl_api.get_open_orders()
+                    for o in open_orders[:50]:
+                        open_orders_struct.append({
+                            "coin": o.get("coin"),
+                            "oid": o.get("oid"),
+                            "is_buy": o.get("isBuy"),
+                            "size": round_or_none(o.get("sz"), 6),
+                            "price": round_or_none(o.get("px"), 2),
+                            "trigger_price": round_or_none(o.get("triggerPx"), 2),
+                            "order_type": o.get("orderType"),
+                        })
+                except Exception:
+                    open_orders = []
 
-            # Reconcile active trades
+            # Reconcile active trades against live positions
             try:
-                assets_with_positions = set()
-                for pos in state['positions']:
-                    try:
-                        if abs(float(pos.get('szi') or 0)) > 0:
-                            assets_with_positions.add(pos.get('coin'))
-                    except Exception:
-                        continue
-                assets_with_orders = {o.get('coin') for o in (open_orders or []) if o.get('coin')}
+                assets_with_positions = {
+                    p["symbol"] for p in state["positions"]
+                    if abs(float(p.get("quantity") or 0)) > 0
+                }
+                assets_with_orders = {o.get("coin") for o in open_orders if o.get("coin")}
                 for tr in active_trades[:]:
-                    asset = tr.get('asset')
+                    asset = tr.get("asset")
                     if asset not in assets_with_positions and asset not in assets_with_orders:
                         add_event(f"Reconciling stale active trade for {asset} (no position, no orders)")
                         active_trades.remove(tr)
@@ -215,38 +251,40 @@ def main():
                                 "asset": asset,
                                 "action": "reconcile_close",
                                 "reason": "no_position_no_orders",
-                                "opened_at": tr.get('opened_at')
+                                "opened_at": tr.get("opened_at"),
                             }) + "\n")
             except Exception:
                 pass
 
+            # Recent fills — Hyperliquid only
             recent_fills_struct = []
-            try:
-                fills = await hyperliquid.get_recent_fills(limit=50)
-                for f_entry in fills[-20:]:
-                    try:
-                        t_raw = f_entry.get('time') or f_entry.get('timestamp')
-                        timestamp = None
-                        if t_raw is not None:
-                            try:
-                                t_int = int(t_raw)
-                                if t_int > 1e12:
-                                    timestamp = datetime.fromtimestamp(t_int / 1000, tz=timezone.utc).isoformat()
-                                else:
-                                    timestamp = datetime.fromtimestamp(t_int, tz=timezone.utc).isoformat()
-                            except Exception:
-                                timestamp = str(t_raw)
-                        recent_fills_struct.append({
-                            "timestamp": timestamp,
-                            "coin": f_entry.get('coin') or f_entry.get('asset'),
-                            "is_buy": f_entry.get('isBuy'),
-                            "size": round_or_none(f_entry.get('sz') or f_entry.get('size'), 6),
-                            "price": round_or_none(f_entry.get('px') or f_entry.get('price'), 2)
-                        })
-                    except Exception:
-                        continue
-            except Exception:
-                pass
+            if _hl_api:
+                try:
+                    fills = await _hl_api.get_recent_fills(limit=50)
+                    for f_entry in fills[-20:]:
+                        try:
+                            t_raw = f_entry.get("time") or f_entry.get("timestamp")
+                            timestamp = None
+                            if t_raw is not None:
+                                try:
+                                    t_int = int(t_raw)
+                                    timestamp = datetime.fromtimestamp(
+                                        t_int / 1000 if t_int > 1e12 else t_int,
+                                        tz=timezone.utc,
+                                    ).isoformat()
+                                except Exception:
+                                    timestamp = str(t_raw)
+                            recent_fills_struct.append({
+                                "timestamp": timestamp,
+                                "coin": f_entry.get("coin") or f_entry.get("asset"),
+                                "is_buy": f_entry.get("isBuy"),
+                                "size": round_or_none(f_entry.get("sz") or f_entry.get("size"), 6),
+                                "price": round_or_none(f_entry.get("px") or f_entry.get("price"), 2),
+                            })
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
 
             dashboard = {
                 "total_return_pct": round(total_return_pct, 2),
@@ -272,25 +310,51 @@ def main():
                 "recent_fills": recent_fills_struct,
             }
 
-            # Gather data for ALL assets first (using Hyperliquid candles + local indicators)
+            def _candles_to_dicts(candles) -> list[dict]:
+                """Convert Venue Candle objects OR raw HL dicts to compute_all format."""
+                result = []
+                for c in (candles or []):
+                    if hasattr(c, "close"):
+                        result.append({"open": c.open, "high": c.high, "low": c.low,
+                                       "close": c.close, "volume": c.volume})
+                    elif isinstance(c, dict):
+                        # Raw HL dicts use single-letter keys (o/h/l/c/v)
+                        result.append({
+                            "open":   float(c.get("open") or c.get("o") or 0),
+                            "high":   float(c.get("high") or c.get("h") or 0),
+                            "low":    float(c.get("low")  or c.get("l") or 0),
+                            "close":  float(c.get("close") or c.get("c") or 0),
+                            "volume": float(c.get("volume") or c.get("v") or 0),
+                        })
+                return result
+
+            # Gather data for ALL assets using Venue abstraction
             market_sections = []
             asset_prices = {}
             for asset in args.assets:
                 try:
-                    current_price = await hyperliquid.get_current_price(asset)
+                    ticker = await venue.get_ticker(asset)
+                    current_price = ticker.last or 0.0
                     asset_prices[asset] = current_price
                     if asset not in price_history:
                         price_history[asset] = deque(maxlen=60)
                     price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
-                    oi = await hyperliquid.get_open_interest(asset)
-                    funding = await hyperliquid.get_funding_rate(asset)
 
-                    # Fetch candles from Hyperliquid and compute indicators locally
-                    candles_5m = await hyperliquid.get_candles(asset, "5m", 100)
-                    candles_4h = await hyperliquid.get_candles(asset, "4h", 100)
+                    # OI + funding: Hyperliquid only
+                    oi = funding = None
+                    if _hl_api:
+                        try:
+                            oi      = await _hl_api.get_open_interest(asset)
+                            funding = await _hl_api.get_funding_rate(asset)
+                        except Exception:
+                            pass
+
+                    # Candles via Venue interface (works for all venues)
+                    candles_5m = _candles_to_dicts(await venue.get_candles(asset, "5m", 100))
+                    candles_4h = _candles_to_dicts(await venue.get_candles(asset, "4h", 100))
 
                     intra = compute_all(candles_5m)
-                    lt = compute_all(candles_4h)
+                    lt    = compute_all(candles_4h)
 
                     recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
                     funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
@@ -327,6 +391,25 @@ def main():
                     add_event(f"Data gather error {asset}: {e}")
                     continue
 
+            # Fetch macro sentiment (Fear & Greed + news) — enriches NEWS_REACTOR persona
+            # and gives all strategies a macro bias signal.  Failures are non-fatal.
+            macro_sentiment: dict = {}
+            try:
+                from src.intel.sentiment import get_fear_greed
+                fng = await get_fear_greed()
+                macro_sentiment["crypto_fear_greed"] = fng
+            except Exception as _sent_err:
+                add_event(f"Sentiment fetch error: {_sent_err}")
+
+            try:
+                from src.intel.news import get_news_sentiment
+                # Aggregate news for the first asset as a general market signal
+                _primary_asset = args.assets[0] if args.assets else "BTC"
+                news_data = await get_news_sentiment(_primary_asset, limit=5)
+                macro_sentiment["news_sentiment"] = news_data
+            except Exception as _news_err:
+                pass  # news is optional; don't log every failed call
+
             # Single LLM call with all assets
             context_payload = OrderedDict([
                 ("invocation", {
@@ -336,6 +419,7 @@ def main():
                 }),
                 ("account", dashboard),
                 ("risk_limits", risk_mgr.get_risk_summary()),
+                ("macro_sentiment", macro_sentiment),
                 ("market_data", market_sections),
                 ("instructions", {
                     "assets": args.assets,
@@ -344,7 +428,7 @@ def main():
             ])
             context = json.dumps(context_payload, default=json_default)
             add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
-            with open("prompts.log", "a") as f:
+            with open(prompts_path, "a") as f:
                 f.write(f"\n\n--- {datetime.now()} - ALL ASSETS ---\n{json.dumps(context_payload, indent=2, default=json_default)}\n")
 
             def _is_failed_outputs(outs):
@@ -417,7 +501,7 @@ def main():
                 "positions_count": len([p for p in state['positions'] if abs(float(p.get('szi') or 0)) > 0]),
             }
             try:
-                with open("decisions.jsonl", "a") as f:
+                with open(decisions_path, "a") as f:
                     f.write(json.dumps(cycle_log) + "\n")
             except Exception:
                 pass
@@ -461,44 +545,71 @@ def main():
                         alloc_usd = float(output.get("allocation_usd", alloc_usd))
                         amount = alloc_usd / current_price
 
-                        # Place market or limit order
-                        order_type = output.get("order_type", "market")
-                        limit_price = output.get("limit_price")
+                        # Place market or limit order via Venue abstraction
+                        order_type  = output.get("order_type", "market")
+                        limit_price = float(output["limit_price"]) if output.get("limit_price") else None
 
-                        if order_type == "limit" and limit_price:
-                            limit_price = float(limit_price)
-                            if is_buy:
-                                order = await hyperliquid.place_limit_buy(asset, amount, limit_price)
-                            else:
-                                order = await hyperliquid.place_limit_sell(asset, amount, limit_price)
-                            add_event(f"LIMIT {action.upper()} {asset} amount {amount:.4f} at limit ${limit_price}")
-                        else:
-                            order = await hyperliquid.place_buy_order(asset, amount) if is_buy else await hyperliquid.place_sell_order(asset, amount)
+                        order = await venue.place_order(
+                            symbol=asset,
+                            side="buy" if is_buy else "sell",
+                            quantity=amount,
+                            order_type=order_type,
+                            price=limit_price,
+                            stop_loss=output.get("sl_price"),   # atomic SL where venue supports it
+                            take_profit=output.get("tp_price"),  # atomic TP where venue supports it
+                        )
+                        if limit_price:
+                            add_event(f"LIMIT {action.upper()} {asset} qty={amount:.4f} @ ${limit_price}")
 
-                        # Confirm by checking recent fills for this asset shortly after placing
-                        await asyncio.sleep(1)
-                        fills_check = await hyperliquid.get_recent_fills(limit=10)
-                        filled = False
-                        for fc in reversed(fills_check):
+                        # HL-specific TP/SL trigger orders (placed BEFORE fill-check sleep
+                        # to eliminate the race window where the position has no protection).
+                        tp_oid = sl_oid = None
+                        if _hl_api:
+                            if output.get("tp_price"):
+                                try:
+                                    tp_order = await _hl_api.place_take_profit(asset, is_buy, amount, output["tp_price"])
+                                    _tp_oids = _hl_api.extract_oids(tp_order)
+                                    tp_oid = _tp_oids[0] if _tp_oids else None
+                                    add_event(f"TP placed {asset} at {output['tp_price']}")
+                                except Exception as _tp_err:
+                                    add_event(f"TP placement error {asset}: {_tp_err}")
+                            if output.get("sl_price"):
+                                try:
+                                    sl_order = await _hl_api.place_stop_loss(asset, is_buy, amount, output["sl_price"])
+                                    _sl_oids = _hl_api.extract_oids(sl_order)
+                                    sl_oid = _sl_oids[0] if _sl_oids else None
+                                    add_event(f"SL placed {asset} at {output['sl_price']}")
+                                except Exception as _sl_err:
+                                    add_event(f"SL placement error {asset}: {_sl_err}")
+
+                        # Confirm fill via recent fills (HL only; other venues use order.status)
+                        filled = getattr(order, "status", "") == "filled"
+                        if _hl_api and not filled:
+                            await asyncio.sleep(1)
                             try:
-                                if (fc.get('coin') == asset or fc.get('asset') == asset):
-                                    filled = True
-                                    break
+                                fills_check = await _hl_api.get_recent_fills(limit=10)
+                                for fc in reversed(fills_check):
+                                    if fc.get("coin") == asset or fc.get("asset") == asset:
+                                        filled = True
+                                        break
                             except Exception:
-                                continue
-                        trade_log.append({"type": action, "price": current_price, "amount": amount, "exit_plan": output["exit_plan"], "filled": filled})
-                        tp_oid = None
-                        sl_oid = None
-                        if output.get("tp_price"):
-                            tp_order = await hyperliquid.place_take_profit(asset, is_buy, amount, output["tp_price"])
-                            tp_oids = hyperliquid.extract_oids(tp_order)
-                            tp_oid = tp_oids[0] if tp_oids else None
-                            add_event(f"TP placed {asset} at {output['tp_price']}")
-                        if output.get("sl_price"):
-                            sl_order = await hyperliquid.place_stop_loss(asset, is_buy, amount, output["sl_price"])
-                            sl_oids = hyperliquid.extract_oids(sl_order)
-                            sl_oid = sl_oids[0] if sl_oids else None
-                            add_event(f"SL placed {asset} at {output['sl_price']}")
+                                pass
+
+                        # Realized PnL for Sharpe tracking
+                        _realized_pnl = None
+                        for _prior in active_trades:
+                            if _prior.get("asset") == asset and _prior.get("entry_price"):
+                                _pe = float(_prior["entry_price"])
+                                _pq = float(_prior.get("amount", 0))
+                                if _pq > 0 and _pe > 0:
+                                    _dir = 1 if _prior.get("is_long") else -1
+                                    _realized_pnl = round(_dir * _pq * (current_price - _pe), 4)
+                                break
+                        trade_log.append({
+                            "type": action, "price": current_price, "amount": amount,
+                            "exit_plan": output.get("exit_plan", ""), "filled": filled,
+                            "pnl": _realized_pnl,
+                        })
                         # Reconcile: if opposite-side position exists or TP/SL just filled, clear stale active_trades for this asset
                         for existing in active_trades[:]:
                             if existing.get('asset') == asset:
@@ -587,7 +698,7 @@ def main():
     async def handle_logs(request):
         """Stream log files with optional download or tailing behaviour."""
         try:
-            path = request.query.get('path', 'llm_requests.log')
+            path = request.query.get('path', str(_LOG_DIR / 'llm_requests.log'))
             download = request.query.get('download')
             limit_param = request.query.get('limit')
             if not os.path.exists(path):
@@ -604,9 +715,11 @@ def main():
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    _allowed_origin = os.environ.get("ALLOWED_ORIGINS", "").split(",")[0].strip() or "*"
+
     def _cors(response):
         """Add CORS headers so the Next.js UI can call the API."""
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Origin"] = _allowed_origin
         response.headers["Access-Control-Allow-Headers"] = "Content-Type"
         return response
 
@@ -720,11 +833,19 @@ def main():
         return ((current - initial) / initial) * 100 if initial else 0
 
     def calculate_sharpe(returns):
-        """Compute a naive Sharpe-like ratio from the trade log."""
+        """Compute a naive Sharpe-like ratio from the trade log.
+
+        Each entry in `returns` may carry a `pnl` key (set when a position closes)
+        or a `return_pct` key.  Entries without either are ignored so that open
+        trades don't dilute the ratio with zeros.
+        """
         if not returns:
             return 0
-        vals = [r.get('pnl', 0) if 'pnl' in r else 0 for r in returns]
-        if not vals:
+        vals = [
+            r["pnl"] for r in returns
+            if "pnl" in r and r["pnl"] is not None
+        ]
+        if len(vals) < 2:
             return 0
         mean = sum(vals) / len(vals)
         var = sum((v - mean) ** 2 for v in vals) / len(vals)

@@ -27,7 +27,7 @@ export function SignOutGuard() {
 
       // Wipe browser storage of any app data (Clerk's own keys are managed by Clerk)
       try {
-        const APP_KEYS = ["qt:", "QuntaTrade", "trading"];
+        const APP_KEYS = ["qt:", "QuantatraderAI", "trading"];
         const purge = (storage: Storage) => {
           for (let i = storage.length - 1; i >= 0; i--) {
             const k = storage.key(i);

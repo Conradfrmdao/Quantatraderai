@@ -65,8 +65,17 @@ function fmtSize(quantity: number, symbol: string, venueType?: string): string {
 
 function leverageStr(lev: Position["leverage"]) {
   if (!lev) return "—";
-  if (typeof lev === "number") return `${lev}×`;
-  return `${lev.value}×`;
+  if (typeof lev === "number") {
+    return isFinite(lev) && lev > 0 ? `${lev}×` : "—";
+  }
+  // Object form: { type: "ISOLATED" | "CROSS", value?: number }
+  const val = (lev as { type: string; value?: number }).value;
+  if (val == null || !isFinite(val)) {
+    // CROSS margin has no fixed leverage scalar — show type label instead
+    const t = (lev as { type: string }).type;
+    return t ? t.charAt(0).toUpperCase() + t.slice(1).toLowerCase() : "—";
+  }
+  return `${val}×`;
 }
 
 export function PositionsTable({

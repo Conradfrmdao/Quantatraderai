@@ -49,7 +49,7 @@ export async function GET(req: Request) {
       try {
         const r = await fetch(url, {
           signal: ctrl.signal,
-          headers: { "User-Agent": "Mozilla/5.0 (compatible; QuntaTradeAI/1.0)", "Accept": "application/json" },
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; QuantatraderAI/1.0)", "Accept": "application/json" },
           cache: "no-store",
         });
         clearTimeout(t);
