@@ -94,6 +94,62 @@ function LatestLogStrip({ msg }: { msg: string }) {
   );
 }
 
+// ── FOREX session indicator ───────────────────────────────────────────────────
+// Shows which trading sessions are currently open based on UTC time.
+// Sessions: Sydney 22-07, Tokyo 00-09, London 07-16, New York 12-21 (all UTC)
+const FX_SESSIONS = [
+  { name: "Tokyo",  open: 0,  close: 9,  color: "#f59e0b" },
+  { name: "London", open: 7,  close: 16, color: "#818cf8" },
+  { name: "NY",     open: 12, close: 21, color: "#4ade80" },
+  { name: "Sydney", open: 22, close: 31, color: "#38bdf8" }, // 22-07 UTC (31 = 07 next day)
+] as const;
+
+function isSessionOpen(openH: number, closeH: number, utcH: number): boolean {
+  // Handle overnight sessions (closeH > 24 means it wraps to next day)
+  if (closeH > 24) return utcH >= openH || utcH < (closeH - 24);
+  return utcH >= openH && utcH < closeH;
+}
+
+function ForexSessionChip() {
+  const [utcHour, setUtcHour] = useState(() => new Date().getUTCHours());
+  useEffect(() => {
+    const id = setInterval(() => setUtcHour(new Date().getUTCHours()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const open = FX_SESSIONS.filter(s => isSessionOpen(s.open, s.close, utcHour));
+  const isOverlap = open.some(s => s.name === "London") && open.some(s => s.name === "NY");
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <span style={{ fontSize: 9, color: "var(--muted)", fontWeight: 600,
+        textTransform: "uppercase", letterSpacing: "0.08em" }}>Sessions</span>
+      {FX_SESSIONS.map(s => {
+        const active = isSessionOpen(s.open, s.close, utcHour);
+        return (
+          <span key={s.name} style={{
+            fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
+            letterSpacing: "0.05em",
+            background: active ? `${s.color}18` : "rgba(255,255,255,0.03)",
+            border:     `1px solid ${active ? `${s.color}40` : "rgba(255,255,255,0.07)"}`,
+            color:      active ? s.color : "rgba(255,255,255,0.2)",
+            transition: "all 0.3s",
+          }}>
+            {s.name}
+          </span>
+        );
+      })}
+      {isOverlap && (
+        <span style={{ fontSize: 9, color: "#4ade80", fontWeight: 700,
+          background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.25)",
+          borderRadius: 4, padding: "2px 6px", letterSpacing: "0.05em" }}>
+          ⚡ Peak
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Calendar chip ─────────────────────────────────────────────────────────────
 function CalendarChip() {
   const [label, setLabel] = useState("");
@@ -117,7 +173,8 @@ function CalendarChip() {
 
 // ── Main StatusBar ────────────────────────────────────────────────────────────
 export function StatusBar({ data }: { data: StatusData | null }) {
-  const running = data?.status === "running";
+  const running   = data?.status === "running";
+  const isForex   = data?.venue === "oanda" || data?.venue === "metatrader";
 
   const PERSONA_LABELS: Record<string, string> = {
     MOMENTUM_HUNTER: "Momentum", SCALPER_AI: "Scalper",
@@ -171,6 +228,14 @@ export function StatusBar({ data }: { data: StatusData | null }) {
         )}
 
         <CalendarChip />
+
+        {/* FOREX session indicator — only shown for OANDA/MetaTrader venues */}
+        {isForex && (
+          <>
+            <div style={{ width: 1, height: 16, background: "var(--border)" }} />
+            <ForexSessionChip />
+          </>
+        )}
       </motion.div>
 
       {/* ── Bottom row: next tick countdown + latest log (only when running) */}

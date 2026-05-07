@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import math
 
-logger = logging.getLogger("qunta.correlation_hedge")
+logger = logging.getLogger("quantatraderai.correlation_hedge")
 
 # Hard-coded correlation buckets. 1.0 = same asset, ~0.8 = highly correlated.
 # In a future iteration replace with live rolling correlations from price data.
@@ -29,8 +29,11 @@ CORRELATION_GROUPS: list[set[str]] = [
     {"XAUUSD", "GC=F", "XAGUSD", "SI=F"},
     # Energy
     {"USOIL", "CL=F", "WTI"},
-    # EUR / USD-pairs
-    {"EURUSD", "EURUSD=X", "GBPUSD", "GBPUSD=X"},
+    # USD-positive pairs (long = long USD): USDCHF, USDJPY, USDCAD move together
+    {"USDCHF", "USD_CHF", "USDJPY", "USD_JPY", "USDCAD", "USD_CAD"},
+    # USD-negative pairs (long = short USD): EUR, GBP, AUD, NZD move together vs USD
+    {"EURUSD", "EUR_USD", "EURUSD=X", "GBPUSD", "GBP_USD", "GBPUSD=X",
+     "AUDUSD", "AUD_USD", "NZDUSD", "NZD_USD"},
 ]
 
 

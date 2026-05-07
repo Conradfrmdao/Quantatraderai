@@ -1,8 +1,8 @@
-# ── QuntaTradeAI — Python API Server ──────────────────────────────
+# ── QuantatraderAI — Python API Server ──────────────────────────────
 # Multi-stage build: builder installs deps, runner is minimal.
 #
-# Build:  docker build -t quntatradeai .
-# Run:    docker run --env-file .env -p 8000:8000 quntatradeai
+# Build:  docker build -t quantatraderai .
+# Run:    docker run --env-file .env -p 8000:8000 quantatraderai
 #
 # ──────────────────────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ ENV PATH="$POETRY_HOME/bin:$PATH"
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock* ./
-RUN poetry install --no-root --no-interaction --no-ansi --without dev
+RUN poetry install --no-root --no-interaction --no-ansi --without dev --extras "metatrader oanda alpaca"
 
 # Stage 2: runtime — copy only what's needed
 FROM python:3.12-slim AS runtime
@@ -49,8 +49,8 @@ COPY src     ./src
 COPY risk.yaml ./risk.yaml
 
 # Non-root user for security
-RUN useradd -r -u 1001 qunta && chown -R qunta:qunta /app
-USER qunta
+RUN useradd -r -u 1001 quantatrader && chown -R quantatrader:quantatrader /app
+USER quantatrader
 
 # API server port
 ENV API_PORT=8000

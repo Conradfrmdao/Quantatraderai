@@ -20,11 +20,26 @@ ASSET_REGISTRY: dict[str, dict[str, str]] = {
              "kraken": "ETH/USDT", "coinbase": "ETH-USD", "hyperliquid": "ETH"},
     "sol":  {"binance": "SOLUSDT", "bybit": "SOLUSDT", "okx": "SOL-USDT",
              "coinbase": "SOL-USD", "hyperliquid": "SOL"},
-    # Forex
+    # Forex — majors
     "eur_usd": {"oanda": "EUR_USD", "metatrader": "EURUSD"},
     "gbp_usd": {"oanda": "GBP_USD", "metatrader": "GBPUSD"},
     "usd_jpy": {"oanda": "USD_JPY", "metatrader": "USDJPY"},
+    "aud_usd": {"oanda": "AUD_USD", "metatrader": "AUDUSD"},
+    "usd_cad": {"oanda": "USD_CAD", "metatrader": "USDCAD"},
+    "usd_chf": {"oanda": "USD_CHF", "metatrader": "USDCHF"},
+    "nzd_usd": {"oanda": "NZD_USD", "metatrader": "NZDUSD"},
+    # Forex — crosses
+    "eur_gbp": {"oanda": "EUR_GBP", "metatrader": "EURGBP"},
+    "eur_jpy": {"oanda": "EUR_JPY", "metatrader": "EURJPY"},
+    "gbp_jpy": {"oanda": "GBP_JPY", "metatrader": "GBPJPY"},
+    "aud_jpy": {"oanda": "AUD_JPY", "metatrader": "AUDJPY"},
+    # Metals
     "xau_usd": {"oanda": "XAU_USD", "metatrader": "XAUUSD"},
+    "xag_usd": {"oanda": "XAG_USD", "metatrader": "XAGUSD"},
+    # Indices (MetaTrader CFDs)
+    "us30":    {"metatrader": "US30"},
+    "nas100":  {"metatrader": "NAS100"},
+    "spx500":  {"metatrader": "SPX500"},
     # Stocks
     "aapl": {"alpaca": "AAPL", "ibkr": "AAPL"},
     "tsla": {"alpaca": "TSLA", "ibkr": "TSLA"},
