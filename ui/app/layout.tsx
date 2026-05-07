@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Inter } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ToastProvider } from "@/components/Toast";
 import { SignOutGuard } from "@/components/SignOutGuard";
+import { PostHogProvider } from "@/components/PostHogProvider";
+import { SentryUserSync } from "@/components/SentryUserSync";
 import { APP_NAME, APP_TAGLINE } from "@/lib/constants";
 import "./globals.css";
 
@@ -25,10 +28,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <link rel="manifest"         href="/site.webmanifest" />
         </head>
         <body className={`${inter.className} min-h-full`}>
-          <ToastProvider>
-            <SignOutGuard />
-            {children}
-          </ToastProvider>
+          {/* Suspense required because PostHogProvider uses useSearchParams */}
+          <Suspense>
+            <PostHogProvider>
+              <SentryUserSync />
+              <ToastProvider>
+                <SignOutGuard />
+                {children}
+              </ToastProvider>
+            </PostHogProvider>
+          </Suspense>
         </body>
       </html>
     </ClerkProvider>
