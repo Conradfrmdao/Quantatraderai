@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["stripe", "ib_insync", "metaapi-cloud-sdk"],
@@ -20,20 +21,18 @@ const nextConfig: NextConfig = {
   },
 };
 
-// Wrap with Sentry only if SENTRY_DSN is set — no-op if missing
-let finalConfig: NextConfig = nextConfig;
-try {
-  const SENTRY_DSN = process.env.SENTRY_DSN ?? process.env.NEXT_PUBLIC_SENTRY_DSN;
-  if (SENTRY_DSN) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { withSentryConfig } = require("@sentry/nextjs");
-    finalConfig = withSentryConfig(nextConfig, {
-      silent:              true,
-      hideSourceMaps:      true,
-      disableLogger:       true,
-      automaticVercelMonitors: false,
-    });
-  }
-} catch { /* Sentry not installed — skip */ }
+export default withSentryConfig(nextConfig, {
+  org:     "naughtycodesystems",
+  project: "quantatraderai",
 
-export default finalConfig;
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+
+  // Upload larger source maps for readable stack traces
+  widenClientFileUpload: true,
+
+  // Route Sentry traffic through Next.js to avoid ad-blockers
+  tunnelRoute: "/monitoring",
+
+  // Silence build output except in CI
+  silent: !process.env.CI,
+});
