@@ -11,9 +11,8 @@ import { NextRequest, NextResponse } from "next/server";
 const ADMIN_CLERK_IDS = (process.env.ADMIN_CLERK_IDS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 
 async function isAdmin(clerkId: string) {
-  if (ADMIN_CLERK_IDS.includes(clerkId)) return true;
-  const first = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { clerkId: true } });
-  return first?.clerkId === clerkId;
+  if (ADMIN_CLERK_IDS.length === 0) return false;
+  return ADMIN_CLERK_IDS.includes(clerkId);
 }
 
 // ── GET: full user detail ──────────────────────────────────────────────────────

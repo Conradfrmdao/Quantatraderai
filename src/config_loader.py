@@ -146,7 +146,7 @@ CONFIG = {
     "telegram_chat_id": _get_env("TELEGRAM_CHAT_ID"),
 
     # API server
-    "api_host": _get_env("API_HOST", "0.0.0.0"),
+    "api_host": _get_env("API_HOST", "127.0.0.1"),
     "api_port": _get_env("APP_PORT") or _get_env("API_PORT") or "3000",
 
     # Legacy / optional

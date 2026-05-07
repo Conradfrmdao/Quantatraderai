@@ -12,11 +12,12 @@ git pull origin main
 echo "==> Building Docker image"
 docker compose build --no-cache
 
+echo "==> Running DB migrations (run manually: cd ui && npx prisma migrate deploy)"
 echo "==> Restarting container"
 docker compose up -d --remove-orphans
 
 echo "==> Waiting for health check"
-sleep 8
+sleep 25
 docker compose ps
 
 echo "==> Done — API status:"

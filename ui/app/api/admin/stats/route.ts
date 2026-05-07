@@ -20,10 +20,8 @@ const ADMIN_SECRET   = process.env.ADMIN_SECRET_KEY   ?? "";
 const ADMIN_CLERK_IDS = (process.env.ADMIN_CLERK_IDS ?? "").split(",").map(s => s.trim()).filter(Boolean);
 
 async function isAdmin(clerkId: string): Promise<boolean> {
-  if (ADMIN_CLERK_IDS.length > 0) return ADMIN_CLERK_IDS.includes(clerkId);
-  // Fallback: first registered user is admin (dev mode)
-  const first = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { clerkId: true } });
-  return first?.clerkId === clerkId;
+  if (ADMIN_CLERK_IDS.length === 0) return false;
+  return ADMIN_CLERK_IDS.includes(clerkId);
 }
 
 export async function GET() {

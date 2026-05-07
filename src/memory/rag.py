@@ -56,7 +56,7 @@ async def _embed(text: str) -> list[float]:
         return data["data"][0]["embedding"]
     except Exception as e:
         logger.warning("Embedding failed: %s — using hash fallback", e)
-        return await _embed.__wrapped__(text)  # type: ignore[attr-defined]
+        return await _embed(text)
 
 
 async def store_decision(

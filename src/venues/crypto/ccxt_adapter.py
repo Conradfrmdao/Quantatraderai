@@ -73,6 +73,7 @@ class CcxtVenue(Venue):
             self.asset_class = "crypto_perp"
         else:
             self.asset_class = "crypto_spot"
+        self.is_paper = False
 
     # CCXT's sync calls wrapped in to_thread keep the adapter async-compatible.
     async def _call(self, fn, *args, **kwargs):
@@ -168,6 +169,18 @@ class CcxtVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        if getattr(self, "is_paper", False):
+            import uuid as _uuid
+            return Order(
+                order_id=str(_uuid.uuid4()),
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price or 0.0,
+                status="filled",
+                filled_quantity=quantity,
+            )
         if leverage is not None and self.client.has.get("setLeverage"):
             try:
                 await self._call(self.client.set_leverage, leverage, symbol)

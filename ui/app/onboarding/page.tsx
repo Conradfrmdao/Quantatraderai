@@ -125,7 +125,7 @@ export default function OnboardingPage() {
   // Auto-skip users who already completed onboarding
   useEffect(() => {
     if (!isLoaded || !user) return;
-    if (hasCompletedOnboarding() || user.firstName) {
+    if (hasCompletedOnboarding()) {
       router.replace("/dashboard");
     }
   }, [isLoaded, user, router]);

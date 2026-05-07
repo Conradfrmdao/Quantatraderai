@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { sendAgentStoppedEmail } from "@/lib/email";
 
 export async function POST(req: NextRequest) {
+  const { userId: authUserId } = await auth();
+  if (!authUserId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { userId, venue, reason } = await req.json() as {
       userId: string; venue: string; reason: string;

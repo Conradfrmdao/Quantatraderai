@@ -211,8 +211,9 @@ export default function Dashboard() {
         if (data.warning) toast(data.warning, "warning");
       }
       setTimeout(() => { status.refresh(); setAgentLoading(false); }, 1200);
-    } catch {
+    } catch (err) {
       setAgentLoading(false);
+      toast("Failed to reach the trading backend. Check your connection.", "error");
     }
   }, [symbol, venueType, activeVenue, strategyType, minConfidence, maxDailyLoss,
       maxTradesDay, lossCooldown, status, toast]);
@@ -353,6 +354,16 @@ export default function Dashboard() {
         }}>
           <strong style={{ color: "#fca5a5" }}>Backend offline.</strong>{" "}
           The trading engine isn&apos;t responding. Live data, agent control, and trades are temporarily unavailable.
+        </div>
+      )}
+
+      {!connected && status.data?.status === "running" && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 999,
+          background: "#ef4444", color: "#fff", textAlign: "center",
+          padding: "8px 16px", fontSize: 13, fontWeight: 600,
+        }}>
+          ⚠ Live data disconnected — reconnecting… Open positions may not reflect current prices.
         </div>
       )}
 
@@ -659,7 +670,7 @@ export default function Dashboard() {
       <main style={{ padding: isMobile ? "16px 12px 40px" : "32px 36px 56px", maxWidth: 1500, margin: "0 auto" }}>
 
         {/* Getting started checklist — shown for new users for 14 days */}
-        <GettingStartedChecklist />
+        <GettingStartedChecklist userId={sessionKey} />
 
         {/* Status bar */}
         <div style={{ marginBottom: 14 }}>

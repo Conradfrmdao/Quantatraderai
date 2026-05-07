@@ -55,7 +55,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 import uvicorn
@@ -1434,7 +1434,7 @@ app = FastAPI(title="QuantatraderAI API", version="1.0.0")
 # Set ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 # Leave unset (or "*") only for local dev.
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
-_allow_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
+_allow_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["http://localhost:3000"]
 if "*" not in _allow_origins:
     logger.info("CORS locked to: %s", _allow_origins)
 else:
@@ -1899,6 +1899,8 @@ async def get_logs(limit: int = 100, userId: Optional[str] = None):
 
 # ── Agent control ─────────────────────────────────────────────────────────────
 
+_SYMBOL_RE = re.compile(r"^[A-Z0-9/_-]{1,20}$")
+
 class StartRequest(BaseModel):
     userId:        Optional[str] = None
     venue:         str           = "binance"   # hyperliquid | binance | oanda | metatrader | alpaca | ibkr | bybit | okx | kraken | coinbase | ccxt:<id>
@@ -2120,6 +2122,8 @@ async def _do_start(
         else:
             asset_class = _ASSET_CLASS.get(v_key, "crypto_spot")
             _new_venue  = get_venue(venue_name)
+        # Propagate paper-mode flag to venue so adapters can short-circuit live API calls
+        _new_venue.is_paper = is_paper
         _new_risk  = RiskManager(venue=v_key, asset_class=asset_class)
         _venue_ctx = "forex" if asset_class == "forex" else "crypto"
         _new_agent = TradingAgent(hyperliquid=None, venue_context=_venue_ctx)
@@ -2624,7 +2628,6 @@ async def run_backtest(req: BacktestRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-_SYMBOL_RE = re.compile(r"^[A-Z0-9/_-]{1,20}$")
 _VALID_SIGNAL_ACTIONS = {"buy", "sell", "close"}
 
 class SignalRequest(BaseModel):
@@ -2654,13 +2657,23 @@ class SignalRequest(BaseModel):
 
 
 @app.post("/api/agent/execute-signal")
-async def execute_signal(req: SignalRequest):
+async def execute_signal(request: Request, req: SignalRequest):
     """Execute an external signal (TradingView webhook) through the same
     RiskManager pipeline as autonomous agent decisions.
 
     Phase 8: Routes to the correct per-user state via user_id, then validates
     venue ownership if venue_id is supplied.
     """
+    # HMAC signature check — only enforced when TRADINGVIEW_WEBHOOK_SECRET is set
+    secret = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "")
+    if secret:
+        import hmac as _hmac, hashlib as _hashlib
+        sig = request.headers.get("X-Signature", "")
+        body_bytes = await request.body()
+        expected = _hmac.new(secret.encode(), body_bytes, _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
     # Resolve state: prefer per-user if user_id supplied, else global
     s = get_state(req.user_id) if req.user_id else _state
 

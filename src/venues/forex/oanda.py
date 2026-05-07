@@ -52,6 +52,7 @@ class OandaVenue(Venue):
             self.base_url = "https://api-fxtrade.oanda.com"
         else:
             self.base_url = "https://api-fxpractice.oanda.com"
+        self.is_paper = False
         if not self.token or not self.account_id:
             logging.warning(
                 "OANDA credentials missing — set OANDA_API_TOKEN and OANDA_ACCOUNT_ID."
@@ -202,6 +203,18 @@ class OandaVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        if getattr(self, "is_paper", False):
+            import uuid as _uuid
+            return Order(
+                order_id=str(_uuid.uuid4()),
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price or 0.0,
+                status="filled",
+                filled_quantity=quantity,
+            )
         units = quantity if side == "buy" else -quantity
         order_body: dict = {
             "instrument": symbol,

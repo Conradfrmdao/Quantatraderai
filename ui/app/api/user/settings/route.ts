@@ -15,10 +15,18 @@ export async function PATCH(req: Request) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
+  const allowed = {
+    telegramToken:        body.telegramToken,
+    telegramChatId:       body.telegramChatId,
+    emailNotifications:   body.emailNotifications,
+    timezone:             body.timezone,
+  };
+  // Remove undefined keys
+  const update = Object.fromEntries(Object.entries(allowed).filter(([,v]) => v !== undefined));
   const settings = await prisma.userSettings.upsert({
     where: { userId },
-    create: { userId, ...body },
-    update: body,
+    create: { userId, ...update },
+    update,
   });
   return NextResponse.json(settings);
 }

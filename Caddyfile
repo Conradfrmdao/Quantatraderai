@@ -1,13 +1,6 @@
 api.quantatraderai.com {
     reverse_proxy localhost:8000
 
-    # WebSocket support (trading feed)
-    @ws {
-        header Connection *Upgrade*
-        header Upgrade    websocket
-    }
-    reverse_proxy @ws localhost:8000
-
     # Security headers
     header {
         Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
