@@ -13,16 +13,16 @@ export const metadata: Metadata = {
   description: "Multi-venue AI trading agent. Connects to Hyperliquid, Binance, OANDA, MetaTrader, Alpaca, IBKR and 100+ exchanges. 24/7 autonomous trading with collective AI council decision-making.",
   icons: {
     icon: [
-      { url: "/icon.svg?v=2",          type: "image/svg+xml" },
-      { url: "/favicon-32x32.png?v=2", sizes: "32x32",  type: "image/png" },
-      { url: "/favicon-16x16.png?v=2", sizes: "16x16",  type: "image/png" },
+      { url: "/icon.svg?v=3",          type: "image/svg+xml" },
+      { url: "/favicon-32x32.png?v=3", sizes: "32x32",  type: "image/png" },
+      { url: "/favicon-16x16.png?v=3", sizes: "16x16",  type: "image/png" },
       { url: "/favicon.ico",           sizes: "any" },
     ],
     apple: [
-      { url: "/apple-touch-icon.png?v=2", sizes: "180x180", type: "image/png" },
+      { url: "/apple-touch-icon.png?v=3", sizes: "180x180", type: "image/png" },
     ],
     other: [
-      { rel: "mask-icon", url: "/safari-pinned-tab.svg?v=2", color: "#4ade80" },
+      { rel: "mask-icon", url: "/safari-pinned-tab.svg?v=3", color: "#4ade80" },
     ],
   },
   manifest: "/site.webmanifest",
