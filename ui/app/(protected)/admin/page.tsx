@@ -150,7 +150,7 @@ function UserDetailPanel({ userId, onClose }: { userId: string; onClose: () => v
             </div>
 
             {/* Stats */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
               {[
                 { l: "Revenue",  v: fmtUsd(d.stats.totalRevenue),          c: "#4ade80" },
                 { l: "Trades",   v: fmt(d.stats.totalTrades),              c: "#fff" },
@@ -355,7 +355,7 @@ function UsersTab() {
       <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)",
         borderRadius: 14, overflow: "hidden" }}>
         {/* Header row */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 20px",
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 70px 70px 18px",
           padding: "10px 16px", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
           {["User", "Plan", "MRR", ""].map(h => (
             <span key={h} style={{ fontSize: 10, color: "rgba(255,255,255,0.25)",
@@ -365,7 +365,7 @@ function UsersTab() {
 
         {users.map((u, i) => (
           <div key={u.id} onClick={() => setSelectedId(u.id)}
-            style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 20px",
+            style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 70px 70px 18px",
               alignItems: "center", padding: "12px 16px", cursor: "pointer",
               borderBottom: i < users.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
               transition: "background 0.1s" }}>
@@ -436,13 +436,13 @@ function OverviewTab() {
   const s = stats!;
   return (
     <div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <Stat icon={DollarSign} label="MRR"         value={fmtUsd(s.revenue.mrr_usd)} sub="Monthly recurring" color="#4ade80" />
         <Stat icon={TrendingUp} label="ARR"          value={fmtUsd(s.revenue.arr_usd)} sub="Annualised"        color="#4ade80" />
         <Stat icon={Users}      label="Paying"       value={fmt(s.users.paying)}        sub={"of " + fmt(s.users.total) + " total"} color="#818cf8" />
         <Stat icon={Activity}   label="Live agents"  value={String(s.activity.active_agents_live)} sub={s.activity.ws_clients + " WS clients"} color="#fbbf24" />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         <Stat icon={Users}      label="New today"  value={fmt(s.users.new_24h)} color="#fff" />
         <Stat icon={Users}      label="New 7d"     value={fmt(s.users.new_7d)}  color="#fff" />
         <Stat icon={BarChart2}  label="Trades 24h" value={fmt(s.activity.trades_24h)} color="#fff" />
@@ -465,7 +465,7 @@ function OverviewTab() {
           ))}
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
         <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)",
           borderRadius: 14, padding: "16px 18px" }}>
           <p style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.3)",
@@ -513,8 +513,8 @@ export default function AdminPage() {
   const [tab, setTab] = useState<"overview" | "users">("overview");
 
   return (
-    <div style={{ minHeight: "100vh", background: "#080808", padding: "24px 20px" }}>
-      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+    <div className="dvh-min" style={{ background: "#080808", padding: "16px 12px" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", width: "100%" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
           <Link href="/dashboard" style={{ color: "rgba(255,255,255,0.3)", display: "flex" }}>
             <ArrowLeft size={16} />

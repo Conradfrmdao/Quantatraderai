@@ -75,7 +75,7 @@ export default function BillingPage() {
   const current = billing?.plan ?? "FREE";
 
   return (
-    <div style={{ background: "var(--bg)", minHeight: "100vh" }}>
+    <div className="dvh-min" style={{ background: "var(--bg)" }}>
       <header style={{ padding: isMobile ? "0 12px" : "0 28px", height: 56, borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 12, background: "rgba(0,0,0,0.85)", backdropFilter: "blur(20px)", position: "sticky", top: 0, zIndex: 50 }}>
         <Link href="/dashboard" style={{ color: "var(--muted)", display: "flex" }}><ArrowLeft size={16} /></Link>
         <LogoWordmark size={26} />

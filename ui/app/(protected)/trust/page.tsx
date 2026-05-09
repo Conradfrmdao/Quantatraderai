@@ -127,7 +127,7 @@ export default function TrustDashboard() {
     : 0;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#080808", padding: "24px 20px", maxWidth: 760, margin: "0 auto" }}>
+    <div className="dvh-min" style={{ background: "#080808", padding: "16px 12px", maxWidth: 760, margin: "0 auto", width: "100%" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
         <Link href="/dashboard" style={{ color: "rgba(255,255,255,0.35)", display: "flex" }}>

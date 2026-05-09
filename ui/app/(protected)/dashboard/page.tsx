@@ -946,6 +946,8 @@ export default function Dashboard() {
           onStrategy={setStrategyType}
           onTimeframe={setTimeframe}
           onMarket={setMarket}
+          showGuards={showGuards}
+          onToggleGuards={() => setShowGuards(g => !g)}
         />
       )}
     </div>

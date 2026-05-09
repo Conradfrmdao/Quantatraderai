@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, BarChart2, BookOpen, ShieldCheck,
-  Play, Square, Zap, X, MoreHorizontal,
+  Play, Square, Zap, X, MoreHorizontal, Shield,
   ShoppingBag, Copy, FileText, Settings,
 } from "lucide-react";
 import { useState } from "react";
@@ -21,6 +21,8 @@ interface MobileBottomNavProps {
   onStrategy:    (v: string) => void;
   onTimeframe:   (v: string) => void;
   onMarket:      (v: string) => void;
+  showGuards?:    boolean;
+  onToggleGuards?: () => void;
 }
 
 const NAV = [
@@ -41,6 +43,7 @@ export function MobileBottomNav({
   running, agentLoading, onStart, onStop, onKillswitch,
   strategyType, timeframe, market,
   onStrategy, onTimeframe, onMarket,
+  showGuards, onToggleGuards,
 }: MobileBottomNavProps) {
   const pathname  = usePathname();
   const [open, setOpen] = useState(false);
@@ -137,6 +140,25 @@ export function MobileBottomNav({
             ))}
           </div>
         </div>
+
+        {/* ── Guards toggle ── */}
+        {onToggleGuards && (
+          <button
+            onClick={() => { setOpen(false); onToggleGuards(); }}
+            style={{
+              width: "100%", padding: "11px 0", borderRadius: 11, fontSize: 12, fontWeight: 600,
+              cursor: "pointer", border: "1px solid",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+              background: showGuards ? "rgba(251,191,36,0.12)" : "rgba(255,255,255,0.04)",
+              borderColor: showGuards ? "rgba(251,191,36,0.35)" : "rgba(255,255,255,0.1)",
+              color: showGuards ? "#fbbf24" : "rgba(255,255,255,0.5)",
+              marginBottom: 10,
+            }}
+          >
+            <Shield size={13} />
+            {showGuards ? "Hide Guard Settings" : "Open Guard Settings"}
+          </button>
+        )}
 
         {/* ── Start / Stop ── */}
         <button

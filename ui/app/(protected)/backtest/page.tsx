@@ -356,7 +356,7 @@ export default function BacktestPage() {
   const isGood = result && result.total_return_pct >= 0;
 
   return (
-    <div style={{ background: "var(--bg)", minHeight: "100vh" }}>
+    <div className="dvh-min" style={{ background: "var(--bg)" }}>
       {/* Header */}
       <header style={{
         padding: isMobile ? "0 12px" : "0 28px", height: 56,

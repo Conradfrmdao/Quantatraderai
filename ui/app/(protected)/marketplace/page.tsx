@@ -108,7 +108,7 @@ export default function MarketplacePage() {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <div style={{ background: "var(--bg)", minHeight: "100vh" }}>
+    <div className="dvh-min" style={{ background: "var(--bg)" }}>
       {showPublish && <PublishModal onClose={() => setPublish(false)} onPublished={load} />}
 
       <header style={{ padding: isMobile ? "0 12px" : "0 28px", height: 56, borderBottom: "1px solid var(--border)",
@@ -136,7 +136,7 @@ export default function MarketplacePage() {
         </div>
       </header>
 
-      <main style={{ padding: isMobile ? "20px 12px 60px" : "32px 40px 60px", maxWidth: 1100, margin: "0 auto" }}>
+      <main style={{ padding: isMobile ? "20px 12px 80px" : "32px 40px 60px", maxWidth: 1100, margin: "0 auto", width: "100%" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 28 }}>
           <ShoppingBag size={20} style={{ color: "#a78bfa" }} />
           <h1 style={{ fontSize: 22, fontWeight: 600, color: "#fff" }}>Strategy Marketplace</h1>
@@ -183,7 +183,7 @@ export default function MarketplacePage() {
                     {l.description}
                   </p>
                 )}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, marginBottom: 16 }}>
                   {[
                     { label: "Sharpe",  value: l.sharpe.toFixed(2),             color: l.sharpe > 0 ? "var(--green)" : "var(--red)" },
                     { label: "Return",  value: `${l.totalReturn >= 0 ? "+" : ""}${l.totalReturn.toFixed(1)}%`, color: l.totalReturn >= 0 ? "var(--green)" : "var(--red)" },
