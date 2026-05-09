@@ -174,7 +174,7 @@ export default function CopyTradingPage() {
                         Max {r.maxAllocPct}% per trade · Since {new Date(r.createdAt).toLocaleDateString()}
                       </p>
                     </div>
-                    <button onClick={() => unfollow(r.leader?.id ?? r.leaderId)}
+                    <button onClick={() => r.leader?.id && unfollow(r.leader.id)}
                       style={{ padding: "6px 12px", borderRadius: 8, fontSize: 11, cursor: "pointer",
                         background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)",
                         color: "var(--red)", display: "flex", alignItems: "center", gap: 5 }}>
