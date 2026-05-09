@@ -161,15 +161,26 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
   useEffect(() => {
     if (!ready) return;
 
+    // Close old streams + clear timers
     wsRef.current?.close();
     if (pollRef.current) clearInterval(pollRef.current);
+
+    // CRITICAL: Clear old chart data and reset zoom IMMEDIATELY so users
+    // never see stale BTC bars while EURUSD loads, and zoom from the
+    // previous symbol doesn't trap the new (different price scale) data.
+    seriesRef.current?.setData([]);
+    // setData([]) above already clears bars; fitContent will run when new bars arrive
+
     setLive(false);
     setLoading(true);
     setNoData(false);
     setDataSource("");
+    setPrice(null);
+    setChange(null);
     lastBarTimeRef.current = 0;
 
     let cancelled = false;
+    let pricePollId: ReturnType<typeof setInterval> | null = null;
 
     const applyBars = (bars: Bar[]) => {
       seriesRef.current?.setData(bars as any[]);
@@ -291,7 +302,6 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
             // ── Fast price tick: poll /api/price every 5s ──────────────
             // This updates the price header in real-time (like a WebSocket would)
             // without re-fetching the full bar history.
-            const pricePollRef = { id: null as any };
             const fastPricePoll = async () => {
               if (cancelled) return;
               try {
@@ -319,7 +329,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
             };
 
             fastPricePoll(); // immediate first call
-            pricePollRef.id = setInterval(fastPricePoll, 3_000) as any;
+            pricePollId = setInterval(fastPricePoll, 3_000);
 
             // ── Slow bar history refresh every 60s ─────────────────────
             pollRef.current = setInterval(async () => {
@@ -328,8 +338,9 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
               const backendBars = await loadFromBackend().catch(() => []);
               if (backendBars.length) {
                 seriesRef.current?.setData(backendBars as any[]);
+                chartRef.current?.timeScale().fitContent();
                 setDataSource("live");
-                clearInterval(pricePollRef.id); // backend is live, no need for Yahoo polling
+                if (pricePollId) clearInterval(pricePollId);
                 startPoll(10_000);
                 return;
               }
@@ -341,7 +352,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
               }
             }, 20_000);
 
-            return () => clearInterval(pricePollRef.id);
+            return;
           }
         }
 
@@ -358,6 +369,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
       cancelled = true;
       wsRef.current?.close();
       if (pollRef.current) clearInterval(pollRef.current);
+      if (pricePollId) clearInterval(pricePollId);
     };
   }, [ready, symbol, tf, venueType, isCrypto]);
 
