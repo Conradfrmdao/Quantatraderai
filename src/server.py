@@ -142,6 +142,49 @@ def _plan_allows(plan: str, feature: str) -> bool:
 # ── Notifier (built once at import — reads TELEGRAM_BOT_TOKEN / CHAT_ID) ──────
 _notifier = build_notifier()
 
+# Platform bot token — used to send per-user alerts to their personal chat
+_TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+
+async def _notify_user(user_id: str, event: "TradingEvent") -> None:
+    """Send a Telegram alert to the user's personal chat ID (if they set one)."""
+    if not _TG_TOKEN or not user_id:
+        return
+    try:
+        pool = await _get_pool()
+        row = await pool.fetchrow(
+            'SELECT "telegramChatId" FROM "UserSettings" WHERE "userId" = '
+            '(SELECT id FROM "User" WHERE "clerkId" = $1)',
+            user_id,
+        )
+        chat_id = row["telegramChatId"] if row else None
+        if not chat_id:
+            return
+        emoji = {
+            "trade_opened":          "📈",
+            "trade_closed":          "📉",
+            "stop_loss_hit":         "🛑",
+            "circuit_breaker_tripped": "⚡",
+            "decision_error":        "⚠️",
+            "info":                  "ℹ️",
+        }.get(event.kind, "🔔")
+        text = (
+            f"{emoji} <b>QuantatraderAI</b>\n"
+            f"<b>{event.kind.replace('_', ' ').title()}</b>\n"
+            f"Venue: {event.venue}"
+            + (f" · {event.symbol}" if event.symbol else "")
+            + (f"\n{event.message}" if event.message else "")
+        )
+        import aiohttp as _ah
+        async with _ah.ClientSession() as sess:
+            await sess.post(
+                f"https://api.telegram.org/bot{_TG_TOKEN}/sendMessage",
+                json={"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"},
+                timeout=_ah.ClientTimeout(total=3),
+            )
+    except Exception as e:
+        logger.warning("per-user telegram failed", user_id=user_id, error=str(e))
+
 # ── JWKS / JWT helpers ────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
 _jwks_cache_ts: float = 0.0
@@ -1195,10 +1238,13 @@ async def _tick_for(s: "AgentState"):
         if not ok:
             s.log(f"RISK BLOCKED {sym}: {reason}")
             s.timeline_event("blocked", sym, f"Risk blocked — {reason}", action=action)
-            await _notifier.emit(TradingEvent(
+            _rbe = TradingEvent(
                 kind="circuit_breaker_tripped", venue=s.venue_name, symbol=sym,
                 message=f"Risk blocked {action.upper()} {sym}: {reason}",
-            ))
+            )
+            await _notifier.emit(_rbe)
+            if s.user_id:
+                asyncio.create_task(_notify_user(s.user_id, _rbe))
             asyncio.create_task(_persist_audit(
                 s.user_id, "risk_block", sym, action,
                 {"reason": reason, "allocation_usd": alloc, "venue": s.venue_name},
@@ -1229,11 +1275,14 @@ async def _tick_for(s: "AgentState"):
                 "type": "trade_executed",
                 "data": {"symbol": sym, "action": action, "price": price, "qty": qty, "venue": s.venue_name},
             }, s.user_id)
-            await _notifier.emit(TradingEvent(
+            _te = TradingEvent(
                 kind="trade_opened", venue=s.venue_name, symbol=sym,
                 message=f"{action.upper()} {qty:.6f} @ ${price:.4f} — {dec.get('rationale','')[:80]}",
                 data={"allocation_usd": alloc, "sl": dec.get("sl_price"), "tp": dec.get("tp_price")},
-            ))
+            )
+            await _notifier.emit(_te)
+            if s.user_id:
+                asyncio.create_task(_notify_user(s.user_id, _te))
             # Persist to TradeLog + AuditLog
             asyncio.create_task(_persist_trade(
                 s.user_id, symbol=sym, action=action, quantity=qty, price=price,

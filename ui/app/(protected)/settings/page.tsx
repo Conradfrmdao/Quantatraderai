@@ -819,44 +819,80 @@ export default function SettingsPage() {
           {tab === "alerts" && (
             <div>
               <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 24, letterSpacing: "-0.02em" }}>Alerts & Notifications</h2>
-              <div style={card}>
-                <SectionTitle>Telegram Alerts</SectionTitle>
-                <FieldGroup label="Bot Token">
-                  <input style={inputStyle} placeholder="1234567890:AAF..." value={alertSettings.telegramToken ?? ""} onChange={e => setAlertSettings(s => ({ ...s, telegramToken: e.target.value }))} />
-                </FieldGroup>
-                <FieldGroup label="Chat ID">
-                  <input style={inputStyle} placeholder="-1001234567890" value={alertSettings.telegramChatId ?? ""} onChange={e => setAlertSettings(s => ({ ...s, telegramChatId: e.target.value }))} />
-                </FieldGroup>
-                <p style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", marginBottom: 20, lineHeight: 1.6 }}>
-                  Create a Telegram bot via @BotFather, add it to your channel/group, and paste the token + chat ID above.
-                </p>
 
+              {/* ── Telegram ── */}
+              <div style={{ ...card, marginBottom: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(37,211,102,0.1)", border: "1px solid rgba(37,211,102,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>✈</div>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Telegram Alerts</div>
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)" }}>Instant notifications for every trade, stop loss, and agent event</div>
+                  </div>
+                  {alertSettings.telegramChatId && (
+                    <div style={{ marginLeft: "auto", fontSize: 11, fontWeight: 600, color: "#4ade80", background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)", borderRadius: 20, padding: "3px 10px" }}>Connected ✓</div>
+                  )}
+                </div>
+
+                {/* Step-by-step instructions */}
+                <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "16px 18px", marginBottom: 20 }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 14 }}>3 steps to connect</p>
+                  {[
+                    { n: 1, title: "Start the bot", body: <span>Open Telegram and start <a href="https://t.me/QuantatraderAI_bot" target="_blank" rel="noopener noreferrer" style={{ color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>@QuantatraderAI_bot</a> — tap Start or send any message.</span> },
+                    { n: 2, title: "Get your Chat ID", body: <span>Message <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" style={{ color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>@userinfobot</a> on Telegram. It will instantly reply with your Chat ID — a number like <span style={{ fontFamily: "monospace", color: "rgba(255,255,255,0.6)" }}>1234567890</span>. Copy it.</span> },
+                    { n: 3, title: "Paste it below", body: "Enter your Chat ID in the field below and click Save. That's it — alerts will start arriving immediately." },
+                  ].map(step => (
+                    <div key={step.n} style={{ display: "flex", gap: 14, marginBottom: 16 }}>
+                      <div style={{ width: 24, height: 24, borderRadius: "50%", background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#4ade80", flexShrink: 0 }}>{step.n}</div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "rgba(255,255,255,0.75)", marginBottom: 3 }}>{step.title}</div>
+                        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>{step.body}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <FieldGroup label="Your Telegram Chat ID">
+                  <input
+                    style={inputStyle}
+                    placeholder="e.g. 1234567890"
+                    value={alertSettings.telegramChatId ?? ""}
+                    onChange={e => setAlertSettings(s => ({ ...s, telegramChatId: e.target.value }))}
+                  />
+                </FieldGroup>
+
+                {/* What you'll receive */}
+                <div style={{ marginBottom: 20 }}>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.25)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>You will receive alerts for</p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {["Trade opened", "Trade closed", "Stop loss hit", "Circuit breaker", "Agent started", "Agent stopped", "Risk block"].map(ev => (
+                      <span key={ev} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)", color: "rgba(255,255,255,0.4)" }}>{ev}</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* ── Email ── */}
+              <div style={{ ...card, marginBottom: 16 }}>
                 <SectionTitle>Email Notifications</SectionTitle>
-                <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", marginBottom: 24 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 12, cursor: "pointer", marginBottom: 8 }}>
                   <div
                     onClick={() => setAlertSettings(s => ({ ...s, emailNotifications: !s.emailNotifications }))}
-                    style={{
-                      width: 40, height: 22, borderRadius: 11,
-                      background: alertSettings.emailNotifications ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.12)",
-                      position: "relative", transition: "background .2s", cursor: "pointer", flexShrink: 0,
-                    }}
+                    style={{ width: 40, height: 22, borderRadius: 11, background: alertSettings.emailNotifications ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.12)", position: "relative", transition: "background .2s", cursor: "pointer", flexShrink: 0 }}
                   >
-                    <div style={{
-                      position: "absolute", top: 3, left: alertSettings.emailNotifications ? 21 : 3,
-                      width: 16, height: 16, borderRadius: "50%",
-                      background: alertSettings.emailNotifications ? "#000" : "rgba(255,255,255,0.4)",
-                      transition: "left .2s",
-                    }} />
+                    <div style={{ position: "absolute", top: 3, left: alertSettings.emailNotifications ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: alertSettings.emailNotifications ? "#000" : "rgba(255,255,255,0.4)", transition: "left .2s" }} />
                   </div>
                   <span style={{ fontSize: 13, color: "rgba(255,255,255,0.55)" }}>
                     Email notifications {alertSettings.emailNotifications ? "enabled" : "disabled"}
                   </span>
                 </label>
-
-                <button style={btnPrimary} onClick={saveAlerts} disabled={alertSaving}>
-                  <Save size={13} /> {alertSaving ? "Saving…" : alertSaved ? "Saved ✓" : "Save Alert Settings"}
-                </button>
+                <p style={{ fontSize: 12, color: "rgba(255,255,255,0.25)", lineHeight: 1.6 }}>
+                  Weekly performance reports and agent alerts sent to your registered email address.
+                </p>
               </div>
+
+              <button style={btnPrimary} onClick={saveAlerts} disabled={alertSaving}>
+                <Save size={13} /> {alertSaving ? "Saving…" : alertSaved ? "Saved ✓" : "Save Alert Settings"}
+              </button>
             </div>
           )}
 
