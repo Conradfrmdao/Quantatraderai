@@ -206,19 +206,19 @@ export default function TrustDashboard() {
               color={(m.sharpe ?? 0) >= 1 ? "#4ade80" : "#fbbf24"} />
             <MetricCard icon={AlertTriangle} label="Max Drawdown"
               value={`${(m.max_drawdown_pct ?? 0).toFixed(1)}%`}
-              sub={m.max_drawdown_pct < 10 ? "Safe" : m.max_drawdown_pct < 20 ? "Watch closely" : "Dangerous"}
-              color={m.max_drawdown_pct < 10 ? "#4ade80" : m.max_drawdown_pct < 20 ? "#fbbf24" : "#ef4444"} />
+              sub={(m.max_drawdown_pct ?? 0) < 10 ? "Safe" : (m.max_drawdown_pct ?? 0) < 20 ? "Watch closely" : "Dangerous"}
+              color={(m.max_drawdown_pct ?? 0) < 10 ? "#4ade80" : (m.max_drawdown_pct ?? 0) < 20 ? "#fbbf24" : "#ef4444"} />
             <MetricCard icon={TrendingUp} label="Avg Win" value={`$${(m.avg_win ?? 0).toFixed(2)}`}
-              sub={`${m.wins} winning trades`} color="#4ade80" />
+              sub={`${m.wins ?? 0} winning trades`} color="#4ade80" />
             <MetricCard icon={TrendingDown} label="Avg Loss" value={`$${Math.abs(m.avg_loss ?? 0).toFixed(2)}`}
-              sub={`${m.losses} losing trades`} color="#ef4444" />
+              sub={`${m.losses ?? 0} losing trades`} color="#ef4444" />
             <MetricCard icon={Activity} label="Total Trades"
-              value={m.total_trades.toString()} color="#818cf8" />
+              value={(m.total_trades ?? 0).toString()} color="#818cf8" />
             {m.ai_accuracy_pct !== null && (
               <MetricCard icon={Brain} label="AI Accuracy"
                 value={`${(m.ai_accuracy_pct ?? 0).toFixed(1)}%`}
                 sub="High-confidence calls"
-                color={m.ai_accuracy_pct >= 60 ? "#4ade80" : "#fbbf24"} />
+                color={(m.ai_accuracy_pct ?? 0) >= 60 ? "#4ade80" : "#fbbf24"} />
             )}
           </div>
 
