@@ -18,7 +18,7 @@ ENV PATH="$POETRY_HOME/bin:$PATH"
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --no-interaction --no-ansi --without dev
+RUN poetry install --no-interaction --no-ansi
 
 # Stage 2: runtime
 FROM python:3.12-slim AS runtime
