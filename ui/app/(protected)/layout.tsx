@@ -13,9 +13,9 @@ export default async function ProtectedLayout({
     <>
       <DisclaimerModal />
       {children}
-      <footer className="protected-footer" style={{
+      <footer style={{
         borderTop: "1px solid rgba(255,255,255,0.04)",
-        padding: "12px 20px",
+        padding: "12px 20px 72px",
         textAlign: "center",
         fontSize: 10,
         color: "rgba(255,255,255,0.18)",

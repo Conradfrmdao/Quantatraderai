@@ -69,7 +69,7 @@ function MetricCard({ icon: Icon, label, value, sub, color = "#888" }:
 }
 
 function MiniChart({ curve }: { curve: { i: number; equity: number }[] }) {
-  if (curve.length < 2) {
+  if (!curve || curve.length < 2) {
     return (
       <div style={{ height: 80, display: "flex", alignItems: "center", justifyContent: "center",
         color: "rgba(255,255,255,0.2)", fontSize: 12 }}>
@@ -196,7 +196,7 @@ export default function TrustDashboard() {
                 {(m.gross_pnl ?? 0) >= 0 ? "+" : ""}{(m.gross_pnl ?? 0).toFixed(2)} USD
               </span>
             </div>
-            <MiniChart curve={m.profit_curve} />
+            <MiniChart curve={m.profit_curve ?? []} />
           </div>
 
           {/* Metrics grid */}

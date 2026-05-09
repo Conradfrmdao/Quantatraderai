@@ -563,39 +563,6 @@ export default function SettingsPage() {
         </Link>
       </header>
 
-      {/* Horizontal tab bar (mobile) */}
-      {isMobile && (
-        <div style={{
-          overflowX: "auto", display: "flex", gap: 4,
-          padding: "12px 12px 0",
-          borderBottom: "1px solid rgba(255,255,255,0.07)",
-          scrollbarWidth: "none",
-        }}>
-          {TABS.map(t => {
-            const Icon = t.icon;
-            const active = tab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  padding: "8px 14px", borderRadius: "10px 10px 0 0", border: "none",
-                  borderBottom: active ? "2px solid #fff" : "2px solid transparent",
-                  background: active ? "rgba(255,255,255,0.06)" : "transparent",
-                  color: active ? "#fff" : "rgba(255,255,255,0.4)",
-                  fontSize: 12, fontWeight: active ? 600 : 400,
-                  cursor: "pointer", whiteSpace: "nowrap", transition: "all .15s",
-                  flexShrink: 0,
-                }}
-              >
-                <Icon size={13} /> {t.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: isMobile ? "20px 12px 60px" : "40px 28px 80px", display: isMobile ? "block" : "grid", gridTemplateColumns: "200px 1fr", gap: 40, alignItems: "start" }}>
 
         {/* ── Mobile vertical tab list ── */}
