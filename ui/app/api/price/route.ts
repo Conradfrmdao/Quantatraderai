@@ -135,7 +135,7 @@ export async function GET(req: Request) {
       symbol,
       currency:  result.meta?.currency,
     }, {
-      headers: { "Cache-Control": "public, s-maxage=5, stale-while-revalidate=10" },
+      headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=5" },
     });
   } catch (e) {
     console.error("[price]", e);

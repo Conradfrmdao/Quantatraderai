@@ -9,6 +9,7 @@ const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 interface Props {
   symbol?:    string;
   venueType?: string;
+  livePrice?: number | null; // Real-time price from WebSocket — updates last bar instantly
 }
 
 // Crypto venues where Binance public data is a valid fallback
@@ -74,7 +75,7 @@ function formatPrice(price: number, venueType: string): string {
 
 type Bar = { time: number; open: number; high: number; low: number; close: number };
 
-export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Props) {
+export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", livePrice }: Props) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const chartRef       = useRef<any>(null);
   const seriesRef      = useRef<any>(null);
@@ -93,6 +94,20 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Pro
 
   const isCrypto = CRYPTO_VENUES.has(venueType);
   const isForex  = FOREX_VENUES.has(venueType);
+
+  // ── 0. Push WebSocket live price to last bar instantly ──────────
+  // When the parent passes livePrice (from the WS price_update event),
+  // update the chart's last candle without waiting for the next poll.
+  useEffect(() => {
+    if (livePrice == null || !seriesRef.current || !lastBarTimeRef.current) return;
+    setPrice(livePrice);
+    try {
+      seriesRef.current.update({
+        time:  lastBarTimeRef.current,
+        close: livePrice,
+      } as any);
+    } catch {}
+  }, [livePrice]);
 
   // ── 1. Create chart instance once ──────────────────────────────
   useEffect(() => {
@@ -249,7 +264,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Pro
           applyBars(bars);
           setDataSource("live");
           if (isCrypto) startBinanceLiveWS();
-          else startPoll(15_000); // poll backend every 15s when agent is running
+          else startPoll(10_000); // poll backend every 10s when agent is running
           return;
         }
 
@@ -304,7 +319,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Pro
             };
 
             fastPricePoll(); // immediate first call
-            pricePollRef.id = setInterval(fastPricePoll, 5_000) as any;
+            pricePollRef.id = setInterval(fastPricePoll, 3_000) as any;
 
             // ── Slow bar history refresh every 60s ─────────────────────
             pollRef.current = setInterval(async () => {
@@ -315,7 +330,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Pro
                 seriesRef.current?.setData(backendBars as any[]);
                 setDataSource("live");
                 clearInterval(pricePollRef.id); // backend is live, no need for Yahoo polling
-                startPoll(15_000);
+                startPoll(10_000);
                 return;
               }
               // Refresh full Yahoo history
@@ -324,7 +339,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE" }: Pro
                 seriesRef.current?.setData(freshBars as any[]);
                 bars.splice(0, bars.length, ...freshBars);
               }
-            }, 60_000);
+            }, 20_000);
 
             return () => clearInterval(pricePollRef.id);
           }

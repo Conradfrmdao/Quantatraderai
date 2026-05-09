@@ -773,7 +773,7 @@ export default function Dashboard() {
                 />
               </div>
               <ErrorBoundary label="TradingChart">
-                <TradingChart symbol={symbol} venueType={chartVenueType} />
+                <TradingChart symbol={symbol} venueType={chartVenueType} livePrice={livePrice} />
               </ErrorBoundary>
             </motion.section>
 

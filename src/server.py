@@ -3021,7 +3021,14 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
     })
     try:
         while True:
-            await ws.receive_text()
+            msg = await ws.receive_text()
+            # Respond to client ping to keep the connection alive through proxies
+            try:
+                data = json.loads(msg)
+                if data.get("type") == "ping":
+                    await ws.send_json({"type": "pong"})
+            except Exception:
+                pass
     except WebSocketDisconnect:
         pass
     finally:

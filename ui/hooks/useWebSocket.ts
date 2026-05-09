@@ -17,9 +17,24 @@ export function useWebSocket(
 ) {
   const [connected, setConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<WsEvent | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef          = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const unmounted = useRef(false);
+  const pingTimer      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const unmounted      = useRef(false);
+
+  const stopPing = () => {
+    if (pingTimer.current) { clearInterval(pingTimer.current); pingTimer.current = null; }
+  };
+
+  const startPing = (ws: WebSocket) => {
+    stopPing();
+    // Send a ping every 20s to keep Caddy from closing the idle connection
+    pingTimer.current = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
+      }
+    }, 20_000);
+  };
 
   const connect = useCallback(async () => {
     if (!url || unmounted.current) return;
@@ -35,8 +50,13 @@ export function useWebSocket(
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen  = () => { if (!unmounted.current) setConnected(true); };
+    ws.onopen = () => {
+      if (unmounted.current) return;
+      setConnected(true);
+      startPing(ws);
+    };
     ws.onclose = (ev) => {
+      stopPing();
       if (unmounted.current) return;
       setConnected(false);
       // Code 4001 = auth rejected — don't retry
@@ -48,6 +68,8 @@ export function useWebSocket(
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data) as WsEvent;
+        // Ignore server pong — don't update lastEvent for heartbeat replies
+        if ((data as { type?: string }).type === "pong") return;
         if (!unmounted.current) setLastEvent(data);
       } catch {}
     };
@@ -58,6 +80,7 @@ export function useWebSocket(
     connect();
     return () => {
       unmounted.current = true;
+      stopPing();
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       wsRef.current?.close();
     };
