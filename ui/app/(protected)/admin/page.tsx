@@ -28,9 +28,9 @@ interface UserRow {
 
 interface UserDetail {
   user: UserRow & {
-    trades: { id: string; symbol: string; action: string; price: number; pnl: number | null; createdAt: string }[];
-    venues: { id: string; type: string; displayName: string; isPaper: boolean }[];
-    audits: { event: string; action: string | null; createdAt: string }[];
+    tradeLogs: { id: string; symbol: string; action: string; price: number; pnl: number | null; createdAt: string }[];
+    venues:    { id: string; type: string; displayName: string; isPaper: boolean }[];
+    auditLogs: { event: string; action: string | null; createdAt: string }[];
   };
   invoices: { id: string; amount: number; currency: string; status: string; created: number; description: string | null; hostedUrl: string | null }[];
   stats: { totalTrades: number; totalPnl: number; winRate: number; totalRevenue: number; venueCount: number };
@@ -253,13 +253,13 @@ function UserDetailPanel({ userId, onClose }: { userId: string; onClose: () => v
             </div>
 
             {/* Recent trades */}
-            {d.user.trades.length > 0 && (
+            {(d.user.tradeLogs ?? []).length > 0 && (
               <div style={{ marginBottom: 16 }}>
                 <p style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.3)",
                   textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 8 }}>
                   Recent Trades
                 </p>
-                {d.user.trades.slice(0, 8).map((t, i) => (
+                {(d.user.tradeLogs ?? []).slice(0, 8).map((t, i) => (
                   <div key={t.id} style={{ display: "flex", justifyContent: "space-between",
                     padding: "5px 0", borderBottom: i < 7 ? "1px solid rgba(255,255,255,0.04)" : "none",
                     fontSize: 12 }}>
@@ -278,14 +278,14 @@ function UserDetailPanel({ userId, onClose }: { userId: string; onClose: () => v
             )}
 
             {/* Venues */}
-            {d.user.venues.length > 0 && (
+            {(d.user.venues ?? []).length > 0 && (
               <div>
                 <p style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.3)",
                   textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 8 }}>
                   Connected Venues
                 </p>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {d.user.venues.map(v => (
+                  {(d.user.venues ?? []).map(v => (
                     <span key={v.id} style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6,
                       background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
                       color: "rgba(255,255,255,0.6)" }}>
