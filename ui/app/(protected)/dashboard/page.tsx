@@ -668,7 +668,7 @@ export default function Dashboard() {
       </motion.header>
 
       {/* ── Main content ────────────────────────────────────────────── */}
-      <main style={{ padding: isMobile ? "16px 12px 80px" : "32px 36px 56px", maxWidth: 1500, margin: "0 auto" }}>
+      <main style={{ padding: isMobile ? "16px 12px 100px" : "32px 36px 56px", maxWidth: 1500, margin: "0 auto" }}>
 
         {/* Getting started checklist — shown for new users for 14 days */}
         <GettingStartedChecklist userId={sessionKey} />

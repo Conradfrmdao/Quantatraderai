@@ -3,19 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard, BarChart2, BookOpen, Settings, ChevronUp,
-  Play, Square, Zap,
+  LayoutDashboard, BarChart2, BookOpen, ShieldCheck,
+  Play, Square, Zap, X,
 } from "lucide-react";
 import { useState } from "react";
 
 interface MobileBottomNavProps {
-  // Agent controls
   running:       boolean;
   agentLoading:  boolean;
   onStart:       () => void;
   onStop:        () => void;
   onKillswitch?: () => void;
-  // Settings
   strategyType:  string;
   timeframe:     string;
   market:        string;
@@ -28,60 +26,70 @@ const NAV = [
   { href: "/dashboard",  icon: LayoutDashboard, label: "Home"     },
   { href: "/backtest",   icon: BarChart2,        label: "Backtest" },
   { href: "/journal",    icon: BookOpen,         label: "Journal"  },
-  { href: "/settings",   icon: Settings,         label: "Settings" },
+  { href: "/trust",      icon: ShieldCheck,      label: "Trust"    },
 ];
-
-const sel = (active: boolean): React.CSSProperties => ({
-  flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
-  justifyContent: "center", gap: 3, paddingTop: 8, paddingBottom: 8,
-  color: active ? "#4ade80" : "rgba(255,255,255,0.35)",
-  background: "none", border: "none", cursor: "pointer",
-  textDecoration: "none",
-});
 
 export function MobileBottomNav({
   running, agentLoading, onStart, onStop, onKillswitch,
   strategyType, timeframe, market,
   onStrategy, onTimeframe, onMarket,
 }: MobileBottomNavProps) {
-  const pathname     = usePathname();
+  const pathname  = usePathname();
   const [open, setOpen] = useState(false);
+
+  const NAV_HEIGHT = 56; // px — must match the nav bar height below
 
   return (
     <>
-      {/* Controls drawer — slides up when tapped */}
+      {/* ── Backdrop ─────────────────────────────────────────────────── */}
       {open && (
         <div
           onClick={() => setOpen(false)}
           style={{
             position: "fixed", inset: 0, zIndex: 89,
-            background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)",
+            background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)",
           }}
         />
       )}
 
+      {/* ── Controls Drawer — sits just above the nav bar ────────────── */}
       <div style={{
-        position: "fixed", bottom: open ? 0 : 56, left: 0, right: 0, zIndex: 90,
-        background: "#0a0a0a", borderTop: "1px solid rgba(255,255,255,0.08)",
-        borderRadius: open ? "16px 16px 0 0" : 0,
-        padding: "16px 16px 8px",
-        transform: open ? "translateY(0)" : "translateY(-100%)",
-        transition: "all 0.3s cubic-bezier(0.32, 0.72, 0, 1)",
-        display: open ? "block" : "none",
+        position: "fixed",
+        bottom: NAV_HEIGHT,          // always anchored above the nav bar
+        left: 0, right: 0,
+        zIndex: 90,
+        background: "#0d0d0d",
+        borderTop: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: "18px 18px 0 0",
+        // max-height keeps it on screen; overflow lets it scroll if phone is tiny
+        maxHeight: "75vh",
+        overflowY: "auto",
+        padding: "0 16px 16px",
+        // Slide in/out
+        transform: open ? "translateY(0)" : "translateY(105%)",
+        transition: "transform 0.3s cubic-bezier(0.32,0.72,0,1)",
+        pointerEvents: open ? "auto" : "none",
       }}>
-        {/* Drag handle */}
-        <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", margin: "0 auto 16px" }} />
+        {/* Drag handle + close */}
+        <div style={{ position: "sticky", top: 0, background: "#0d0d0d", padding: "12px 0 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", margin: "0 auto" }} />
+          <button onClick={() => setOpen(false)} style={{ position: "absolute", right: 0, top: 10, background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.35)", padding: 4 }}>
+            <X size={16} />
+          </button>
+        </div>
 
-        <p style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>Agent Settings</p>
+        <p style={{ fontSize: 11, fontWeight: 700, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 14 }}>
+          Agent Controls
+        </p>
 
-        {/* Strategy */}
-        <div style={{ marginBottom: 12 }}>
-          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Strategy</p>
-          <div style={{ display: "flex", gap: 6 }}>
+        {/* ── Strategy ── */}
+        <div style={{ marginBottom: 14 }}>
+          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Strategy</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             {[["MOMENTUM_HUNTER","Momentum"],["SCALPER_AI","Scalper"],["SWING_MASTER","Swing"],["NEWS_REACTOR","News"]].map(([val, label]) => (
               <button key={val} onClick={() => onStrategy(val)} style={{
-                flex: 1, padding: "8px 4px", borderRadius: 8, fontSize: 11, fontWeight: 600,
-                cursor: "pointer", border: "1px solid",
+                padding: "10px 8px", borderRadius: 10, fontSize: 12, fontWeight: 600,
+                cursor: "pointer", border: "1px solid", textAlign: "center",
                 background: strategyType === val ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
                 borderColor: strategyType === val ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
                 color: strategyType === val ? "#4ade80" : "rgba(255,255,255,0.5)",
@@ -90,44 +98,44 @@ export function MobileBottomNav({
           </div>
         </div>
 
-        {/* Timeframe + Market */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          <div>
-            <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Timeframe</p>
-            <div style={{ display: "flex", gap: 4 }}>
-              {["1m","5m","15m","1h","4h"].map(tf => (
-                <button key={tf} onClick={() => onTimeframe(tf)} style={{
-                  flex: 1, padding: "7px 2px", borderRadius: 7, fontSize: 10, fontWeight: 600,
-                  cursor: "pointer", border: "1px solid",
-                  background: timeframe === tf ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
-                  borderColor: timeframe === tf ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
-                  color: timeframe === tf ? "#4ade80" : "rgba(255,255,255,0.5)",
-                }}>{tf}</button>
-              ))}
-            </div>
-          </div>
-          <div>
-            <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Market</p>
-            <div style={{ display: "flex", gap: 4 }}>
-              {["spot","futures","forex"].map(m => (
-                <button key={m} onClick={() => onMarket(m)} style={{
-                  flex: 1, padding: "7px 2px", borderRadius: 7, fontSize: 10, fontWeight: 600,
-                  cursor: "pointer", border: "1px solid", textTransform: "capitalize",
-                  background: market === m ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
-                  borderColor: market === m ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
-                  color: market === m ? "#4ade80" : "rgba(255,255,255,0.5)",
-                }}>{m}</button>
-              ))}
-            </div>
+        {/* ── Timeframe ── */}
+        <div style={{ marginBottom: 14 }}>
+          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Timeframe</p>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["1m","5m","15m","1h","4h"].map(tf => (
+              <button key={tf} onClick={() => onTimeframe(tf)} style={{
+                flex: 1, padding: "10px 0", borderRadius: 9, fontSize: 11, fontWeight: 600,
+                cursor: "pointer", border: "1px solid", textAlign: "center",
+                background: timeframe === tf ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
+                borderColor: timeframe === tf ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
+                color: timeframe === tf ? "#4ade80" : "rgba(255,255,255,0.5)",
+              }}>{tf}</button>
+            ))}
           </div>
         </div>
 
-        {/* Start / Stop */}
+        {/* ── Market ── */}
+        <div style={{ marginBottom: 20 }}>
+          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Market</p>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["spot","futures","forex"].map(m => (
+              <button key={m} onClick={() => onMarket(m)} style={{
+                flex: 1, padding: "10px 0", borderRadius: 9, fontSize: 11, fontWeight: 600,
+                cursor: "pointer", border: "1px solid", textTransform: "capitalize", textAlign: "center",
+                background: market === m ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
+                borderColor: market === m ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
+                color: market === m ? "#4ade80" : "rgba(255,255,255,0.5)",
+              }}>{m}</button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Start / Stop ── */}
         <button
           onClick={() => { setOpen(false); running ? onStop() : onStart(); }}
           disabled={agentLoading}
           style={{
-            width: "100%", padding: "14px 0", borderRadius: 12, fontSize: 14, fontWeight: 700,
+            width: "100%", padding: "15px 0", borderRadius: 13, fontSize: 15, fontWeight: 700,
             cursor: agentLoading ? "default" : "pointer", border: "1px solid",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
             background: running ? "rgba(239,68,68,0.12)" : "rgba(74,222,128,0.12)",
@@ -136,56 +144,64 @@ export function MobileBottomNav({
             marginBottom: onKillswitch && running ? 8 : 0,
           }}
         >
-          {agentLoading ? "…" : running ? <><Square size={14} /> Stop Agent</> : <><Play size={14} /> Start Agent</>}
+          {agentLoading ? "…" : running
+            ? <><Square size={15} /> Stop Agent</>
+            : <><Play size={15} /> Start Agent</>}
         </button>
 
         {onKillswitch && running && (
           <button onClick={() => { setOpen(false); onKillswitch(); }} style={{
-            width: "100%", padding: "10px 0", borderRadius: 10, fontSize: 12, fontWeight: 600,
+            width: "100%", padding: "11px 0", borderRadius: 10, fontSize: 12, fontWeight: 600,
             cursor: "pointer", border: "1px solid rgba(239,68,68,0.25)",
             background: "rgba(239,68,68,0.06)", color: "#ef4444",
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           }}>
-            <Zap size={12} /> Emergency — Close All Positions
+            <Zap size={13} /> Emergency — Close All Positions
           </button>
         )}
       </div>
 
-      {/* ── Sticky Bottom Bar ─────────────────────────────────────────── */}
+      {/* ── Bottom Nav Bar ───────────────────────────────────────────── */}
       <nav style={{
         position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 100,
-        background: "rgba(8,8,8,0.96)", backdropFilter: "blur(20px)",
+        background: "rgba(6,6,6,0.97)", backdropFilter: "blur(20px)",
         borderTop: "1px solid rgba(255,255,255,0.08)",
-        display: "flex", alignItems: "stretch", height: 56,
-        paddingBottom: "env(safe-area-inset-bottom)",
+        display: "flex", alignItems: "stretch",
+        height: NAV_HEIGHT,
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
       }}>
         {NAV.map(({ href, icon: Icon, label }) => {
           const active = pathname === href || (href === "/dashboard" && pathname.startsWith("/dashboard"));
           return (
-            <Link key={href} href={href} style={sel(active)}>
-              <Icon size={18} />
+            <Link key={href} href={href} style={{
+              flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+              justifyContent: "center", gap: 3, paddingTop: 8, paddingBottom: 8,
+              color: active ? "#4ade80" : "rgba(255,255,255,0.35)",
+              textDecoration: "none",
+            }}>
+              <Icon size={19} />
               <span style={{ fontSize: 9, fontWeight: active ? 700 : 500, letterSpacing: "0.03em" }}>{label}</span>
             </Link>
           );
         })}
 
-        {/* Controls toggle button — centre */}
+        {/* Controls toggle */}
         <button
           onClick={() => setOpen(o => !o)}
           style={{
             flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
             justifyContent: "center", gap: 3, paddingTop: 8, paddingBottom: 8,
             background: "none", border: "none", cursor: "pointer",
-            color: running ? "#4ade80" : "rgba(255,255,255,0.35)",
+            color: open ? "#4ade80" : running ? "#4ade80" : "rgba(255,255,255,0.35)",
           }}
         >
-          {running
+          {running && !open
             ? <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80",
-                boxShadow: "0 0 6px rgba(74,222,128,0.6)", animation: "pulse-ring 1.4s ease-out infinite" }} />
-            : <ChevronUp size={18} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 0.2s" }} />
+                boxShadow: "0 0 8px rgba(74,222,128,0.7)", marginBottom: 2 }} />
+            : <Play size={19} style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform 0.2s" }} />
           }
           <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.03em" }}>
-            {running ? "Live" : "Controls"}
+            {open ? "Close" : running ? "Live" : "Controls"}
           </span>
         </button>
       </nav>
