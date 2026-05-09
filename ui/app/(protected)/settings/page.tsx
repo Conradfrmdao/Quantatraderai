@@ -598,32 +598,30 @@ export default function SettingsPage() {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: isMobile ? "20px 12px 60px" : "40px 28px 80px", display: isMobile ? "block" : "grid", gridTemplateColumns: "200px 1fr", gap: 40, alignItems: "start" }}>
 
-        {/* ── Mobile tab selector (dropdown) ── */}
+        {/* ── Mobile vertical tab list ── */}
         {isMobile && (
-          <div style={{ marginBottom: 20 }}>
-            <select
-              value={tab}
-              onChange={e => setTab(e.target.value as TabId)}
-              style={{
-                width: "100%", padding: "13px 16px", borderRadius: 12,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.12)",
-                color: "#fff", fontSize: 14, fontWeight: 600,
-                cursor: "pointer", outline: "none",
-                appearance: "none", WebkitAppearance: "none",
-                backgroundImage: "url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")",
-                backgroundRepeat: "no-repeat",
-                backgroundPosition: "right 14px center",
-                paddingRight: 40,
-              }}
-            >
-              {TABS.map(t => (
-                <option key={t.id} value={t.id} style={{ background: "#111", color: "#fff" }}>
+          <div style={{ marginBottom: 20, display: "flex", flexDirection: "column", gap: 2 }}>
+            {TABS.map(t => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  padding: "13px 16px", borderRadius: 12, border: "none",
+                  background: active ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.02)",
+                  color: active ? "#fff" : "rgba(255,255,255,0.45)",
+                  fontSize: 14, fontWeight: active ? 600 : 400,
+                  cursor: "pointer", textAlign: "left", width: "100%",
+                  borderLeft: active ? "2px solid rgba(255,255,255,0.4)" : "2px solid transparent",
+                }}>
+                  <Icon size={16} style={{ opacity: active ? 1 : 0.5 }} />
                   {t.label}
-                </option>
-              ))}
-            </select>
+                </button>
+              );
+            })}
           </div>
+        )}
+
         )}
 
         {/* Sidebar tabs (desktop only) */}

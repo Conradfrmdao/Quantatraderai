@@ -203,9 +203,10 @@ tr:hover td { background: rgba(255,255,255,0.018); }
   border-radius: inherit;
 }
 
-/* ── Mobile: push protected footer above the fixed bottom nav bar ── */
+/* ── Mobile: sit the disclaimer ABOVE the fixed bottom nav bar ── */
 @media (max-width: 768px) {
   .protected-footer {
-    padding-bottom: 72px;
+    margin-bottom: 64px;
+    padding-bottom: 0;
   }
 }
