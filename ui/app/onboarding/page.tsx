@@ -455,8 +455,9 @@ export default function OnboardingPage() {
                     {[
                       { id: "BINANCE",     label: "Binance",      sub: "Crypto futures + spot",  url: "https://www.binance.com/en/my/settings/api-management",   perms: 'Enable Spot & Margin Trading — DISABLE Withdrawals' },
                       { id: "HYPERLIQUID", label: "Hyperliquid",  sub: "Crypto perpetuals",       url: "https://app.hyperliquid.xyz/settings/api",                 perms: 'API wallet only — never paste your main wallet key' },
-                      { id: "BYBIT",       label: "Bybit",        sub: "Crypto spot + perps",    url: "https://www.bybit.com/app/user/api-management",            perms: 'Trade permission — disable withdrawals + IP whitelist' },
+                      { id: "BYBIT",       label: "Bybit",        sub: "Crypto spot + perps",     url: "https://www.bybit.com/app/user/api-management",            perms: 'Trade permission — disable withdrawals + IP whitelist' },
                       { id: "OANDA",       label: "OANDA",        sub: "Forex + CFDs",            url: "https://www.oanda.com/us-en/trading/accounts/",            perms: 'Personal access token from My Account → API Access' },
+                      { id: "METATRADER",  label: "MetaTrader 4/5", sub: "Forex / CFDs / Indices", url: "https://app.metaapi.cloud",                               perms: 'Sign up free at metaapi.cloud → Add MT account → copy Token + Account ID' },
                       { id: "ALPACA",      label: "Alpaca",       sub: "US Stocks + Crypto",      url: "https://app.alpaca.markets/paper-trading/overview",        perms: 'Paper: paper.alpaca.markets — Live: app.alpaca.markets' },
                     ].map(v => (
                       <div key={v.id} style={{ marginBottom: 6 }}>
