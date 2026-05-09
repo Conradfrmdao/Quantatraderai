@@ -291,6 +291,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
       try {
         // Step 1: try backend cache first (fastest, most accurate when agent is live)
         let bars = await loadFromBackend();
+        if (cancelled) return;
         if (bars.length) {
           applyBars(bars);
           setDataSource("live");
@@ -302,6 +303,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
         // Step 2: crypto — Binance public API (no account needed)
         if (isCrypto) {
           bars = await loadFromBinance();
+          if (cancelled) return;
           if (bars.length) {
             applyBars(bars);
             setDataSource("public");
@@ -314,6 +316,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
         // Works for EURUSD, GBP/USD, AAPL, TSLA, US30, NAS100, XAU/USD etc.
         if (!isCrypto) {
           bars = await loadFromYahoo();
+          if (cancelled) return;
           if (bars.length) {
             applyBars(bars);
             setDataSource("public");

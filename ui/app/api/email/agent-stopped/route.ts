@@ -11,15 +11,20 @@ export async function POST(req: NextRequest) {
     const { userId, venue, reason } = await req.json() as {
       userId: string; venue: string; reason: string;
     };
+    // SECURITY: only allow sending email to YOUR OWN account, not other users'
+    if (userId !== authUserId) {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
     const user = await prisma.user.findFirst({
-      where: { clerkId: userId },
+      where: { clerkId: authUserId },
       select: { email: true, name: true },
     });
     if (user?.email) {
       sendAgentStoppedEmail(user.email, reason, venue).catch(() => {});
     }
     return NextResponse.json({ ok: true });
-  } catch {
+  } catch (e) {
+    console.error("[email/agent-stopped]", e);
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 }

@@ -142,7 +142,7 @@ export default function OnboardingPage() {
     if (!firstName.trim()) { setError("Enter your first name to continue."); return; }
     setSaving(true);
     try {
-      await user!.update({ firstName: firstName.trim(), lastName: lastName.trim() || undefined });
+      await user?.update({ firstName: firstName.trim(), lastName: lastName.trim() || undefined });
       try {
         const uid = user?.id ?? null;
         localStorage.setItem(_ukey("qt:onboarding", uid), JSON.stringify({

@@ -427,10 +427,20 @@ export default function Dashboard() {
               background: "rgba(251,191,36,0.04)" }}
           >
             <div style={{ padding: "14px 24px", display: "flex", gap: 28, flexWrap: "wrap", alignItems: "center" }}>
-              <span style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24",
-                textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Guard Settings
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#fbbf24",
+                  textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Guard Settings
+                </span>
+                <button onClick={() => setShowGuards(false)}
+                  aria-label="Close guard settings"
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    width: 22, height: 22, borderRadius: 6,
+                    background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
+                    color: "#fbbf24", cursor: "pointer", padding: 0 }}>
+                  <span style={{ fontSize: 14, lineHeight: 1, fontWeight: 700 }}>×</span>
+                </button>
+              </div>
               {/* Paper capital — only relevant for paper mode */}
               {(activeVenue?.isPaper ?? true) && (
                 <div title="Simulated starting balance for paper trading">
@@ -816,7 +826,7 @@ export default function Dashboard() {
               </div>
               {/* Last AI Decision — prominent card */}
               {running && decisions.data?.decisions?.[0] && (() => {
-                const latest = decisions.data!.decisions[0];
+                const latest = decisions.data?.decisions?.[0];
                 const d = latest.trade_decisions?.[0];
                 if (!d) return null;
                 const isBuy = d.action === "buy";

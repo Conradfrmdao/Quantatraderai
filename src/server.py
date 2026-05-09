@@ -145,6 +145,38 @@ _notifier = build_notifier()
 # Platform bot token — used to send per-user alerts to their personal chat
 _TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Shared asyncpg pool — initialised lazily, reused across the app.
+# Eliminates the per-call connect/close overhead that exhausts Postgres
+# connection slots under load (Supabase free tier = 60 connections).
+_db_pool: "asyncpg.Pool | None" = None
+_db_pool_lock = asyncio.Lock()
+
+
+async def _get_pool():
+    """Lazy-init shared asyncpg pool. Safe under concurrent access."""
+    global _db_pool
+    if _db_pool is not None:
+        return _db_pool
+    async with _db_pool_lock:
+        if _db_pool is not None:
+            return _db_pool
+        try:
+            import asyncpg
+            db_url = os.getenv("DATABASE_URL")
+            if not db_url:
+                raise RuntimeError("DATABASE_URL not set")
+            _db_pool = await asyncpg.create_pool(
+                db_url,
+                min_size=2, max_size=10,
+                command_timeout=8,
+                max_inactive_connection_lifetime=300,
+            )
+            logger.info("asyncpg pool initialised (min=2 max=10)")
+            return _db_pool
+        except Exception as e:
+            logger.error("asyncpg pool init failed", error=str(e))
+            raise
+
 
 async def _notify_user(user_id: str, event: "TradingEvent") -> None:
     """Send a Telegram alert to the user's personal chat ID (if they set one)."""
@@ -1596,6 +1628,10 @@ async def _on_startup():
             )
 
     # ── Agent auto-resume on restart ──────────────────────────────────────────
+    # On every container start we attempt to resume EACH AgentRun row that has
+    # isRunning=true. If a resume fails (missing creds, venue down, etc.) we
+    # mark that row isRunning=false so the user can retry from a clean state
+    # instead of being stuck with a zombie record.
     try:
         from src.services.supabase_reader import get_running_agents
         running = await get_running_agents()
@@ -1606,27 +1642,35 @@ async def _on_startup():
     if not running:
         return
 
-    row = running[0]  # single-agent model; first wins
-    venue_name = row.get("venue") or "binance"
-    logger.info("Auto-resuming agent for userId=%s venue=%s symbols=%s",
-                row["userId"], venue_name, row["symbols"])
-    # Use stored market, but default to "spot" if stored value was "futures"
-    # (futures requires a separate Binance Futures account; spot works with any key)
-    stored_market = row.get("market") or "spot"
-    safe_market = stored_market if stored_market != "futures" else "spot"
-    if safe_market != stored_market:
-        logger.info("Auto-resume: downgraded market futures→spot (no futures account needed for paper trading)")
+    logger.info("Boot resume: %d running agent(s) found in DB", len(running))
 
-    await _do_start(
-        user_id=row["clerkId"],
-        venue_name=venue_name,
-        symbols=list(row["symbols"]),
-        timeframe=row["timeframe"],
-        is_paper=row["isPaper"],
-        market=safe_market,
-        api_key=None,
-        api_secret=None,
-    )
+    for row in running:
+        venue_name = row.get("venue") or "binance"
+        stored_market = row.get("market") or "spot"
+        safe_market = stored_market if stored_market != "futures" else "spot"
+        try:
+            logger.info("Auto-resuming agent for userId=%s venue=%s symbols=%s",
+                        row["userId"], venue_name, row["symbols"])
+            await _do_start(
+                user_id=row["clerkId"],
+                venue_name=venue_name,
+                symbols=list(row["symbols"]),
+                timeframe=row["timeframe"],
+                is_paper=row["isPaper"],
+                market=safe_market,
+                api_key=None,
+                api_secret=None,
+            )
+        except Exception as e:
+            logger.error("Auto-resume failed for userId=%s — marking isRunning=false", row["userId"], error=str(e))
+            try:
+                pool = await _get_pool()
+                await pool.execute(
+                    'UPDATE "AgentRun" SET "isRunning"=false WHERE "userId"=$1',
+                    row["userId"],
+                )
+            except Exception as e2:
+                logger.error("Failed to clear zombie isRunning row", user_id=row["userId"], error=str(e2))
 
 
 # ── REST ──────────────────────────────────────────────────────────────────────
@@ -1659,10 +1703,14 @@ async def admin_server_stats(admin_key: str = ""):
 
 
 @app.get("/api/agent/test-key")
-async def test_stored_key(userId: Optional[str] = None):
+async def test_stored_key(request: Request, userId: Optional[str] = None):
     """Quick diagnostic: decrypt the stored API key and check its format/length.
     Does NOT call the exchange — purely local validation.
     Shows key length, first 4 chars, last 4 chars so the user can verify without exposing it."""
+    # Internal token guard — only Next.js proxy may pass userId
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        return {"ok": False, "error": "Forbidden"}
     if not userId:
         return {"ok": False, "error": "userId required"}
     try:
@@ -2362,8 +2410,26 @@ async def stop_agent(body: dict = {}):
     if s.status not in ("running", "starting"):
         return {"ok": False, "error": "Agent is not running"}
     s.status = "stopping"
-    if s._loop_task:
-        s._loop_task.cancel()
+
+    # Cancel main loop + ALL child tasks (price stream, dead-man's-switch,
+    # LLM worker, order worker). Without this, child tasks keep running
+    # after stop, leaking WS connections and potentially executing trades.
+    tasks_to_cancel = [
+        s._loop_task, s._price_task, s._deadman_task,
+        s._llm_worker_task, s._order_worker_task,
+    ]
+    for t in tasks_to_cancel:
+        if t and not t.done():
+            t.cancel()
+    # Wait for tasks to actually finish their cleanup
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[t for t in tasks_to_cancel if t], return_exceptions=True),
+            timeout=5.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("agent stop: some tasks did not exit within 5s")
+
     s.status = "stopped"
     # Broadcast so all connected WebSocket clients update immediately
     await _broadcast({"type": "status_update", "status": "stopped", "reason": "user_stop", "paper": s.is_paper}, s.user_id)

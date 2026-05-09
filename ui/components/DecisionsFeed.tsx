@@ -233,9 +233,9 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
                 >
                   <p style={{ fontSize: 9, fontWeight: 600, textTransform: "uppercase",
                     letterSpacing: "0.1em", color: "rgba(255,255,255,0.25)", marginBottom: 6 }}>
-                    AI Council · {d.council!.length} votes
+                    AI Council · {(d.council ?? []).length} votes
                   </p>
-                  {d.council!.map((op) => (
+                  {(d.council ?? []).map((op) => (
                     <CouncilRow key={op.provider} opinion={op} />
                   ))}
                 </motion.div>
