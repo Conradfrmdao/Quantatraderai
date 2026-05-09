@@ -320,7 +320,7 @@ export default function Dashboard() {
 
   return (
     <ErrorBoundary label="Dashboard">
-    <div style={{ background: "var(--bg)", minHeight: "100vh" }}>
+    <div className="dvh-min" style={{ background: "var(--bg)" }}>
 
       {/* ── First trade reaction overlay ───────────────────────────── */}
       <FirstTradeReaction lastEvent={lastEvent as Record<string, unknown> | null} />

@@ -142,12 +142,32 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
       seriesRef.current = series;
       setReady(true);
 
-      const ro = new ResizeObserver(() => {
-        if (containerRef.current && chartRef.current)
-          chartRef.current.applyOptions({ width: containerRef.current.clientWidth });
-      });
+      const resizeChart = () => {
+        if (containerRef.current && chartRef.current) {
+          chartRef.current.applyOptions({
+            width:  containerRef.current.clientWidth,
+            height: containerRef.current.clientHeight,
+          });
+          chartRef.current.timeScale().fitContent();
+        }
+      };
+
+      const ro = new ResizeObserver(resizeChart);
       ro.observe(containerRef.current);
-      return () => ro.disconnect();
+
+      // Force resize on device rotation / iOS toolbar show-hide
+      const onOrient = () => {
+        resizeChart();
+        // iOS sometimes reports stale width during the rotation animation —
+        // re-measure once it settles
+        setTimeout(resizeChart, 300);
+      };
+      window.addEventListener("app:orientation-change", onOrient);
+
+      return () => {
+        ro.disconnect();
+        window.removeEventListener("app:orientation-change", onOrient);
+      };
     });
     return () => {
       gone = true;

@@ -210,3 +210,52 @@ tr:hover td { background: rgba(255,255,255,0.018); }
     padding-bottom: 0;
   }
 }
+
+/* ── Production-grade mobile viewport handling ────────────────────
+   Solves iOS Safari rotation/toolbar bugs, Android Chrome resize
+   glitches, and PWA standalone-mode layout breaks.
+   ----------------------------------------------------------------- */
+
+/* Fallback chain for the viewport custom properties.
+   --app-dvh is set by useOrientationLayoutFix on every resize. */
+:root {
+  --app-vh:  1vh;
+  --app-dvh: 1vh;
+  --app-w:   100vw;
+}
+
+/* Hard guards against horizontal overflow after rotation */
+html, body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+  /* Stop iOS auto-zoom on form fields when in landscape */
+  touch-action: manipulation;
+}
+
+/* Make any container that uses 100vh smoothly handle rotation.
+   Modern browsers: 100dvh. Older: --app-dvh from JS. Oldest: 100vh. */
+@supports (height: 100dvh) {
+  .dvh-min {
+    min-height: 100dvh;
+  }
+}
+@supports not (height: 100dvh) {
+  .dvh-min {
+    min-height: 100vh;
+    min-height: calc(var(--app-dvh, 1vh) * 100);
+  }
+}
+
+/* Safe-area aware bottom padding helper (used by mobile nav etc.) */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Stop iOS Safari rubber-band horizontal scroll after rotation */
+@media (max-width: 1024px) {
+  body {
+    overscroll-behavior-x: none;
+  }
+}

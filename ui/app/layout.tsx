@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
 import { Inter } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
@@ -6,6 +6,7 @@ import { ToastProvider } from "@/components/Toast";
 import { SignOutGuard } from "@/components/SignOutGuard";
 import { PostHogProvider } from "@/components/PostHogProvider";
 import { SentryUserSync } from "@/components/SentryUserSync";
+import { OrientationFixer } from "@/components/OrientationFixer";
 import { APP_NAME, APP_TAGLINE } from "@/lib/constants";
 import "./globals.css";
 
@@ -14,6 +15,14 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
   description: "Multi-venue AI trading agent. Connects to Hyperliquid, Binance, OANDA, MetaTrader, Alpaca, IBKR and 100+ exchanges. 24/7 autonomous trading with collective AI council decision-making.",
+};
+
+// viewport-fit=cover gives access to env(safe-area-inset-*) on iOS notch/home-indicator
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  viewportFit: "cover",
   themeColor: "#000000",
 };
 
@@ -29,6 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </head>
         <body className={`${inter.className} min-h-full`}>
           {/* Suspense required because PostHogProvider uses useSearchParams */}
+          <OrientationFixer />
           <Suspense>
             <PostHogProvider>
               <SentryUserSync />
