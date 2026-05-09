@@ -214,12 +214,17 @@ export function StatusBar({ data }: { data: StatusData | null }) {
 
         <div style={{ width: 1, height: 16, background: "var(--border)" }} />
 
-        <Chip label="Venue"    value={data?.venue ?? "—"} />
-        <Chip label="Watching" value={data?.assets?.join(", ") ?? "—"} />
-        {data?.strategy_type && (
+        {running && <Chip label="Venue"    value={data?.venue ?? "—"} />}
+        {running && <Chip label="Watching" value={data?.assets?.join(", ") ?? "—"} />}
+        {running && data?.strategy_type && (
           <Chip label="Persona" value={PERSONA_LABELS[data.strategy_type] ?? data.strategy_type} color="#fbbf24" />
         )}
-        <Chip label="Ticks"    value={data?.tick_count?.toString() ?? "0"} />
+        {running && <Chip label="Ticks" value={data?.tick_count?.toString() ?? "0"} />}
+        {!running && (
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>
+            Start the agent to begin trading
+          </span>
+        )}
         {data?.uptime_seconds != null && running && (
           <Chip label="Uptime" value={fmtUptime(data.uptime_seconds)} />
         )}

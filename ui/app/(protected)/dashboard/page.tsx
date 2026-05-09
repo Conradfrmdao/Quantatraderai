@@ -30,6 +30,7 @@ import { useVenues, VENUE_SYMBOLS, VENUE_REGISTRY_NAME, VENUE_LABEL } from "@/ho
 import { useToast }            from "@/components/Toast";
 import { DarkSelect }          from "@/components/ui/dark-select";
 import { MarketPicker, MARKET_VENUE_TYPE } from "@/components/MarketPicker";
+import { MobileBottomNav }    from "@/components/MobileBottomNav";
 
 const TradingChart = dynamic(
   () => import("@/components/TradingChart").then((m) => m.TradingChart),
@@ -667,7 +668,7 @@ export default function Dashboard() {
       </motion.header>
 
       {/* ── Main content ────────────────────────────────────────────── */}
-      <main style={{ padding: isMobile ? "16px 12px 40px" : "32px 36px 56px", maxWidth: 1500, margin: "0 auto" }}>
+      <main style={{ padding: isMobile ? "16px 12px 80px" : "32px 36px 56px", maxWidth: 1500, margin: "0 auto" }}>
 
         {/* Getting started checklist — shown for new users for 14 days */}
         <GettingStartedChecklist userId={sessionKey} />
@@ -929,6 +930,23 @@ export default function Dashboard() {
           Take the setup tour again
         </button>
       </footer>
+
+      {/* ── Mobile bottom navigation + controls drawer ── */}
+      {isMobile && (
+        <MobileBottomNav
+          running={running}
+          agentLoading={agentLoading}
+          onStart={() => setShowStartConfirm(true)}
+          onStop={handleAgentToggle}
+          onKillswitch={handleKillSwitch}
+          strategyType={strategyType}
+          timeframe={timeframe}
+          market={market}
+          onStrategy={setStrategyType}
+          onTimeframe={setTimeframe}
+          onMarket={setMarket}
+        />
+      )}
     </div>
     </ErrorBoundary>
   );
