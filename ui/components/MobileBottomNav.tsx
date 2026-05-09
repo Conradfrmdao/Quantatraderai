@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, BarChart2, BookOpen, ShieldCheck,
   Play, Square, Zap, X, MoreHorizontal, Shield,
-  ShoppingBag, Copy, FileText, Settings,
+  ShoppingBag, Copy, FileText, Settings, Book,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -36,6 +36,7 @@ const MORE_LINKS = [
   { href: "/marketplace",  icon: ShoppingBag, label: "Marketplace"   },
   { href: "/copy-trading", icon: Copy,        label: "Copy Trading"  },
   { href: "/audit",        icon: FileText,    label: "Audit Log"     },
+  { href: "/docs",         icon: Book,        label: "Docs"          },
   { href: "/settings",     icon: Settings,    label: "Settings"      },
 ];
 

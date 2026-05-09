@@ -78,10 +78,10 @@ export default function DocsPage() {
         </div>
       </nav>
 
-      <div style={{ maxWidth: 1060, margin: "0 auto", padding: "56px 32px 96px", display: "grid", gridTemplateColumns: "200px 1fr", gap: 56, alignItems: "start" }}>
+      <div className="docs-grid" style={{ maxWidth: 1060, margin: "0 auto", padding: "32px 16px 96px", display: "grid", gap: 32, alignItems: "start", width: "100%" }}>
 
         {/* Sidebar TOC */}
-        <aside style={{ position: "sticky", top: 80 }}>
+        <aside style={{ position: "sticky", top: 80, display: "none" }} className="docs-sidebar">
           <p style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(255,255,255,0.25)", marginBottom: 12 }}>
             On this page
           </p>
@@ -178,7 +178,7 @@ export default function DocsPage() {
           {/* ── Venues ── */}
           <Section id="venues" title="Supported Venues">
             <P>Connect any combination of these exchanges and brokers — simultaneously if you wish:</P>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, marginBottom: 20 }}>
               {[
                 { name: "Hyperliquid",       type: "Crypto Perpetuals",         badge: "Decentralised" },
                 { name: "Binance Futures",   type: "Crypto USD-M Perps",        badge: "Centralised" },
@@ -344,7 +344,7 @@ export default function DocsPage() {
               reaches the exchange. If any rule is violated, the order is blocked and logged — no exceptions.
             </P>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, marginBottom: 20 }}>
               {[
                 { label: "Max position size",        value: "3% of equity", note: "Limits any single trade" },
                 { label: "Max leverage",             value: "2×",           note: "Caps borrowed exposure" },

@@ -259,3 +259,21 @@ html, body {
     overscroll-behavior-x: none;
   }
 }
+
+/* Docs sidebar — hidden on mobile, shows as fixed-width column on desktop */
+@media (min-width: 768px) {
+  .docs-sidebar {
+    display: block !important;
+  }
+}
+
+/* Docs page — single column on mobile, sidebar+content on desktop */
+.docs-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 768px) {
+  .docs-grid {
+    grid-template-columns: 200px 1fr;
+    padding: 56px 32px 96px !important;
+  }
+}
