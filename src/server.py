@@ -2693,6 +2693,87 @@ async def get_var(simulations: int = 10000):
     return {"monte_carlo": mc, "parametric": para, "data_points": len(equity_vals)}
 
 
+@app.get("/api/price/live")
+async def get_price_live(
+    request: Request,
+    symbol: str,
+    venue: str | None = None,
+    userId: str | None = None,
+):
+    """Live mid-market price from the user's connected venue.
+
+    Stream-replacement endpoint for the chart so forex/stocks users see
+    the same price as their broker without needing to start the agent.
+    Falls back to global state's venue if user_id is not provided.
+    Always validates the internal token if PYTHON_INTERNAL_TOKEN is set.
+    """
+    # Internal token guard — only Next.js proxy may pass userId
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None
+
+    # 1) Try the running agent's venue first (cheapest — already authenticated)
+    s = get_state(userId) if userId else _state
+    if s and getattr(s, "venue", None) and s.status in ("running", "stopping"):
+        try:
+            t = await s.venue.get_ticker(symbol)
+            if t and getattr(t, "last", None):
+                return {
+                    "price":  float(t.last),
+                    "bid":    float(getattr(t, "bid",  0) or 0) or None,
+                    "ask":    float(getattr(t, "ask",  0) or 0) or None,
+                    "ts":     int(time.time()),
+                    "symbol": symbol,
+                    "venue":  s.venue_name,
+                    "source": "agent",
+                }
+        except Exception:
+            pass
+
+    # 2) Build a venue from the user's stored credentials and fetch ticker
+    if userId and venue:
+        v_key = venue.lower()
+        try:
+            from src.services.supabase_reader import get_user_venues
+            venues = await get_user_venues(userId)
+            match = None
+            for v in venues:
+                name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
+                if name == v_key:
+                    match = v
+                    break
+            if match:
+                _inject_venue_env(
+                    v_key,
+                    market=("futures" if v_key == "binance" else "spot"),
+                    is_paper=bool(match.get("isPaper", True)),
+                    api_key=match.get("apiKey") or "",
+                    api_secret=match.get("apiSecret") or "",
+                    api_passphrase=match.get("apiPassphrase") or "",
+                    account_id=match.get("accountId") or "",
+                    network=match.get("network") or "",
+                    meta_token=match.get("metaApiToken") or "",
+                    meta_account_id=match.get("metaApiAccountId") or "",
+                    ccxt_exchange=match.get("ccxtExchangeId") or "",
+                )
+                v_obj = get_venue(v_key)
+                t = await v_obj.get_ticker(symbol)
+                if t and getattr(t, "last", None):
+                    return {
+                        "price":  float(t.last),
+                        "bid":    float(getattr(t, "bid",  0) or 0) or None,
+                        "ask":    float(getattr(t, "ask",  0) or 0) or None,
+                        "ts":     int(time.time()),
+                        "symbol": symbol,
+                        "venue":  v_key,
+                        "source": "venue",
+                    }
+        except Exception as e:
+            logger.warning("price/live venue fetch failed", venue=venue, error=str(e))
+
+    return {"error": "no live price available", "symbol": symbol}
+
+
 @app.post("/api/backtest/run")
 async def run_backtest(req: BacktestRequest):
     """Run a strategy backtest and return equity curve + metrics."""

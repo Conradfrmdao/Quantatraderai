@@ -305,14 +305,34 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
             const fastPricePoll = async () => {
               if (cancelled) return;
               try {
-                const r = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
-                if (!r.ok) return;
-                const d = await r.json() as {
-                  price?: number; changePct?: number; high?: number; low?: number; error?: string
-                };
-                if (d.price && !d.error) {
+                // 1) Try user's connected venue (real-time, via Python backend)
+                let d: {
+                  price?: number; changePct?: number; high?: number; low?: number;
+                  error?: string; source?: string;
+                } | null = null;
+                try {
+                  const live = await fetch(
+                    `/api/price/live?symbol=${encodeURIComponent(symbol)}&venue=${venueType.toLowerCase()}`,
+                    { cache: "no-store" }
+                  );
+                  if (live.ok) {
+                    const lj = await live.json() as { price?: number; error?: string; source?: string };
+                    if (lj.price && !lj.error) d = lj;
+                  }
+                } catch {}
+
+                // 2) Fall back to Stooq/Yahoo public price
+                if (!d) {
+                  const r = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
+                  if (!r.ok) return;
+                  d = await r.json();
+                }
+                if (!d || !d.price || d.error) return;
+                {
                   setPrice(d.price);
                   if (d.changePct !== undefined) setChange(d.changePct);
+                  setLive(d.source === "agent" || d.source === "venue");
+                  if (d.source) setDataSource(d.source === "agent" || d.source === "venue" ? "live" : "public");
                   // Update the last bar on the chart with the current price
                   if (seriesRef.current && lastBarTimeRef.current) {
                     const nowTs = Math.floor(Date.now() / 1000);
