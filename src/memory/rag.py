@@ -144,15 +144,13 @@ async def update_quality(decision_id: str, pnl: float, initial_alloc: float) -> 
         return
     pnl_pct   = pnl / initial_alloc
     delta     = pnl_pct * 0.1              # gentle update ±10% of PnL %
-    new_score = f'"qualityScore" + {delta:.6f}'
-    clamp     = 'GREATEST(0.0, LEAST(1.0, '
     try:
         import asyncpg
         conn = await asyncpg.connect(os.getenv("DATABASE_URL"), timeout=8)
         try:
             await conn.execute(
-                f'UPDATE "DecisionEmbedding" SET "qualityScore"={clamp}{new_score})) WHERE "id"=$1',
-                decision_id,
+                'UPDATE "DecisionEmbedding" SET "qualityScore"=GREATEST(0.0, LEAST(1.0, "qualityScore" + $2)) WHERE "id"=$1',
+                decision_id, delta,
             )
         finally:
             await conn.close()

@@ -11,10 +11,11 @@
  *
  * The signal is forwarded to the Python backend's risk validation pipeline
  * (same RiskManager guards as autonomous agent decisions).
+ *
+ * SECURITY: userId is never accepted from the webhook payload to prevent
+ * user_id spoofing. The Python backend must resolve the target user at
+ * configuration time, not at request time.
  */
-
-import { prisma } from "@/lib/prisma";
-import { getUserId } from "@/lib/auth";
 
 const TV_SECRET = process.env.TRADINGVIEW_WEBHOOK_SECRET;
 const PYTHON_API = process.env.PYTHON_API_URL ?? "http://localhost:8000";
@@ -27,7 +28,8 @@ interface TVSignal {
   tp?:      number;
   sl?:      number;
   venueId?: string;      // optional: target a specific venue
-  userId?:  string;      // optional: scope to a specific user
+  // userId intentionally removed — accepting userId from webhook payload
+  // allows anyone with the secret to trigger trades for arbitrary users.
 }
 
 export async function POST(req: Request) {
@@ -56,10 +58,15 @@ export async function POST(req: Request) {
   }
 
   // 4. Forward to Python risk pipeline
+  // SECURITY: user_id is NOT forwarded from the webhook payload.
+  // The Python backend must resolve the target user from its own configuration.
   try {
     const pyRes = await fetch(`${PYTHON_API}/api/agent/execute-signal`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+      },
       body: JSON.stringify({
         source:   "tradingview",
         action:   signal.action,
@@ -68,7 +75,6 @@ export async function POST(req: Request) {
         tp_price: signal.tp ?? null,
         sl_price: signal.sl ?? null,
         venue_id: signal.venueId ?? null,
-        user_id:  signal.userId  ?? null,
       }),
     });
 

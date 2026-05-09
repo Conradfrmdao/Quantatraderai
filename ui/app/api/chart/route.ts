@@ -145,6 +145,7 @@ export async function GET(req: Request) {
 
     return Response.json({ bars, ticker, symbol });
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 502 });
+    console.error("[chart]", e);
+    return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });
   }
 }

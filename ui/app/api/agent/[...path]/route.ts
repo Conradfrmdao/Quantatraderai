@@ -84,7 +84,9 @@ async function proxy(req: NextRequest, params: { path: string[] }) {
     params.set("userId", userId);  // always overwrite — never trust client-supplied userId
     const url = `${PYTHON_API}${pythonPath}?${params.toString()}`;
     try {
-      const res  = await fetch(url);
+      const res  = await fetch(url, {
+        headers: { "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "" },
+      });
       const data = await res.json().catch(() => ({}));
       return NextResponse.json(data, { status: res.status });
     } catch {
@@ -98,7 +100,11 @@ async function proxy(req: NextRequest, params: { path: string[] }) {
   try {
     const res  = await fetch(`${PYTHON_API}${pythonPath}`, {
       method:  req.method,
-      headers: { "Content-Type": "application/json", "X-User-Id": userId },
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": userId,
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+      },
       body:    JSON.stringify(enriched),
     });
     const data = await res.json().catch(() => ({}));

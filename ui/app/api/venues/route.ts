@@ -159,7 +159,8 @@ export async function POST(req: Request) {
     clearTimeout(t);
     connectionTest = await res.json();
   } catch (e) {
-    connectionTest = { ok: false, error: `Connection test timed out — saved anyway. Click Test to retry. (${(e as Error).message})` };
+    console.error("[venues] connection test", e);
+    connectionTest = { ok: false, error: "Connection test timed out — saved anyway. Click Test to retry." };
   }
 
   // Return safe version (no secrets)

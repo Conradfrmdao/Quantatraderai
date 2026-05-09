@@ -63,7 +63,8 @@ export async function POST(req: Request) {
     });
     return Response.json({ checkoutUrl: url });
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 502 });
+    console.error("[billing] createCheckout", e);
+    return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });
   }
 }
 
@@ -77,6 +78,7 @@ export async function DELETE() {
     await prisma.user.update({ where: { id: user.id }, data: { plan: "FREE", stripeSubId: null, planExpiresAt: null } });
     return Response.json({ ok: true });
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 502 });
+    console.error("[billing] cancelSubscription", e);
+    return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });
   }
 }

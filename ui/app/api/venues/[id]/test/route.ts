@@ -56,6 +56,7 @@ export async function POST(
 
     return Response.json(data, { status: res.status });
   } catch (e) {
-    return Response.json({ ok: false, error: String(e) }, { status: 502 });
+    console.error("[venues/test]", e);
+    return Response.json({ ok: false, error: "Service temporarily unavailable" }, { status: 502 });
   }
 }

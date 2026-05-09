@@ -1528,7 +1528,10 @@ def _check_endpoint_limit(endpoint: str, ip: str) -> bool:
 
 @app.middleware("http")
 async def rate_limit_middleware(request, call_next):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
     path      = request.url.path
     now       = time.time()
 
@@ -1692,7 +1695,12 @@ async def test_stored_key(userId: Optional[str] = None):
 
 
 @app.get("/api/status")
-async def get_status(userId: Optional[str] = None):
+async def get_status(request: Request, userId: Optional[str] = None):
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s      = get_state(userId)
     now    = datetime.now(timezone.utc)
     uptime = int((now - s.start_time).total_seconds()) if s.start_time else 0
@@ -1724,7 +1732,12 @@ async def get_status(userId: Optional[str] = None):
 
 
 @app.get("/api/account")
-async def get_account(userId: Optional[str] = None):
+async def get_account(request: Request, userId: Optional[str] = None):
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s = get_state(userId)
     if s.account:
         return s.account
@@ -1740,7 +1753,12 @@ async def get_account(userId: Optional[str] = None):
 
 
 @app.get("/api/positions")
-async def get_positions(userId: Optional[str] = None):
+async def get_positions(request: Request, userId: Optional[str] = None):
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s = get_state(userId)
     # Always return paper positions in paper mode (real exchange positions are irrelevant)
     if s.is_paper:
@@ -1749,8 +1767,13 @@ async def get_positions(userId: Optional[str] = None):
 
 
 @app.get("/api/risk")
-async def get_risk(userId: Optional[str] = None):
+async def get_risk(request: Request, userId: Optional[str] = None):
     """Live risk config for the requesting user's session (or fallback global)."""
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s = get_state(userId)
     if s.risk_mgr:
         cfg = s.risk_mgr.config if s.risk_mgr and hasattr(s.risk_mgr, "config") else {}
@@ -1817,13 +1840,23 @@ async def refresh_risk(req: RiskRefreshRequest):
 
 
 @app.get("/api/decisions")
-async def get_decisions(limit: int = 20, userId: Optional[str] = None):
+async def get_decisions(request: Request, limit: int = 20, userId: Optional[str] = None):
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     return {"decisions": list(get_state(userId).decisions)[:limit]}
 
 
 @app.get("/api/trust/metrics")
-async def get_trust_metrics(userId: Optional[str] = None):
+async def get_trust_metrics(request: Request, userId: Optional[str] = None):
     """Trust Dashboard — win rate, profit curve, drawdown, Sharpe, AI accuracy."""
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s = get_state(userId)
     trades = list(s.trade_log)
 
@@ -1941,7 +1974,12 @@ async def get_candles(
 
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 100, userId: Optional[str] = None):
+async def get_logs(request: Request, limit: int = 100, userId: Optional[str] = None):
+    # Only trust user_id from authenticated internal calls (Next.js proxy)
+    # Direct external callers cannot specify which user's data they see
+    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
+        userId = None  # untrusted — fall back to global state
     s = get_state(userId)
     return {"logs": list(s.logs)[-limit:]}
 
@@ -2713,17 +2751,29 @@ async def execute_signal(request: Request, req: SignalRequest):
     Phase 8: Routes to the correct per-user state via user_id, then validates
     venue ownership if venue_id is supplied.
     """
-    # HMAC signature check — only enforced when TRADINGVIEW_WEBHOOK_SECRET is set
+    # HMAC signature check — enforced when TRADINGVIEW_WEBHOOK_SECRET is set.
+    # WARNING: req.user_id comes from the untrusted webhook payload. We must
+    # validate the HMAC signature before trusting it. If no secret is configured
+    # and a user_id is supplied, we reject the request to prevent spoofing.
     secret = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "")
+    body_bytes = await request.body()
     if secret:
         import hmac as _hmac, hashlib as _hashlib
         sig = request.headers.get("X-Signature", "")
-        body_bytes = await request.body()
         expected = _hmac.new(secret.encode(), body_bytes, _hashlib.sha256).hexdigest()
         if not _hmac.compare_digest(sig, expected):
             raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        # Signature verified — user_id from payload is now trusted
+    elif req.user_id:
+        # No shared secret configured but caller is supplying a user_id.
+        # Without signature verification we cannot trust the payload user_id —
+        # reject to prevent an unauthenticated caller from routing to any user's agent.
+        raise HTTPException(
+            status_code=401,
+            detail="TRADINGVIEW_WEBHOOK_SECRET is not configured; cannot trust user_id in unsigned payload",
+        )
 
-    # Resolve state: prefer per-user if user_id supplied, else global
+    # Resolve state: prefer per-user if user_id supplied (and verified above), else global
     s = get_state(req.user_id) if req.user_id else _state
 
     if req.action not in ("buy", "sell", "close"):

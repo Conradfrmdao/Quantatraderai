@@ -138,6 +138,7 @@ export async function GET(req: Request) {
       headers: { "Cache-Control": "public, s-maxage=5, stale-while-revalidate=10" },
     });
   } catch (e) {
-    return Response.json({ error: String(e) }, { status: 502 });
+    console.error("[price]", e);
+    return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });
   }
 }
