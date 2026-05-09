@@ -622,8 +622,6 @@ export default function SettingsPage() {
           </div>
         )}
 
-        )}
-
         {/* Sidebar tabs (desktop only) */}
         {!isMobile && (
         <aside style={{ position: "sticky", top: 80 }}>
