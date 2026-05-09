@@ -930,6 +930,7 @@ export default function Dashboard() {
           Take the setup tour again
         </button>
       </footer>
+      {isMobile && <div style={{ height: 60 }} />}
 
       {/* ── Mobile bottom navigation + controls drawer ── */}
       {isMobile && (

@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard, BarChart2, BookOpen, ShieldCheck,
-  Play, Square, Zap, X,
+  Play, Square, Zap, X, MoreHorizontal,
+  ShoppingBag, Copy, FileText, Settings,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -27,6 +28,13 @@ const NAV = [
   { href: "/backtest",   icon: BarChart2,        label: "Backtest" },
   { href: "/journal",    icon: BookOpen,         label: "Journal"  },
   { href: "/trust",      icon: ShieldCheck,      label: "Trust"    },
+];
+
+const MORE_LINKS = [
+  { href: "/marketplace",  icon: ShoppingBag, label: "Marketplace"   },
+  { href: "/copy-trading", icon: Copy,        label: "Copy Trading"  },
+  { href: "/audit",        icon: FileText,    label: "Audit Log"     },
+  { href: "/settings",     icon: Settings,    label: "Settings"      },
 ];
 
 export function MobileBottomNav({
@@ -159,6 +167,23 @@ export function MobileBottomNav({
             <Zap size={13} /> Emergency — Close All Positions
           </button>
         )}
+
+        {/* ── More pages ── */}
+        <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", marginTop: 16, paddingTop: 16 }}>
+          <p style={{ fontSize: 10, fontWeight: 700, color: "rgba(255,255,255,0.25)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>More</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {MORE_LINKS.map(({ href, icon: Icon, label }) => (
+              <a key={href} href={href} onClick={() => setOpen(false)} style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "10px 12px",
+                borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.03)", color: "rgba(255,255,255,0.6)",
+                fontSize: 12, fontWeight: 500, textDecoration: "none",
+              }}>
+                <Icon size={14} style={{ opacity: 0.7 }} /> {label}
+              </a>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* ── Bottom Nav Bar ───────────────────────────────────────────── */}
@@ -198,7 +223,7 @@ export function MobileBottomNav({
           {running && !open
             ? <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80",
                 boxShadow: "0 0 8px rgba(74,222,128,0.7)", marginBottom: 2 }} />
-            : <Play size={19} style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform 0.2s" }} />
+            : <MoreHorizontal size={19} />
           }
           <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.03em" }}>
             {open ? "Close" : running ? "Live" : "Controls"}

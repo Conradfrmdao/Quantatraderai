@@ -598,6 +598,34 @@ export default function SettingsPage() {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: isMobile ? "20px 12px 60px" : "40px 28px 80px", display: isMobile ? "block" : "grid", gridTemplateColumns: "200px 1fr", gap: 40, alignItems: "start" }}>
 
+        {/* ── Mobile horizontal tab bar ── */}
+        {isMobile && (
+          <div style={{
+            overflowX: "auto", display: "flex", gap: 6,
+            paddingBottom: 14, marginBottom: 8,
+            scrollbarWidth: "none",
+            WebkitOverflowScrolling: "touch",
+          }}>
+            {TABS.map(t => {
+              const Icon = t.icon;
+              const active = tab === t.id;
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+                  padding: "8px 14px", borderRadius: 20, border: "1px solid",
+                  background: active ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.03)",
+                  borderColor: active ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.08)",
+                  color: active ? "#fff" : "rgba(255,255,255,0.4)",
+                  fontSize: 12, fontWeight: active ? 700 : 500, cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}>
+                  <Icon size={12} /> {t.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Sidebar tabs (desktop only) */}
         {!isMobile && (
         <aside style={{ position: "sticky", top: 80 }}>

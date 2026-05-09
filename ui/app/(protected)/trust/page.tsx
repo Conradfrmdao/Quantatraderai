@@ -119,10 +119,10 @@ export default function TrustDashboard() {
   const m = metrics;
   const trustScore = m
     ? Math.round(
-        (m.win_rate_pct * 0.4) +
-        (Math.min(m.sharpe * 20, 30)) +
-        (Math.max(0, 30 - m.max_drawdown_pct) * 0.6) +
-        (m.ai_accuracy_pct ? m.ai_accuracy_pct * 0.1 : 0)
+        ((m.win_rate_pct ?? 0) * 0.4) +
+        (Math.min((m.sharpe ?? 0) * 20, 30)) +
+        (Math.max(0, 30 - (m.max_drawdown_pct ?? 0)) * 0.6) +
+        ((m.ai_accuracy_pct ?? 0) ? (m.ai_accuracy_pct ?? 0) * 0.1 : 0)
       )
     : 0;
 
@@ -179,8 +179,8 @@ export default function TrustDashboard() {
                 </div>
               )}
             </div>
-            <ScoreRing value={m.win_rate_pct} label="Win Rate"
-              color={m.win_rate_pct >= 55 ? "#4ade80" : m.win_rate_pct >= 45 ? "#fbbf24" : "#ef4444"} />
+            <ScoreRing value={(m.win_rate_pct ?? 0)} label="Win Rate"
+              color={(m.win_rate_pct ?? 0) >= 55 ? "#4ade80" : (m.win_rate_pct ?? 0) >= 45 ? "#fbbf24" : "#ef4444"} />
           </div>
 
           {/* Profit Curve */}
@@ -192,8 +192,8 @@ export default function TrustDashboard() {
                 Profit Curve (last 50 trades)
               </span>
               <span style={{ fontSize: 12, fontWeight: 700,
-                color: m.gross_pnl >= 0 ? "#4ade80" : "#ef4444" }}>
-                {m.gross_pnl >= 0 ? "+" : ""}{m.gross_pnl.toFixed(2)} USD
+                color: (m.gross_pnl ?? 0) >= 0 ? "#4ade80" : "#ef4444" }}>
+                {(m.gross_pnl ?? 0) >= 0 ? "+" : ""}{(m.gross_pnl ?? 0).toFixed(2)} USD
               </span>
             </div>
             <MiniChart curve={m.profit_curve} />
@@ -201,22 +201,22 @@ export default function TrustDashboard() {
 
           {/* Metrics grid */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-            <MetricCard icon={BarChart2} label="Sharpe Ratio" value={m.sharpe.toFixed(2)}
-              sub={m.sharpe >= 1.5 ? "Excellent" : m.sharpe >= 0.5 ? "Good" : "Low"}
-              color={m.sharpe >= 1 ? "#4ade80" : "#fbbf24"} />
+            <MetricCard icon={BarChart2} label="Sharpe Ratio" value={(m.sharpe ?? 0).toFixed(2)}
+              sub={(m.sharpe ?? 0) >= 1.5 ? "Excellent" : (m.sharpe ?? 0) >= 0.5 ? "Good" : "Low"}
+              color={(m.sharpe ?? 0) >= 1 ? "#4ade80" : "#fbbf24"} />
             <MetricCard icon={AlertTriangle} label="Max Drawdown"
-              value={`${m.max_drawdown_pct.toFixed(1)}%`}
+              value={`${(m.max_drawdown_pct ?? 0).toFixed(1)}%`}
               sub={m.max_drawdown_pct < 10 ? "Safe" : m.max_drawdown_pct < 20 ? "Watch closely" : "Dangerous"}
               color={m.max_drawdown_pct < 10 ? "#4ade80" : m.max_drawdown_pct < 20 ? "#fbbf24" : "#ef4444"} />
-            <MetricCard icon={TrendingUp} label="Avg Win" value={`$${m.avg_win.toFixed(2)}`}
+            <MetricCard icon={TrendingUp} label="Avg Win" value={`$${(m.avg_win ?? 0).toFixed(2)}`}
               sub={`${m.wins} winning trades`} color="#4ade80" />
-            <MetricCard icon={TrendingDown} label="Avg Loss" value={`$${Math.abs(m.avg_loss).toFixed(2)}`}
+            <MetricCard icon={TrendingDown} label="Avg Loss" value={`$${Math.abs(m.avg_loss ?? 0).toFixed(2)}`}
               sub={`${m.losses} losing trades`} color="#ef4444" />
             <MetricCard icon={Activity} label="Total Trades"
               value={m.total_trades.toString()} color="#818cf8" />
             {m.ai_accuracy_pct !== null && (
               <MetricCard icon={Brain} label="AI Accuracy"
-                value={`${m.ai_accuracy_pct.toFixed(1)}%`}
+                value={`${(m.ai_accuracy_pct ?? 0).toFixed(1)}%`}
                 sub="High-confidence calls"
                 color={m.ai_accuracy_pct >= 60 ? "#4ade80" : "#fbbf24"} />
             )}
