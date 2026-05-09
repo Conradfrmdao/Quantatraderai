@@ -333,7 +333,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
 
             // ── Slow bar history refresh every 60s ─────────────────────
             pollRef.current = setInterval(async () => {
-              if (cancelled) { clearInterval(pricePollRef.id); return; }
+              if (cancelled) { if (pricePollId) clearInterval(pricePollId); return; }
               // Try live backend first (if agent started since last poll)
               const backendBars = await loadFromBackend().catch(() => []);
               if (backendBars.length) {
