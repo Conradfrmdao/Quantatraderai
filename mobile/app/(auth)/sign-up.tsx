@@ -1,45 +1,72 @@
 import { useState } from "react";
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform } from "react-native";
-import { useSignIn } from "@clerk/clerk-expo";
+import { Text, TextInput, TouchableOpacity, StyleSheet, KeyboardAvoidingView, Platform } from "react-native";
+import { useSignUp } from "@clerk/clerk-expo";
 import { useRouter, Link } from "expo-router";
 
-export default function SignInScreen() {
-  const { signIn, setActive, isLoaded } = useSignIn();
+export default function SignUpScreen() {
+  const { signUp, setActive, isLoaded } = useSignUp();
   const router = useRouter();
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
+  const [code,     setCode]     = useState("");
+  const [step,     setStep]     = useState<"form" | "verify">("form");
   const [error,    setError]    = useState("");
   const [loading,  setLoading]  = useState(false);
 
-  const onSignIn = async () => {
+  const onSignUp = async () => {
     if (!isLoaded) return;
     setLoading(true); setError("");
     try {
-      const res = await signIn.create({ identifier: email, password });
+      await signUp.create({ emailAddress: email, password });
+      await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
+      setStep("verify");
+    } catch (e: unknown) {
+      setError((e as { errors?: { message: string }[] }).errors?.[0]?.message ?? "Sign up failed");
+    } finally { setLoading(false); }
+  };
+
+  const onVerify = async () => {
+    if (!isLoaded) return;
+    setLoading(true); setError("");
+    try {
+      const res = await signUp.attemptEmailAddressVerification({ code });
       if (res.status === "complete") {
         await setActive({ session: res.createdSessionId });
         router.replace("/(app)/dashboard");
       }
     } catch (e: unknown) {
-      setError((e as { errors?: { message: string }[] }).errors?.[0]?.message ?? "Sign in failed");
+      setError((e as { errors?: { message: string }[] }).errors?.[0]?.message ?? "Invalid code");
     } finally { setLoading(false); }
   };
+
+  if (step === "verify") return (
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={s.root}>
+      <Text style={s.logo}>Check your email</Text>
+      <Text style={s.sub}>We sent a 6-digit code to {email}</Text>
+      <TextInput style={s.input} placeholder="Verification code" placeholderTextColor="#555"
+        value={code} onChangeText={setCode} keyboardType="number-pad" />
+      {error ? <Text style={s.error}>{error}</Text> : null}
+      <TouchableOpacity style={[s.btn, loading && s.btnDisabled]} onPress={onVerify} disabled={loading}>
+        <Text style={s.btnTxt}>{loading ? "Verifying…" : "Verify email"}</Text>
+      </TouchableOpacity>
+    </KeyboardAvoidingView>
+  );
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={s.root}>
       <Text style={s.logo}>QuantatraderAI</Text>
-      <Text style={s.sub}>AI-powered trading platform</Text>
+      <Text style={s.sub}>Create your account</Text>
       <TextInput style={s.input} placeholder="Email" placeholderTextColor="#555"
         value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
       <TextInput style={s.input} placeholder="Password" placeholderTextColor="#555"
         value={password} onChangeText={setPassword} secureTextEntry />
       {error ? <Text style={s.error}>{error}</Text> : null}
-      <TouchableOpacity style={[s.btn, loading && s.btnDisabled]} onPress={onSignIn} disabled={loading}>
-        <Text style={s.btnTxt}>{loading ? "Signing in…" : "Sign in"}</Text>
+      <TouchableOpacity style={[s.btn, loading && s.btnDisabled]} onPress={onSignUp} disabled={loading}>
+        <Text style={s.btnTxt}>{loading ? "Creating account…" : "Create account"}</Text>
       </TouchableOpacity>
-      <Link href="/(auth)/sign-up" asChild>
+      <Link href="/(auth)/sign-in" asChild>
         <TouchableOpacity style={s.link}>
-          <Text style={s.linkTxt}>Don't have an account? <Text style={{ color: "#4ade80" }}>Sign up</Text></Text>
+          <Text style={s.linkTxt}>Already have an account? <Text style={{ color: "#4ade80" }}>Sign in</Text></Text>
         </TouchableOpacity>
       </Link>
     </KeyboardAvoidingView>
