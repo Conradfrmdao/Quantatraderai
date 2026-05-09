@@ -598,31 +598,31 @@ export default function SettingsPage() {
 
       <div style={{ maxWidth: 1000, margin: "0 auto", padding: isMobile ? "20px 12px 60px" : "40px 28px 80px", display: isMobile ? "block" : "grid", gridTemplateColumns: "200px 1fr", gap: 40, alignItems: "start" }}>
 
-        {/* ── Mobile horizontal tab bar ── */}
+        {/* ── Mobile tab selector (dropdown) ── */}
         {isMobile && (
-          <div style={{
-            overflowX: "auto", display: "flex", gap: 6,
-            paddingBottom: 14, marginBottom: 8,
-            scrollbarWidth: "none",
-            WebkitOverflowScrolling: "touch",
-          }}>
-            {TABS.map(t => {
-              const Icon = t.icon;
-              const active = tab === t.id;
-              return (
-                <button key={t.id} onClick={() => setTab(t.id)} style={{
-                  display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
-                  padding: "8px 14px", borderRadius: 20, border: "1px solid",
-                  background: active ? "rgba(255,255,255,0.1)" : "rgba(255,255,255,0.03)",
-                  borderColor: active ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.08)",
-                  color: active ? "#fff" : "rgba(255,255,255,0.4)",
-                  fontSize: 12, fontWeight: active ? 700 : 500, cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}>
-                  <Icon size={12} /> {t.label}
-                </button>
-              );
-            })}
+          <div style={{ marginBottom: 20 }}>
+            <select
+              value={tab}
+              onChange={e => setTab(e.target.value as TabId)}
+              style={{
+                width: "100%", padding: "13px 16px", borderRadius: 12,
+                background: "rgba(255,255,255,0.06)",
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: "#fff", fontSize: 14, fontWeight: 600,
+                cursor: "pointer", outline: "none",
+                appearance: "none", WebkitAppearance: "none",
+                backgroundImage: "url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.4)' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")",
+                backgroundRepeat: "no-repeat",
+                backgroundPosition: "right 14px center",
+                paddingRight: 40,
+              }}
+            >
+              {TABS.map(t => (
+                <option key={t.id} value={t.id} style={{ background: "#111", color: "#fff" }}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 

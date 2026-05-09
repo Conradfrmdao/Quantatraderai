@@ -30,12 +30,67 @@ function toYahooTicker(symbol: string): string {
   return upper;
 }
 
+// ── Stooq: free real-time forex quotes (no API key needed) ──────
+// Maps Yahoo Finance =X symbols to Stooq lowercase symbols
+const STOOQ_MAP: Record<string, string> = {
+  "GC=F": "xauusd", "SI=F": "xagusd", "CL=F": "cl.f",
+  "^DJI": "dji.us", "^GSPC": "spx.us", "^NDX": "ndq.us",
+  "^GDAXI": "dax.de", "^FTSE": "ftse.uk", "^N225": "n225.jp",
+};
+
+function toStooqSymbol(yahooTicker: string): string | null {
+  if (STOOQ_MAP[yahooTicker]) return STOOQ_MAP[yahooTicker];
+  // Forex pairs like EURUSD=X → eurusd
+  if (yahooTicker.endsWith("=X")) return yahooTicker.replace("=X", "").toLowerCase();
+  return null;
+}
+
+async function fetchStooqPrice(yahooTicker: string): Promise<{ price: number; high: number; low: number } | null> {
+  const sym = toStooqSymbol(yahooTicker);
+  if (!sym) return null;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(
+      `https://stooq.com/q/l/?s=${encodeURIComponent(sym)}&f=sd2t2ohlcv&e=csv`,
+      { signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0" }, cache: "no-store" }
+    );
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const text = await res.text();
+    const lines = text.trim().split("\n");
+    if (lines.length < 2) return null;
+    const cols = lines[1].split(","); // Date,Time,Open,High,Low,Close,Volume
+    const close = parseFloat(cols[5]);
+    const high  = parseFloat(cols[3]);
+    const low   = parseFloat(cols[4]);
+    if (!isFinite(close) || close <= 0) return null;
+    return { price: close, high, low };
+  } catch { return null; }
+}
+
 export async function GET(req: Request) {
   const url    = new URL(req.url);
   const symbol = url.searchParams.get("symbol") ?? "";
   if (!symbol) return Response.json({ error: "symbol required" }, { status: 400 });
 
   const ticker = toYahooTicker(symbol);
+
+  // ── Try Stooq first for forex/commodity pairs (real-time, free) ──
+  const isForexOrCommodity = ticker.endsWith("=X") || ticker.endsWith("=F") || ticker.startsWith("^");
+  if (isForexOrCommodity) {
+    const stooq = await fetchStooqPrice(ticker);
+    if (stooq) {
+      return Response.json({
+        price: stooq.price, high: stooq.high, low: stooq.low,
+        change: null, changePct: null, prevClose: null,
+        ts: Math.floor(Date.now() / 1000),
+        ticker, symbol, source: "stooq",
+      }, {
+        headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=5" },
+      });
+    }
+  }
 
   // Use v8 chart with 2m interval, 1d range — gets the latest bars including current price
   const chartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=2m&range=1d&includePrePost=false`;
