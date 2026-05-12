@@ -65,6 +65,7 @@ from src.risk_manager import RiskManager
 from src.agent.decision_maker import TradingAgent
 from src.venues.base import Venue
 from src.venues.crypto.spot_portfolio import PREFERRED_SPOT_QUOTES
+from src.venues.crypto.spot_portfolio import base_currency_from_symbol
 from src.venues.registry import get_venue
 from src.indicators.local_indicators import compute_all, latest
 from src.utils.prompt_utils import round_or_none
@@ -444,6 +445,54 @@ def _calculate_live_account_snapshot(
 
     cash_balance, _currency = _extract_cash_balance(balances)
     return cash_balance, cash_balance + pnl_total, pnl_total
+
+
+def _find_spot_holding_position(positions: list[dict] | list, symbol: str) -> dict | None:
+    target_base = base_currency_from_symbol(symbol)
+    for pos in positions or []:
+        pos_symbol = str((pos.get("symbol") if isinstance(pos, dict) else getattr(pos, "symbol", "")) or "")
+        if base_currency_from_symbol(pos_symbol) != target_base:
+            continue
+        qty = float((pos.get("quantity") if isinstance(pos, dict) else getattr(pos, "quantity", 0)) or 0)
+        if qty > 0:
+            return pos if isinstance(pos, dict) else {
+                "symbol": pos_symbol,
+                "quantity": qty,
+                "current_price": float(getattr(pos, "current_price", 0) or 0),
+                "entry_price": float(getattr(pos, "entry_price", 0) or 0),
+            }
+    return None
+
+
+def _resolve_execution_quantity(
+    s: "AgentState",
+    action: str,
+    symbol: str,
+    allocation_usd: float,
+    price: float,
+) -> tuple[float, float]:
+    if price <= 0:
+        return 0.0, 0.0
+
+    if action == "sell" and _is_live_spot_account(s.venue_name, s.market):
+        pos = _find_spot_holding_position(s.positions, symbol)
+        if not pos:
+            return 0.0, 0.0
+
+        held_qty = abs(float(pos.get("quantity") or 0.0))
+        if held_qty <= 0:
+            return 0.0, 0.0
+
+        target_qty = allocation_usd / price if allocation_usd > 0 else held_qty
+        held_value = held_qty * price
+        if target_qty >= held_qty * 0.98 or allocation_usd >= held_value * 0.98:
+            qty = held_qty
+        else:
+            qty = min(held_qty, target_qty)
+        return qty, qty * price
+
+    qty = allocation_usd / price
+    return qty, allocation_usd
 
 
 async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -> tuple[dict, list[dict], bool] | None:
@@ -1484,7 +1533,16 @@ async def _tick_for(s: "AgentState"):
             s.log(f"Skipping {sym}: price unknown")
             continue
 
-        qty = float(dec.get("allocation_usd", alloc)) / price
+        qty, exec_alloc = _resolve_execution_quantity(
+            s,
+            action,
+            sym,
+            float(dec.get("allocation_usd", alloc)),
+            price,
+        )
+        if qty <= 0:
+            s.log(f"Skipping {sym}: no executable spot quantity available")
+            continue
         try:
             await s.venue.place_order(
                 symbol=sym,
@@ -1506,7 +1564,7 @@ async def _tick_for(s: "AgentState"):
             _te = TradingEvent(
                 kind="trade_opened", venue=s.venue_name, symbol=sym,
                 message=f"{action.upper()} {qty:.6f} @ ${price:.4f} — {dec.get('rationale','')[:80]}",
-                data={"allocation_usd": alloc, "sl": dec.get("sl_price"), "tp": dec.get("tp_price")},
+                data={"allocation_usd": exec_alloc, "sl": dec.get("sl_price"), "tp": dec.get("tp_price")},
             )
             await _notifier.emit(_te)
             if s.user_id:
@@ -1514,17 +1572,17 @@ async def _tick_for(s: "AgentState"):
             # Persist to TradeLog + AuditLog
             asyncio.create_task(_persist_trade(
                 s.user_id, symbol=sym, action=action, quantity=qty, price=price,
-                allocation_usd=alloc, source="agent", rationale=dec.get("rationale"),
+                allocation_usd=exec_alloc, source="agent", rationale=dec.get("rationale"),
                 tp_price=dec.get("tp_price"), sl_price=dec.get("sl_price"),
             ))
             asyncio.create_task(_persist_audit(
                 s.user_id, "order", sym, action,
-                {"qty": qty, "price": price, "venue": s.venue_name, "allocation_usd": alloc},
+                {"qty": qty, "price": price, "venue": s.venue_name, "allocation_usd": exec_alloc},
             ))
             # Mirror to copy-trading followers
             if s.user_id and (_plan_allows(await _get_user_plan(s.user_id), "copyTrading") or os.getenv("ENABLE_COPY_TRADING", "false").lower() in ("1", "true", "yes")):
                 asyncio.create_task(_mirror_to_followers(
-                    s.user_id, sym, action, alloc, equity,
+                    s.user_id, sym, action, exec_alloc, equity,
                     dec.get("sl_price"), dec.get("tp_price"),
                 ))
         except Exception as e:
@@ -1595,7 +1653,10 @@ async def _order_worker(s: "AgentState"):
                     continue
                 price = dec["current_price"]
                 if price <= 0: continue
-                qty = alloc / price
+                qty, exec_alloc = _resolve_execution_quantity(s, action, sym, alloc, price)
+                if qty <= 0:
+                    s.log(f"[ORDER worker] skipping {sym}: no executable spot quantity available")
+                    continue
                 try:
                     await s.venue.place_order(symbol=sym, side=action, quantity=qty,
                                               order_type="market",
@@ -2591,7 +2652,7 @@ async def _do_start(
 
 @app.post("/api/agent/start")
 async def start_agent(req: StartRequest):
-    return await _do_start(
+    result = await _do_start(
         user_id=req.userId,
         venue_name=req.venue,
         symbols=req.symbols,
@@ -2608,6 +2669,9 @@ async def start_agent(req: StartRequest):
         paper_capital=req.paperCapital,
         _requested_paper=req.isPaper,
     )
+    if not result.get("ok", False):
+        raise HTTPException(status_code=409, detail=result.get("error") or "Could not start agent")
+    return result
 
 
 @app.get("/api/agent/personas")
@@ -3208,7 +3272,9 @@ async def execute_signal(request: Request, req: SignalRequest):
     if price <= 0:
         return {"ok": False, "error": f"Price unknown for {req.symbol}"}
 
-    qty = req.size_usd / price
+    qty, exec_alloc = _resolve_execution_quantity(s, req.action, req.symbol, req.size_usd, price)
+    if qty <= 0:
+        return {"ok": False, "error": f"No spot holding available to sell for {req.symbol}"}
     try:
         await s.venue.place_order(
             symbol=req.symbol, side=req.action,
@@ -3228,7 +3294,7 @@ async def execute_signal(request: Request, req: SignalRequest):
         if s.user_id:
             asyncio.create_task(_persist_trade(
                 s.user_id, symbol=req.symbol, action=req.action, quantity=qty, price=price,
-                allocation_usd=req.size_usd, source="tradingview",
+                allocation_usd=exec_alloc, source="tradingview",
                 tp_price=req.tp_price, sl_price=trade.get("sl_price"),
             ))
         return {"ok": True, "action": req.action, "symbol": req.symbol, "qty": qty, "price": price}
@@ -3296,7 +3362,9 @@ async def create_pending_order(req: PendingOrderRequest):
             price = trade["current_price"]
             if price <= 0:
                 return
-            qty = req.size_usd / price
+            qty, _exec_alloc = _resolve_execution_quantity(s, req.action, req.symbol, req.size_usd, price)
+            if qty <= 0:
+                return
             if req.action in ("buy", "sell"):
                 await s.venue.place_order(
                     symbol=req.symbol, side=req.action,

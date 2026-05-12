@@ -254,12 +254,11 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const msg = (err as { error?: string }).error ?? `Failed (HTTP ${res.status})`;
+      const data = await res.json().catch(() => ({})) as { ok?: boolean; error?: string; detail?: string; warning?: string };
+      if (!res.ok || data.ok === false) {
+        const msg = data.error ?? data.detail ?? `Failed (HTTP ${res.status})`;
         toast(msg, res.status === 402 ? "warning" : "error");
       } else {
-        const data = await res.json().catch(() => ({})) as { warning?: string };
         status.set((prev) => ({
           ...(prev ?? {
             provider: "groq",

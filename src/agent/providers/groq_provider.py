@@ -15,8 +15,12 @@ from __future__ import annotations
 import json
 import logging
 
+import requests
+
 from src.agent.providers.base import LLMProvider, LLMResponse
 from src.config_loader import CONFIG
+
+_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 class GroqProvider(LLMProvider):
@@ -27,13 +31,7 @@ class GroqProvider(LLMProvider):
 
     def __init__(self, model: str | None = None):
         self.model = model or CONFIG.get("llm_model") or self.DEFAULT_MODEL
-        try:
-            from groq import Groq  # type: ignore
-            self.client = Groq(api_key=CONFIG.get("groq_api_key") or "")
-        except ImportError as e:
-            raise RuntimeError(
-                "groq package is not installed. Run: pip install groq"
-            ) from e
+        self.api_key = CONFIG.get("groq_api_key") or ""
 
     @property
     def supports_tools(self) -> bool:
@@ -67,29 +65,46 @@ class GroqProvider(LLMProvider):
                 for t in tools
             ]
 
-        resp = self.client.chat.completions.create(**kwargs)
-        choice = resp.choices[0]
-        text = choice.message.content or ""
+        resp = requests.post(
+            f"{_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=kwargs,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-        # If tool call returned, serialize it back as text so the agent loop
-        # can handle it — the agent re-parses tool calls from the raw response.
-        if choice.message.tool_calls:
+        choice = (data.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        text = message.get("content") or ""
+
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
             calls = [
-                {"name": tc.function.name, "arguments": tc.function.arguments}
-                for tc in choice.message.tool_calls
+                {
+                    "name": ((tc.get("function") or {}).get("name") or ""),
+                    "arguments": ((tc.get("function") or {}).get("arguments") or "{}"),
+                }
+                for tc in tool_calls
             ]
             text = json.dumps({"tool_calls": calls})
 
-        usage = resp.usage
-        logging.info("Groq: model=%s tokens in=%d out=%d", self.model,
-                     usage.prompt_tokens if usage else 0,
-                     usage.completion_tokens if usage else 0)
+        usage = data.get("usage") or {}
+        logging.info(
+            "Groq: model=%s tokens in=%d out=%d",
+            self.model,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
 
         return LLMResponse(
             content=text,
             model=self.model,
-            input_tokens=usage.prompt_tokens if usage else 0,
-            output_tokens=usage.completion_tokens if usage else 0,
-            stop_reason=choice.finish_reason or "stop",
-            raw=resp,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            stop_reason=choice.get("finish_reason") or "stop",
+            raw=data,
         )

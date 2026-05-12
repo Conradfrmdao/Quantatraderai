@@ -22,6 +22,8 @@ from src.venues.crypto.spot_portfolio import (
     SPOT_BALANCE_CACHE_TTL_S,
     base_currency_from_symbol,
     build_balances_from_ccxt_payload,
+    iter_spot_markets_for_base,
+    iter_spot_markets_for_quote,
     is_cash_equivalent,
     pick_best_spot_symbol,
 )
@@ -182,15 +184,66 @@ class CcxtVenue(Venue):
 
         positions: list[Position] = []
         next_basis: dict[str, dict[str, float]] = {}
+        ticker_cache: dict[str, float] = {}
+
+        async def _ticker_price(symbol: str) -> float:
+            if symbol in ticker_cache:
+                return ticker_cache[symbol]
+            ticker = await self.get_ticker(symbol)
+            price = float(getattr(ticker, "last", 0) or 0)
+            ticker_cache[symbol] = price
+            return price
+
+        async def _quote_to_cash_rate(currency: str, depth: int = 0) -> float | None:
+            quote = str(currency or "").upper()
+            if not quote:
+                return None
+            if is_cash_equivalent(quote):
+                return 1.0
+            if depth >= 2:
+                return None
+
+            for market in iter_spot_markets_for_base(self.client.markets or {}, quote):
+                symbol = str(market.get("symbol") or "")
+                market_price = await _ticker_price(symbol)
+                if market_price <= 0:
+                    continue
+                nested = await _quote_to_cash_rate(str(market.get("quote") or ""), depth + 1)
+                if nested:
+                    return market_price * nested
+
+            for market in iter_spot_markets_for_quote(self.client.markets or {}, quote):
+                symbol = str(market.get("symbol") or "")
+                market_price = await _ticker_price(symbol)
+                if market_price <= 0:
+                    continue
+                nested = await _quote_to_cash_rate(str(market.get("base") or ""), depth + 1)
+                if nested:
+                    return nested / market_price
+
+            return None
+
         for balance in holdings:
             base = str(balance.currency or "").upper()
             symbol = symbol_by_base.get(base)
-            if not symbol:
-                continue
+            current_price = 0.0
 
-            ticker = await ticker_tasks[base]
-            current_price = float(getattr(ticker, "last", 0) or 0)
+            if symbol:
+                ticker = await ticker_tasks[base]
+                current_price = float(getattr(ticker, "last", 0) or 0)
+
             if current_price <= 0:
+                best_market = next(iter(iter_spot_markets_for_base(self.client.markets or {}, base)), None)
+                if not best_market:
+                    continue
+                symbol = str(best_market.get("symbol") or "")
+                base_to_quote = await _ticker_price(symbol)
+                quote_to_cash = await _quote_to_cash_rate(str(best_market.get("quote") or ""))
+                if base_to_quote <= 0 or not quote_to_cash:
+                    continue
+                current_price = base_to_quote * quote_to_cash
+
+            if current_price <= 0 or not symbol:
                 continue
 
             quantity = float(balance.total or 0)

@@ -69,3 +69,53 @@ async def test_ccxt_spot_cost_basis_is_weighted_after_buy_fill():
 
     assert venue._spot_cost_basis["BTC"]["quantity"] == pytest.approx(0.10)
     assert venue._spot_cost_basis["BTC"]["entry_price"] == pytest.approx(62500.0)
+
+
+@pytest.mark.asyncio
+async def test_binance_spot_positions_value_bridge_quote_holdings():
+    venue = object.__new__(BinanceVenue)
+    venue._market = "spot"
+    venue._spot_cost_basis = {}
+    venue._spot_balances_cache = []
+    venue._spot_balances_at = 0.0
+    venue.client = SimpleNamespace(markets={
+        "ABC/BTC": {
+            "symbol": "ABC/BTC",
+            "spot": True,
+            "active": True,
+            "base": "ABC",
+            "quote": "BTC",
+        },
+        "BTC/USDT": {
+            "symbol": "BTC/USDT",
+            "spot": True,
+            "active": True,
+            "base": "BTC",
+            "quote": "USDT",
+        },
+    })
+
+    async def fake_load_markets():
+        return None
+
+    async def fake_get_spot_balances(force: bool = False):
+        return [Balance(currency="ABC", total=10.0, available=10.0)]
+
+    async def fake_get_ticker(symbol: str):
+        prices = {
+            "ABC/BTC": 0.01,
+            "BTC/USDT": 65000.0,
+        }
+        return Ticker(symbol=symbol, last=prices[symbol])
+
+    venue._load_markets = fake_load_markets
+    venue._get_spot_balances = fake_get_spot_balances
+    venue.get_ticker = fake_get_ticker
+
+    positions = await venue.get_positions()
+
+    assert len(positions) == 1
+    assert positions[0].symbol == "ABC/BTC"
+    assert positions[0].quantity == pytest.approx(10.0)
+    assert positions[0].current_price == pytest.approx(650.0)
+    assert positions[0].entry_price == pytest.approx(650.0)

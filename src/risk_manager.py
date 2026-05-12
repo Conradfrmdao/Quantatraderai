@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.config_loader import CONFIG
+from src.venues.crypto.spot_portfolio import base_currency_from_symbol
 
 
 class _ConfigProxy:
@@ -303,6 +304,25 @@ class RiskManager:
                 })
         return to_close
 
+    def _spot_holding_value(self, positions: list[dict], symbol: str, fallback_price: float) -> float:
+        target_base = base_currency_from_symbol(symbol)
+        holding_value = 0.0
+        for pos in positions:
+            pos_symbol = str(pos.get("symbol") or pos.get("coin") or "")
+            if base_currency_from_symbol(pos_symbol) != target_base:
+                continue
+            qty = abs(float(pos.get("quantity") or pos.get("szi") or 0))
+            px = float(
+                pos.get("current_price")
+                or pos.get("mark_price")
+                or fallback_price
+                or pos.get("entry_price")
+                or pos.get("entryPx")
+                or 0
+            )
+            holding_value += qty * px
+        return holding_value
+
     # ------------------------------------------------------------------
     # Composite validation — run all checks before a trade
     # ------------------------------------------------------------------
@@ -328,6 +348,21 @@ class RiskManager:
         balance = float(account_state.get("balance", 0))
         positions = account_state.get("positions", [])
         is_buy = action == "buy"
+        is_spot_sell = self.asset_class == "crypto_spot" and action == "sell"
+
+        if is_spot_sell:
+            current_price = float(trade.get("current_price", 0))
+            holding_value = self._spot_holding_value(
+                positions,
+                str(trade.get("asset") or trade.get("symbol") or ""),
+                current_price,
+            )
+            if holding_value <= 0:
+                return False, "No spot holding available to sell", trade
+            if alloc_usd > holding_value:
+                alloc_usd = holding_value
+                trade = {**trade, "allocation_usd": alloc_usd}
+            return True, "", trade
 
         ok, reason = self.check_daily_drawdown(account_value)
         if not ok:

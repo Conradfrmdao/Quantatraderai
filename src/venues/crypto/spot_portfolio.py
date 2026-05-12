@@ -7,6 +7,9 @@ from src.venues.models import Balance
 PREFERRED_SPOT_QUOTES: tuple[str, ...] = (
     "USDT", "USDC", "USD", "BUSD", "FDUSD", "USDP", "TUSD", "DAI",
 )
+PREFERRED_BRIDGE_QUOTES: tuple[str, ...] = (
+    "BTC", "ETH", "BNB", "SOL", "EUR", "GBP", "JPY",
+)
 
 CASH_EQUIVALENT_QUOTES = frozenset(PREFERRED_SPOT_QUOTES)
 SPOT_BALANCE_CACHE_TTL_S = 2.0
@@ -73,3 +76,42 @@ def pick_best_spot_symbol(markets: dict, base_currency: str) -> str | None:
             best_symbol = str(market.get("symbol") or "")
 
     return best_symbol
+
+
+def spot_market_priority(quote_currency: str | None) -> int:
+    quote = str(quote_currency or "").upper()
+    if quote in CASH_EQUIVALENT_QUOTES:
+        return PREFERRED_SPOT_QUOTES.index(quote)
+    if quote in PREFERRED_BRIDGE_QUOTES:
+        return len(PREFERRED_SPOT_QUOTES) + PREFERRED_BRIDGE_QUOTES.index(quote)
+    return len(PREFERRED_SPOT_QUOTES) + len(PREFERRED_BRIDGE_QUOTES) + 100
+
+
+def iter_spot_markets_for_base(markets: dict, base_currency: str) -> list[dict]:
+    base = str(base_currency or "").upper()
+    candidates = [
+        market for market in (markets or {}).values()
+        if market
+        and market.get("spot") is not False
+        and market.get("active") is not False
+        and str(market.get("base") or "").upper() == base
+    ]
+    return sorted(
+        candidates,
+        key=lambda market: (spot_market_priority(market.get("quote")), str(market.get("symbol") or "")),
+    )
+
+
+def iter_spot_markets_for_quote(markets: dict, quote_currency: str) -> list[dict]:
+    quote = str(quote_currency or "").upper()
+    candidates = [
+        market for market in (markets or {}).values()
+        if market
+        and market.get("spot") is not False
+        and market.get("active") is not False
+        and str(market.get("quote") or "").upper() == quote
+    ]
+    return sorted(
+        candidates,
+        key=lambda market: (spot_market_priority(market.get("base")), str(market.get("symbol") or "")),
+    )

@@ -277,6 +277,53 @@ def test_infer_asset_class_respects_explicit_spot_market():
     assert srv._infer_asset_class("ccxt", "spot") == "crypto_spot"
 
 
+def test_risk_manager_spot_sell_caps_to_existing_holding():
+    from src.risk_manager import RiskManager
+
+    rm = RiskManager(venue="binance", asset_class="crypto_spot")
+    trade = {
+        "symbol": "BTC/USDT",
+        "action": "sell",
+        "current_price": 65000,
+        "allocation_usd": 10000,
+    }
+    account = {
+        "total_value": 5000,
+        "balance": 0,
+        "positions": [{
+            "symbol": "BTC/USDT",
+            "quantity": 0.05,
+            "current_price": 65000,
+        }],
+    }
+
+    ok, reason, result = rm.validate_trade(trade, account, 10000)
+
+    assert ok is True, reason
+    assert result["allocation_usd"] == pytest.approx(3250.0)
+
+
+@pytest.mark.asyncio
+async def test_start_agent_returns_http_409_on_start_failure():
+    import src.server as srv
+    from fastapi import HTTPException
+
+    req = srv.StartRequest(
+        userId="user_test",
+        venue="binance",
+        symbols=["BTC/USDT"],
+        timeframe="1h",
+        isPaper=True,
+    )
+
+    with patch("src.server._do_start", AsyncMock(return_value={"ok": False, "error": "boom"})):
+        with pytest.raises(HTTPException) as exc:
+            await srv.start_agent(req)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == "boom"
+
+
 # ── Risk manager smoke test ────────────────────────────────────────────────────
 
 def test_risk_manager_caps_oversized():
