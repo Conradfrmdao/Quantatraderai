@@ -23,18 +23,19 @@ from tests.conftest import MockVenue
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-def _enc_venue_row(venue_type: str = "BINANCE", api_key: str = "k", api_secret: str = "s",
-                   account_id: str = "", network: str = "", meta_token: str = "",
-                   meta_acct: str = "", ccxt_ex: str = "") -> dict:
-    from src.services.encryption import encrypt
+def _venue_row(venue_type: str = "BINANCE", api_key: str = "k", api_secret: str = "s",
+               account_id: str = "", network: str = "", market: str = "spot",
+               meta_token: str = "", meta_acct: str = "", ccxt_ex: str = "") -> dict:
+    """Mock the *decrypted* shape returned by get_user_venues()."""
     return {
         "type": venue_type,
-        "apiKey":           encrypt(api_key),
-        "apiSecret":        encrypt(api_secret),
+        "apiKey":           api_key,
+        "apiSecret":        api_secret,
         "apiPassphrase":    "",
         "accountId":        account_id,
         "network":          network,
-        "metaApiToken":     encrypt(meta_token) if meta_token else "",
+        "market":           market,
+        "metaApiToken":     meta_token,
         "metaApiAccountId": meta_acct,
         "ccxtExchangeId":   ccxt_ex,
     }
@@ -58,8 +59,8 @@ class TestE2EConnectBinanceAccount:
         api_key    = "LIVE_BINANCE_API_KEY_9876543210"
         api_secret = "LIVE_BINANCE_SECRET_ABCDEF12345"
 
-        # Simulate what POST /api/venues saves: encrypted credentials in DB
-        venue_row = _enc_venue_row("BINANCE", api_key, api_secret)
+        # Simulate what get_user_venues() returns after decrypting the DB row.
+        venue_row = _venue_row("BINANCE", api_key, api_secret)
 
         mock_v = MockVenue(starting_balance=12_500.0)
 
@@ -86,7 +87,7 @@ class TestE2EConnectBinanceAccount:
         failing_venue = MockVenue(fail_on="get_balances")
 
         with patch("src.services.supabase_reader.get_user_venues",
-                   new=AsyncMock(return_value=[_enc_venue_row("BINANCE", "bad-key", "bad-secret")])):
+                   new=AsyncMock(return_value=[_venue_row("BINANCE", "bad-key", "bad-secret")])):
             with patch("src.server.get_venue", return_value=failing_venue):
                 result = await test_venue(VenueTestRequest(
                     userId="user_bad_key", venue="binance", isPaper=True))

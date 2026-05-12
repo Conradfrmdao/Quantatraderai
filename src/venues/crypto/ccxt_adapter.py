@@ -49,11 +49,20 @@ class CcxtVenue(Venue):
         def _ascii(s: str) -> str:
             return s.encode("ascii", errors="ignore").decode("ascii").strip()
 
+        market_pref = (os.environ.get("CCXT_MARKET") or CONFIG.get("ccxt_market") or "spot").lower()
+        options: dict[str, str] = {}
+        if market_pref in ("futures", "perpetual", "perp", "swap"):
+            # Best-effort default across the major derivatives exchanges we expose.
+            options["defaultType"] = "swap" if exchange_id in {"bybit", "okx", "bitget", "gate", "mexc", "kucoin"} else "future"
+        else:
+            options["defaultType"] = "spot"
+
         exchange_cls = getattr(ccxt, exchange_id)
         self.client = exchange_cls({
             "apiKey": _ascii(os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or ""),
             "secret": _ascii(os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or ""),
             "enableRateLimit": True,
+            "options": options,
         })
         sandbox_val = os.environ.get("CCXT_SANDBOX") or str(CONFIG.get("ccxt_sandbox", "true"))
         sandbox = sandbox_val.lower() in {"1", "true", "yes"}
@@ -68,8 +77,7 @@ class CcxtVenue(Venue):
         # Detect whether this instance handles perps or spot so the RiskManager
         # loads the correct risk.yaml override block.  CCXT_MARKET=futures (or
         # "perpetual") means perps; anything else (or unset) means spot.
-        _market = (os.environ.get("CCXT_MARKET") or CONFIG.get("ccxt_market") or "spot").lower()
-        if _market in ("futures", "perpetual", "perp", "swap"):
+        if market_pref in ("futures", "perpetual", "perp", "swap"):
             self.asset_class = "crypto_perp"
         else:
             self.asset_class = "crypto_spot"

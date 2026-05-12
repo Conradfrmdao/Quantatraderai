@@ -5,6 +5,7 @@ export interface UserVenue {
   id:          string;
   displayName: string;
   type:        string;  // HYPERLIQUID | BINANCE | OANDA | METATRADER | ALPACA | IBKR | BYBIT | OKX | KRAKEN | COINBASE | CCXT | POLYMARKET
+  market:      string;
   isPaper:     boolean;
   isActive:    boolean;
   network:     string | null;

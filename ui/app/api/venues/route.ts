@@ -13,6 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { VenueType } from "@prisma/client";
 import { encrypt } from "@/lib/encryption";
 import { getPlanLimits, type Plan } from "@/lib/plan-limits";
+import { normalizeVenueMarket } from "@/lib/venue-market";
 
 /** Mask a value for safe display: "abcd…wxyz" */
 function maskSecret(s: string | null | undefined): string {
@@ -48,6 +49,7 @@ export async function GET() {
     accountId:        v.accountId,
     ccxtExchangeId:   v.ccxtExchangeId,
     network:          v.network,
+    market:           v.market,
     metaApiAccountId: v.metaApiAccountId,
     isPaper:          v.isPaper,
     isActive:         v.isActive,
@@ -93,6 +95,7 @@ export async function POST(req: Request) {
     accountId?: string;
     ccxtExchangeId?: string;
     network?: string;
+    market?: string;
     isPaper?: boolean;
     metaApiToken?: string;
     metaApiAccountId?: string;
@@ -101,6 +104,8 @@ export async function POST(req: Request) {
   if (!body.displayName?.trim() || !body.type) {
     return NextResponse.json({ error: "displayName and type are required" }, { status: 400 });
   }
+
+  const market = normalizeVenueMarket(body.type, body.market);
 
   const venue = await prisma.venue.create({
     data: {
@@ -113,6 +118,7 @@ export async function POST(req: Request) {
       accountId:        body.accountId        ?? null,
       ccxtExchangeId:   body.ccxtExchangeId   ?? null,
       network:          body.network          ?? null,
+      market,
       metaApiToken:     body.metaApiToken     ? encrypt(body.metaApiToken) : null,
       metaApiAccountId: body.metaApiAccountId ?? null,
       isPaper:          body.isPaper          ?? true,
@@ -127,7 +133,7 @@ export async function POST(req: Request) {
       userId: user.id, event: "venue_connected", symbol: null, action: null,
       data: JSON.stringify({
         venueId: venue.id, type: venue.type, displayName: venue.displayName,
-        isPaper: venue.isPaper, network: venue.network,
+        isPaper: venue.isPaper, network: venue.network, market: venue.market,
         keyMasked: body.apiKey ? `${body.apiKey.slice(0, 4)}…${body.apiKey.slice(-4)}` : "",
       }),
     },
@@ -171,6 +177,7 @@ export async function POST(req: Request) {
     accountId:        venue.accountId,
     ccxtExchangeId:   venue.ccxtExchangeId,
     network:          venue.network,
+    market:           venue.market,
     metaApiAccountId: venue.metaApiAccountId,
     isPaper:          venue.isPaper,
     isActive:         venue.isActive,

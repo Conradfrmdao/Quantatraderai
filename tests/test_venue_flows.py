@@ -34,6 +34,16 @@ def test_inject_binance_live_sandbox_false(monkeypatch, mock_env):
     assert os.environ["BINANCE_SANDBOX"] == "false"
 
 
+def test_inject_ccxt_sets_market_env(mock_env):
+    from src.server import _inject_venue_env
+    _inject_venue_env("ccxt", "futures", is_paper=True,
+                      api_key="ck", api_secret="cs",
+                      api_passphrase="", account_id="", network="",
+                      meta_token="", meta_account_id="", ccxt_exchange="bybit")
+    assert os.environ["CCXT_MARKET"] == "futures"
+    assert os.environ["CCXT_SANDBOX"] == "true"
+
+
 def test_inject_oanda_sets_env(mock_env):
     from src.server import _inject_venue_env
     _inject_venue_env("oanda", "spot", is_paper=True,
@@ -173,6 +183,96 @@ async def test_preflight_rejects_binance_missing_key(mock_env):
         result = await test_venue(req)
     assert result["ok"] is False
     assert "apiKey" in result["error"] or "requires" in result["error"] or "key" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_binance_connection_test_defaults_to_spot_market(mock_env):
+    """Generic Binance venue tests should use spot, matching the dashboard start flow."""
+    from src.server import VenueTestRequest, test_venue
+    from tests.conftest import MockVenue
+
+    venue_row = {
+        "type": "BINANCE",
+        "apiKey": "BINANCEKEY1234567890ABCDE",
+        "apiSecret": "BINANCESECRET1234567890ABCDE",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "market": "spot",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+    }
+
+    with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
+        with patch("src.server._inject_venue_env") as inject_env:
+            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=321.0)) as get_venue_mock:
+                result = await test_venue(VenueTestRequest(
+                    userId="clerk-123", venue="binance", isPaper=True))
+
+    assert result["ok"] is True
+    assert inject_env.call_args.args[0] == "binance"
+    assert inject_env.call_args.args[1] == "spot"
+    get_venue_mock.assert_called_once_with("binance:spot")
+
+
+@pytest.mark.asyncio
+async def test_binance_connection_test_uses_saved_market_mode(mock_env):
+    from src.server import VenueTestRequest, test_venue
+    from tests.conftest import MockVenue
+
+    venue_row = {
+        "type": "BINANCE",
+        "apiKey": "BINANCEKEY1234567890ABCDE",
+        "apiSecret": "BINANCESECRET1234567890ABCDE",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "market": "futures",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+    }
+
+    with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
+        with patch("src.server._inject_venue_env") as inject_env:
+            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=777.0)) as get_venue_mock:
+                result = await test_venue(VenueTestRequest(
+                    userId="clerk-123", venue="binance", isPaper=True))
+
+    assert result["ok"] is True
+    assert inject_env.call_args.args[1] == "futures"
+    get_venue_mock.assert_called_once_with("binance:futures")
+
+
+@pytest.mark.asyncio
+async def test_binance_connection_test_honors_explicit_futures_suffix(mock_env):
+    from src.server import VenueTestRequest, test_venue
+    from tests.conftest import MockVenue
+
+    venue_row = {
+        "type": "BINANCE",
+        "apiKey": "BINANCEKEY1234567890ABCDE",
+        "apiSecret": "BINANCESECRET1234567890ABCDE",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "market": "spot",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+    }
+
+    with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
+        with patch("src.server._inject_venue_env") as inject_env:
+            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=654.0)) as get_venue_mock:
+                result = await test_venue(VenueTestRequest(
+                    userId="clerk-123", venue="binance:futures", isPaper=True))
+
+    assert result["ok"] is True
+    assert inject_env.call_args.args[0] == "binance"
+    assert inject_env.call_args.args[1] == "futures"
+    get_venue_mock.assert_called_once_with("binance:futures")
 
 
 @pytest.mark.asyncio

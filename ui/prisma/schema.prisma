@@ -64,6 +64,7 @@ model Venue {
   accountId         String?
   ccxtExchangeId    String?
   network           String?
+  market            String      @default("spot")
   metaApiToken      String?   // encrypted MetaAPI cloud token for MT4/MT5
   metaApiAccountId  String?   // MT4/MT5 account ID on MetaAPI
   webhookSecret     String?   // per-venue secret for TradingView webhooks
@@ -188,7 +189,7 @@ model AgentRun {
   symbols   String[]
   timeframe String    @default("1h")
   isPaper   Boolean   @default(true)
-  market    String    @default("futures")
+  market    String    @default("spot")
   isRunning Boolean   @default(true)
   startedAt DateTime  @default(now())
   stoppedAt DateTime?

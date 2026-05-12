@@ -14,6 +14,7 @@ export type AuthUser = {
     id: string;
     displayName: string;
     type: string;
+    market: string;
     isPaper: boolean;
     isActive: boolean;
     riskProfile: {

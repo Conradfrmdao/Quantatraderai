@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/encryption";
+import { normalizeVenueMarket } from "@/lib/venue-market";
 
 async function resolveUserId(): Promise<string | null> {
   const { userId: clerkId } = await auth();
@@ -22,7 +23,7 @@ async function resolveUserId(): Promise<string | null> {
 
 const PATCH_ALLOWED = new Set([
   "displayName", "apiKey", "apiSecret", "apiPassphrase",
-  "accountId", "ccxtExchangeId", "network",
+  "accountId", "ccxtExchangeId", "network", "market",
   "metaApiToken", "metaApiAccountId",
   "isPaper", "isActive",
 ]);
@@ -36,7 +37,7 @@ export async function PATCH(
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const owned = await prisma.venue.findFirst({ where: { id, userId }, select: { id: true } });
+  const owned = await prisma.venue.findFirst({ where: { id, userId }, select: { id: true, type: true } });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const body = await req.json() as Record<string, unknown>;
@@ -44,6 +45,10 @@ export async function PATCH(
   const data: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(body)) {
     if (!PATCH_ALLOWED.has(k)) continue;
+    if (k === "market") {
+      data[k] = normalizeVenueMarket(owned.type, typeof v === "string" ? v : null);
+      continue;
+    }
     if (ENCRYPT_FIELDS.has(k) && typeof v === "string" && v) {
       data[k] = encrypt(v);
     } else {
@@ -58,7 +63,7 @@ export async function PATCH(
   });
   return NextResponse.json({
     id: v.id, displayName: v.displayName, type: v.type,
-    accountId: v.accountId, ccxtExchangeId: v.ccxtExchangeId, network: v.network,
+    accountId: v.accountId, ccxtExchangeId: v.ccxtExchangeId, network: v.network, market: v.market,
     metaApiAccountId: v.metaApiAccountId, isPaper: v.isPaper, isActive: v.isActive,
     hasApiKey: Boolean(v.apiKey), hasApiSecret: Boolean(v.apiSecret),
     apiKey: v.apiKey ? "••••••••" : "", apiSecret: v.apiSecret ? "••••••••" : "",

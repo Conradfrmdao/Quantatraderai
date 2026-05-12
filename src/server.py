@@ -2042,7 +2042,7 @@ class StartRequest(BaseModel):
     symbols:       list[str]     = Field(default=["BTC/USDT"], max_length=20)
     timeframe:     str           = "1h"
     isPaper:       bool          = True
-    market:        str           = "spot"   # default: spot avoids requiring a Binance Futures account
+    market:        str           = ""       # blank = use the saved venue market mode
     apiKey:        Optional[str] = None
     apiSecret:     Optional[str] = None
     strategyType:     Optional[str] = None   # MOMENTUM_HUNTER | SCALPER_AI | SWING_MASTER | NEWS_REACTOR
@@ -2082,6 +2082,67 @@ _VENUE_TYPE_TO_NAME: dict[str, str] = {
     "POLYMARKET":  "polymarket",
 }
 
+
+_FUTURES_MARKETS = {"futures", "perpetual", "perp", "swap"}
+
+
+def _default_market_for_backend_name(venue_name: str | None) -> str:
+    v = (venue_name or "").lower().strip().split(":")[0]
+    if v in ("hyperliquid", "bybit"):
+        return "futures"
+    if v in ("oanda", "metatrader", "mt4", "mt5"):
+        return "forex"
+    if v in ("alpaca", "ibkr"):
+        return "stocks"
+    if v == "polymarket":
+        return "prediction"
+    return "spot"
+
+
+def _default_market_for_venue_type(venue_type: str | None) -> str:
+    return _default_market_for_backend_name(_VENUE_TYPE_TO_NAME.get(venue_type or "", venue_type or ""))
+
+
+def _normalize_market_for_backend_name(venue_name: str | None, market: str | None) -> str:
+    v = (venue_name or "").lower().strip().split(":")[0]
+    requested = (market or "").lower().strip()
+    if v in ("binance", "bybit", "okx", "ccxt"):
+        return requested if requested in ("spot", "futures") else _default_market_for_backend_name(v)
+    return _default_market_for_backend_name(v)
+
+
+def _infer_asset_class(venue_name: str, market: str) -> str:
+    v = venue_name.lower().strip().split(":")[0]
+    m = (market or "").lower()
+    if v in ("oanda", "metatrader", "mt4", "mt5"):
+        return "forex"
+    if v in ("alpaca", "ibkr"):
+        return "crypto_spot"
+    if v == "polymarket":
+        return "prediction"
+    if v == "hyperliquid":
+        return "crypto_perp"
+    if v in ("binance", "bybit", "okx", "ccxt") and m in _FUTURES_MARKETS:
+        return "crypto_perp"
+    return _ASSET_CLASS.get(v, "crypto_spot")
+
+
+def _resolve_test_venue_target(requested_venue: str, stored_market: str | None = None) -> tuple[str, str, str]:
+    """Resolve a venue test target into (match_key, registry_name, market).
+
+    Saved venues can specify a market mode (spot / futures / forex / etc.).
+    Tests should use that stored mode unless the caller explicitly overrides it
+    with a suffix like ``binance:futures``.
+    """
+    requested = (requested_venue or "").lower().strip()
+    base, _, suffix = requested.partition(":")
+    market = _normalize_market_for_backend_name(base, suffix or stored_market)
+
+    if base == "binance":
+        return "binance", f"binance:{market}", market
+
+    return requested, requested, market
+
 # Per-venue env-var injection so adapters find their credentials
 def _inject_venue_env(venue_name: str, market: str, is_paper: bool,
                       api_key: str, api_secret: str, api_passphrase: str,
@@ -2115,6 +2176,7 @@ def _inject_venue_env(venue_name: str, market: str, is_paper: bool,
         if api_key:        os.environ["CCXT_API_KEY"]    = api_key
         if api_secret:     os.environ["CCXT_API_SECRET"] = api_secret
         if ccxt_exchange:  os.environ["CCXT_EXCHANGE"]   = ccxt_exchange
+        os.environ["CCXT_MARKET"] = market or "spot"
         os.environ["CCXT_SANDBOX"] = "true" if is_paper else "false"
     elif v == "polymarket":
         if api_key:  os.environ["POLYMARKET_ETH_PRIVATE_KEY"] = api_key
@@ -2209,6 +2271,7 @@ async def _do_start(
     meta_token     = ""
     meta_account_id = ""
     ccxt_exchange  = ""
+    saved_market   = _default_market_for_backend_name(v_key)
 
     if user_id:
         try:
@@ -2229,9 +2292,12 @@ async def _do_start(
                 meta_token     = match.get("metaApiToken") or ""
                 meta_account_id = match.get("metaApiAccountId") or ""
                 ccxt_exchange  = match.get("ccxtExchangeId") or ""
+                saved_market   = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
                 logger.info("Loaded %s credentials from Supabase for user %s", venue_name, user_id)
         except Exception as e:
             logger.warning("Supabase credential load failed: %s — falling back to .env", e)
+
+    market = _normalize_market_for_backend_name(v_key, (market or "").lower() or saved_market)
 
     # Fall back to .env
     if not api_key and v_key == "binance":
@@ -2251,11 +2317,10 @@ async def _do_start(
     # Build venue, risk manager, and agent BEFORE touching state — if any step
     # fails, final_state is completely unchanged (atomic swap on success only).
     try:
+        asset_class = _infer_asset_class(v_key, market)
         if v_key == "binance":
-            asset_class = "crypto_perp" if market == "futures" else "crypto_spot"
             _new_venue  = get_venue(f"binance:{market}")
         else:
-            asset_class = _ASSET_CLASS.get(v_key, "crypto_spot")
             _new_venue  = get_venue(venue_name)
         # Propagate paper-mode flag to venue so adapters can short-circuit live API calls
         _new_venue.is_paper = is_paper
@@ -2496,14 +2561,14 @@ async def test_venue(req: VenueTestRequest):
 
     B2: Venue-specific error messages so users understand exactly what is wrong.
     """
-    venue_lc = req.venue.lower()
+    venue_match_key, _, _ = _resolve_test_venue_target(req.venue)
     try:
         from src.services.supabase_reader import get_user_venues
         venues = await get_user_venues(req.userId)
         match = None
         for v in venues:
             name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
-            if name == venue_lc:
+            if name == venue_match_key:
                 match = v; break
         if not match:
             return {"ok": False, "error": f"No {req.venue} venue configured. Add credentials in Settings → Venues first."}
@@ -2515,12 +2580,14 @@ async def test_venue(req: VenueTestRequest):
         acct_id   = match.get("accountId") or ""
         meta_tok  = match.get("metaApiToken") or ""
         meta_acct = match.get("metaApiAccountId") or ""
+        stored_market = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
+        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(req.venue, stored_market)
 
-        if venue_lc in ("binance", "bybit", "kraken", "coinbase", "binanceusdm"):
+        if venue_match_key in ("binance", "bybit", "kraken", "coinbase", "binanceusdm"):
             if not api_key or not api_sec:
                 return {"ok": False, "error": f"{req.venue} requires API key + secret."}
             # Validate Binance key format — should be ~64 alphanumeric chars
-            if venue_lc in ("binance", "binanceusdm"):
+            if venue_match_key in ("binance", "binanceusdm"):
                 if len(api_key) < 20:
                     return {"ok": False, "error": (
                         f"Binance API key looks wrong — only {len(api_key)} characters. "
@@ -2536,20 +2603,20 @@ async def test_venue(req: VenueTestRequest):
                         "Binance API key contains invalid characters. "
                         "Keys are alphanumeric only. Re-paste carefully."
                     )}
-        if venue_lc == "okx" and (not api_key or not api_sec or not passph):
+        if venue_match_key == "okx" and (not api_key or not api_sec or not passph):
             return {"ok": False, "error": "OKX requires API key, secret, AND passphrase."}
-        if venue_lc == "hyperliquid" and not api_key:
+        if venue_match_key == "hyperliquid" and not api_key:
             return {"ok": False, "error": "Hyperliquid requires a private key (your wallet seed in API Key field)."}
-        if venue_lc == "oanda":
+        if venue_match_key == "oanda":
             if not api_key:  return {"ok": False, "error": "OANDA requires an API token (Account → API Access)."}
             if not acct_id:  return {"ok": False, "error": "OANDA requires an Account ID (e.g. 101-001-12345-001)."}
-        if venue_lc == "metatrader":
+        if venue_match_key == "metatrader":
             if not meta_tok:   return {"ok": False, "error": "MetaTrader requires a MetaAPI cloud token. Sign up at metaapi.cloud."}
             if not meta_acct:  return {"ok": False, "error": "MetaTrader requires a MetaAPI account ID."}
-        if venue_lc == "alpaca":
+        if venue_match_key == "alpaca":
             if not api_key or not api_sec:
                 return {"ok": False, "error": "Alpaca requires API key + secret. Get them from app.alpaca.markets."}
-        if venue_lc == "polymarket":
+        if venue_match_key == "polymarket":
             if not api_key:
                 return {"ok": False, "error": "Polymarket requires the private key of a dedicated trading wallet (not your main wallet). Coming soon: Connect Wallet."}
             if not (api_key.startswith("0x") and len(api_key) >= 64):
@@ -2557,21 +2624,21 @@ async def test_venue(req: VenueTestRequest):
 
         # Inject env vars for this test only
         _inject_venue_env(
-            venue_lc, "futures", req.isPaper,
+            venue_match_key, venue_market, req.isPaper,
             api_key, api_sec, passph, acct_id,
             match.get("network") or "",
             meta_tok, meta_acct,
             match.get("ccxtExchangeId") or "",
         )
 
-        venue = get_venue(req.venue)
+        venue = get_venue(venue_registry_name)
         balances = await venue.get_balances()
 
         # Phase 4: Withdrawal-permission warning for Binance / CCXT venues.
         # If the user's API key has withdrawal rights enabled, surface a warning so
         # they regenerate it as trading-only.
         warning = None
-        if venue_lc in ("binance", "bybit", "kraken", "coinbase", "ccxt"):
+        if venue_match_key in ("binance", "bybit", "kraken", "coinbase", "ccxt"):
             try:
                 client = getattr(venue, "client", None)
                 info = None
@@ -2610,7 +2677,7 @@ async def test_venue(req: VenueTestRequest):
             hint = "Network error reaching the exchange. Try again."
         else:
             hint = msg[:200]
-        logger.warning("venue test failed for %s: %s", venue_lc, e)
+        logger.warning("venue test failed for %s: %s", venue_match_key, e)
         return {"ok": False, "error": hint, "raw": msg[:500]}
 
 
@@ -2809,9 +2876,11 @@ async def get_price_live(
                     match = v
                     break
             if match:
+                stored_market = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
+                venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, stored_market)
                 _inject_venue_env(
-                    v_key,
-                    market=("futures" if v_key == "binance" else "spot"),
+                    venue_match_key,
+                    market=venue_market,
                     is_paper=bool(match.get("isPaper", True)),
                     api_key=match.get("apiKey") or "",
                     api_secret=match.get("apiSecret") or "",
@@ -2822,7 +2891,7 @@ async def get_price_live(
                     meta_account_id=match.get("metaApiAccountId") or "",
                     ccxt_exchange=match.get("ccxtExchangeId") or "",
                 )
-                v_obj = get_venue(v_key)
+                v_obj = get_venue(venue_registry_name)
                 t = await v_obj.get_ticker(symbol)
                 if t and getattr(t, "last", None):
                     return {

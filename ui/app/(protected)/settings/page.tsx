@@ -8,6 +8,12 @@ import { ArrowLeft, Plus, Trash2, Save, Shield, Bell, User, Lock, Wifi, Eye, Eye
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useToast } from "@/components/Toast";
 import { DarkSelect } from "@/components/ui/dark-select";
+import {
+  defaultMarketForVenueType,
+  marketOptionsForVenueType,
+  normalizeVenueMarket,
+  venueSupportsEditableMarket,
+} from "@/lib/venue-market";
 
 /* ─── Types ─────────────────────────────────────────────────────── */
 type VenueType =
@@ -24,6 +30,7 @@ interface Venue {
   accountId: string | null;
   ccxtExchangeId: string | null;
   network: string | null;
+  market: string;
   metaApiToken: string | null;
   metaApiAccountId: string | null;
   isPaper: boolean;
@@ -140,11 +147,17 @@ function VenueForm({ onSave, onCancel, initialType }: {
   const safeInitial = (initialType && VENUE_TYPES.includes(initialType as VenueType))
     ? (initialType as VenueType)
     : "HYPERLIQUID";
-  const [form, setForm] = useState<Partial<Venue>>({ type: safeInitial, isPaper: true });
+  const [form, setForm] = useState<Partial<Venue>>({
+    type: safeInitial,
+    market: defaultMarketForVenueType(safeInitial),
+    isPaper: true,
+  });
   const set = (k: keyof Venue, v: unknown) => setForm(f => ({ ...f, [k]: v }));
   const isMobile = useIsMobile();
   const [showSecret, setShowSecret] = useState(false);
   const [showApiKey, setShowApiKey]  = useState(false);
+  const currentType = form.type ?? "HYPERLIQUID";
+  const marketOptions = marketOptionsForVenueType(currentType);
 
   return (
     <div style={{ ...card, border: "1px solid rgba(255,255,255,0.14)" }}>
@@ -156,12 +169,29 @@ function VenueForm({ onSave, onCancel, initialType }: {
         </FieldGroup>
         <FieldGroup label="Venue Type">
           <DarkSelect
-            value={form.type ?? "HYPERLIQUID"}
-            onChange={v => set("type", v as VenueType)}
+            value={currentType}
+            onChange={v => setForm(prev => {
+              const nextType = v as VenueType;
+              return {
+                ...prev,
+                type: nextType,
+                market: normalizeVenueMarket(nextType, typeof prev.market === "string" ? prev.market : null),
+              };
+            })}
             options={VENUE_TYPES.map(t => ({ value: t, label: VENUE_LABELS[t] }))}
             style={{ width: "100%" }}
           />
         </FieldGroup>
+        {venueSupportsEditableMarket(currentType) && (
+          <FieldGroup label="Market Mode">
+            <DarkSelect
+              value={normalizeVenueMarket(currentType, typeof form.market === "string" ? form.market : null)}
+              onChange={v => set("market", v)}
+              options={marketOptions.map(option => ({ value: option.value, label: option.label }))}
+              style={{ width: "100%" }}
+            />
+          </FieldGroup>
+        )}
         {form.type !== "POLYMARKET" && form.type !== "METATRADER" && (<>
           <FieldGroup label={form.type === "HYPERLIQUID" ? "Private Key (API wallet)" : "API Key"}>
             <div style={{ position: "relative" }}>
@@ -692,52 +722,60 @@ export default function SettingsPage() {
                   <button style={btnPrimary} onClick={() => setShowVenueForm(true)}><Plus size={13} /> Add Your First Venue</button>
                 </div>
               ) : (
-                venues.map(v => (
-                  <div key={v.id} style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontSize: 15, fontWeight: 600 }}>{v.displayName}</span>
-                        <span style={{
-                          fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
-                          textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
-                          background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.5)",
-                        }}>{VENUE_LABELS[v.type]}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>
-                        {v.network && <span style={{ marginRight: 10 }}>{v.network}</span>}
-                        Key: {v.apiKey.slice(0, 8)}…
-                      </div>
-                      <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
-                          padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
-                          background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.2)",
-                          color: "#4ade80" }}>
-                          🔒 AES-256 Encrypted
-                        </span>
-                        <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
-                          padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
-                          background: "rgba(74,222,128,0.05)", border: "1px solid rgba(74,222,128,0.15)",
-                          color: "rgba(74,222,128,0.7)" }}>
-                          🚫 No Withdrawal Access
-                        </span>
-                        {v.isPaper ? (
+                venues.map(v => {
+                  const marketLabel = marketOptionsForVenueType(v.type).find(option => option.value === v.market)?.label
+                    ?? v.market;
+                  return (
+                    <div key={v.id} style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ fontSize: 15, fontWeight: 600 }}>{v.displayName}</span>
+                          <span style={{
+                            fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
+                            textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
+                            background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.5)",
+                          }}>{VENUE_LABELS[v.type]}</span>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, letterSpacing: "0.06em",
+                            textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
+                            background: "rgba(74,222,128,0.08)", color: "#4ade80",
+                          }}>{marketLabel}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>
+                          {v.network && <span style={{ marginRight: 10 }}>{v.network}</span>}
+                          Key: {v.apiKey.slice(0, 8)}…
+                        </div>
+                        <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
                             padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
-                            background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)",
-                            color: "#818cf8" }}>
-                            PAPER MODE
+                            background: "rgba(74,222,128,0.08)", border: "1px solid rgba(74,222,128,0.2)",
+                            color: "#4ade80" }}>
+                            🔒 AES-256 Encrypted
                           </span>
-                        ) : (
-                          <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                          <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
                             padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
-                            background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
-                            color: "#ef4444" }}>
-                            ● LIVE
+                            background: "rgba(74,222,128,0.05)", border: "1px solid rgba(74,222,128,0.15)",
+                            color: "rgba(74,222,128,0.7)" }}>
+                            🚫 No Withdrawal Access
                           </span>
-                        )}
+                          {v.isPaper ? (
+                            <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
+                              padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
+                              background: "rgba(129,140,248,0.08)", border: "1px solid rgba(129,140,248,0.2)",
+                              color: "#818cf8" }}>
+                              PAPER MODE
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                              padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",
+                              background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)",
+                              color: "#ef4444" }}>
+                              ● LIVE
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       {/* Test connection */}
                       <button
                         onClick={async () => {
@@ -791,9 +829,10 @@ export default function SettingsPage() {
                       <button onClick={() => deleteVenue(v.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "rgba(255,255,255,0.25)", padding: 6 }}>
                         <Trash2 size={14} />
                       </button>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           )}

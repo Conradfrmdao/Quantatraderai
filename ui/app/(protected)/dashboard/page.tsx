@@ -31,6 +31,12 @@ import { useToast }            from "@/components/Toast";
 import { DarkSelect }          from "@/components/ui/dark-select";
 import { MarketPicker, MARKET_VENUE_TYPE } from "@/components/MarketPicker";
 import { MobileBottomNav }    from "@/components/MobileBottomNav";
+import {
+  defaultMarketForVenueType,
+  marketOptionsForVenueType,
+  normalizeVenueMarket,
+  venueSupportsEditableMarket,
+} from "@/lib/venue-market";
 
 const TradingChart = dynamic(
   () => import("@/components/TradingChart").then((m) => m.TradingChart),
@@ -107,6 +113,8 @@ export default function Dashboard() {
   const activeVenue  = userVenues.find(v => v.isActive) ?? userVenues[0];
   const venueType    = activeVenue?.type ?? "BINANCE";
   const venueSymbols = VENUE_SYMBOLS[venueType] ?? VENUE_SYMBOLS.BINANCE;
+  const marketOptions = marketOptionsForVenueType(venueType);
+  const canEditMarket = venueSupportsEditableMarket(venueType);
   const [symbol, setSymbol] = useState("BTCUSDT");
   const [chartVenueType, setChartVenueType] = useState("BINANCE");
 
@@ -119,7 +127,15 @@ export default function Dashboard() {
       setChartVenueType(venueType);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [venueType, venuesLoading]);
+  }, [activeVenue?.id, venueType, venuesLoading]);
+
+  useEffect(() => {
+    if (!venuesLoading && activeVenue) {
+      setMarket(normalizeVenueMarket(venueType, activeVenue.market));
+    } else if (!venuesLoading) {
+      setMarket(defaultMarketForVenueType("BINANCE"));
+    }
+  }, [activeVenue?.id, activeVenue?.market, venueType, venuesLoading]);
 
   const isForexVenue = venueType === "OANDA" || venueType === "METATRADER";
 
@@ -178,6 +194,28 @@ export default function Dashboard() {
     setTimeout(() => setRefreshing(false), 1000);
   }, [account, positions, status, decisions, risk]);
 
+  const handleMarketChange = useCallback((nextMarket: string) => {
+    const normalized = normalizeVenueMarket(venueType, nextMarket);
+    setMarket(normalized);
+    if (!activeVenue || normalized === activeVenue.market) return;
+
+    fetch(`/api/venues/${activeVenue.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ market: normalized }),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({})) as { error?: string };
+          throw new Error(data.error ?? "Could not save market mode");
+        }
+        reloadVenues();
+      })
+      .catch((err: unknown) => {
+        toast(err instanceof Error ? err.message : "Could not save market mode", "error");
+      });
+  }, [activeVenue, reloadVenues, toast, venueType]);
+
   // Actual start — called after the safety gate is confirmed
   const doStartAgent = useCallback(async () => {
     setShowStartConfirm(false);
@@ -216,8 +254,8 @@ export default function Dashboard() {
       setAgentLoading(false);
       toast("Failed to reach the trading backend. Check your connection.", "error");
     }
-  }, [symbol, venueType, activeVenue, strategyType, minConfidence, maxDailyLoss,
-      maxTradesDay, lossCooldown, status, toast]);
+  }, [activeVenue, lossCooldown, market, maxDailyLoss, maxTradesDay, minConfidence,
+      paperCapital, status, strategyType, symbol, timeframe, toast, venueType]);
 
   const handleAgentToggle = useCallback(async () => {
     const running = status.data?.status === "running";
@@ -550,14 +588,15 @@ export default function Dashboard() {
                 <option value="4h">4h</option>
               </select>
               {/* Spot/Futures — only relevant for Binance/CCXT, not FOREX */}
-              {!isForexVenue && (
-                <select value={market} onChange={e => setMarket(e.target.value)}
+              {!isForexVenue && canEditMarket && (
+                <select value={market} onChange={e => handleMarketChange(e.target.value)}
                   title="spot = standard account, futures = requires Binance Futures account"
                   style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
                     borderRadius: 7, padding: "4px 6px", fontSize: 10, color: "rgba(255,255,255,0.55)",
                     cursor: "pointer", maxWidth: 68 }}>
-                  <option value="spot">Spot</option>
-                  <option value="futures">Futures</option>
+                  {marketOptions.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               )}
               {/* Guards — icon+label compact */}
@@ -953,9 +992,10 @@ export default function Dashboard() {
           strategyType={strategyType}
           timeframe={timeframe}
           market={market}
+          marketOptions={marketOptions}
           onStrategy={setStrategyType}
           onTimeframe={setTimeframe}
-          onMarket={setMarket}
+          onMarket={handleMarketChange}
           showGuards={showGuards}
           onToggleGuards={() => setShowGuards(g => !g)}
         />

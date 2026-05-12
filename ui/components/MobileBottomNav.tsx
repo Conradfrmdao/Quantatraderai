@@ -18,6 +18,7 @@ interface MobileBottomNavProps {
   strategyType:  string;
   timeframe:     string;
   market:        string;
+  marketOptions: { value: string; label: string }[];
   onStrategy:    (v: string) => void;
   onTimeframe:   (v: string) => void;
   onMarket:      (v: string) => void;
@@ -42,7 +43,7 @@ const MORE_LINKS = [
 
 export function MobileBottomNav({
   running, agentLoading, onStart, onStop, onKillswitch,
-  strategyType, timeframe, market,
+  strategyType, timeframe, market, marketOptions,
   onStrategy, onTimeframe, onMarket,
   showGuards, onToggleGuards,
 }: MobileBottomNavProps) {
@@ -129,17 +130,34 @@ export function MobileBottomNav({
         {/* ── Market ── */}
         <div style={{ marginBottom: 20 }}>
           <p style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Market</p>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["spot","futures","forex"].map(m => (
-              <button key={m} onClick={() => onMarket(m)} style={{
-                flex: 1, padding: "10px 0", borderRadius: 9, fontSize: 11, fontWeight: 600,
-                cursor: "pointer", border: "1px solid", textTransform: "capitalize", textAlign: "center",
-                background: market === m ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
-                borderColor: market === m ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
-                color: market === m ? "#4ade80" : "rgba(255,255,255,0.5)",
-              }}>{m}</button>
-            ))}
-          </div>
+          {marketOptions.length > 1 ? (
+            <div style={{ display: "flex", gap: 6 }}>
+              {marketOptions.map(option => (
+                <button key={option.value} onClick={() => onMarket(option.value)} style={{
+                  flex: 1, padding: "10px 0", borderRadius: 9, fontSize: 11, fontWeight: 600,
+                  cursor: "pointer", border: "1px solid", textTransform: "capitalize", textAlign: "center",
+                  background: market === option.value ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
+                  borderColor: market === option.value ? "rgba(74,222,128,0.4)" : "rgba(255,255,255,0.1)",
+                  color: market === option.value ? "#4ade80" : "rgba(255,255,255,0.5)",
+                }}>{option.label}</button>
+              ))}
+            </div>
+          ) : (
+            <div style={{
+              padding: "10px 12px",
+              borderRadius: 9,
+              border: "1px solid rgba(255,255,255,0.1)",
+              background: "rgba(255,255,255,0.04)",
+              fontSize: 11,
+              fontWeight: 600,
+              color: "rgba(255,255,255,0.5)",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+              textAlign: "center",
+            }}>
+              {marketOptions[0]?.label ?? market}
+            </div>
+          )}
         </div>
 
         {/* ── Guards toggle ── */}
