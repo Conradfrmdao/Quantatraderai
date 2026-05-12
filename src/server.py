@@ -287,6 +287,58 @@ async def _verify_ws_token(token: str | None) -> tuple[bool, str | None]:
         return False, None
 
 
+async def _verify_clerk_token(token: str | None) -> tuple[bool, str | None]:
+    """Verify a Clerk session token for HTTP proxy requests."""
+    if not token:
+        return False, None
+
+    jwks = await _get_jwks()
+    if not jwks:
+        return False, None
+
+    try:
+        from jose import jwt as jose_jwt, jwk as jose_jwk
+        header = jose_jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        key_data = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+        if not key_data:
+            return False, None
+        public_key = jose_jwk.construct(key_data)
+        claims = jose_jwt.decode(token, public_key, algorithms=["RS256"], options={"verify_aud": False})
+        user_id = claims.get("sub") or claims.get("user_id")
+        return True, user_id
+    except Exception as e:
+        logger.warning("HTTP token verification failed: %s", e)
+        return False, None
+
+
+def _extract_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+    token = auth_header[7:].strip()
+    return token or None
+
+
+async def _resolve_request_user_id(request: Request, requested_user_id: str | None = None) -> str | None:
+    """Resolve a trusted Clerk user id from the internal proxy or a Clerk JWT."""
+    internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    proxy_token = request.headers.get("x-internal-token", "")
+    header_user_id = request.headers.get("x-user-id")
+
+    if internal_token:
+        if proxy_token == internal_token:
+            return header_user_id or requested_user_id
+        verified, token_user_id = await _verify_clerk_token(_extract_bearer_token(request))
+        return token_user_id if verified else None
+
+    if header_user_id or requested_user_id:
+        return header_user_id or requested_user_id
+
+    verified, token_user_id = await _verify_clerk_token(_extract_bearer_token(request))
+    return token_user_id if verified else None
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _interval_seconds(iv: str) -> int:
@@ -311,6 +363,131 @@ def _candle_dict(c) -> dict:
         "time": c.ts, "open": c.open, "high": c.high,
         "low":  c.low, "close": c.close, "volume": c.volume,
     }
+
+
+_CASH_BALANCE_CODES = ("USDT", "USDC", "USD", "BUSD", "USDP")
+_CONNECTED_SNAPSHOT_TTL_S = 12
+
+
+def _extract_cash_balance(balances) -> tuple[float, str | None]:
+    for code in _CASH_BALANCE_CODES:
+        match = next((b for b in balances if str(getattr(b, "currency", "")).upper() == code), None)
+        if match:
+            available = float(getattr(match, "available", 0) or 0)
+            total = float(getattr(match, "total", 0) or 0)
+            return (available if available > 0 else total), code
+
+    if not balances:
+        return 0.0, None
+
+    richest = max(
+        balances,
+        key=lambda b: float(getattr(b, "available", 0) or getattr(b, "total", 0) or 0),
+    )
+    available = float(getattr(richest, "available", 0) or 0)
+    total = float(getattr(richest, "total", 0) or 0)
+    currency = str(getattr(richest, "currency", "") or "").upper() or None
+    return (available if available > 0 else total), currency
+
+
+def _serialize_positions(positions, price_cache: dict[str, float] | None = None) -> list[dict]:
+    cache = price_cache or {}
+    return [
+        {
+            "symbol":            p.symbol,
+            "quantity":          p.quantity,
+            "entry_price":       p.entry_price,
+            "current_price":     cache.get(p.symbol.replace("/", ""), p.entry_price),
+            "unrealized_pnl":    round(p.unrealized_pnl, 4),
+            "leverage":          p.leverage,
+            "liquidation_price": p.liquidation_price,
+        }
+        for p in positions
+    ]
+
+
+def _build_account_payload(balance: float, equity: float, open_positions: int, initial_equity: float | None = None) -> dict:
+    starting_equity = initial_equity if initial_equity is not None else equity
+    ret_pct = ((equity - starting_equity) / starting_equity * 100) if starting_equity else 0.0
+    return {
+        "balance":          round(balance, 4),
+        "equity":           round(equity, 4),
+        "initial_equity":   round(starting_equity, 4),
+        "total_return_pct": round(ret_pct, 4),
+        "open_positions":   open_positions,
+        "sharpe":           0,
+    }
+
+
+async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -> tuple[dict, list[dict], bool] | None:
+    if not clerk_user_id:
+        return None
+
+    now = datetime.now(timezone.utc)
+    if (
+        s.connected_account_cache is not None
+        and s.connected_snapshot_at is not None
+        and (now - s.connected_snapshot_at).total_seconds() < _CONNECTED_SNAPSHOT_TTL_S
+    ):
+        return s.connected_account_cache, s.connected_positions_cache, s.is_paper
+
+    try:
+        from src.services.supabase_reader import get_user_venues
+
+        venues = await get_user_venues(clerk_user_id, only_active=True)
+        if not venues:
+            venues = await get_user_venues(clerk_user_id, only_active=False)
+        if not venues:
+            return None
+
+        match = next((v for v in venues if v.get("isActive")), venues[0])
+        venue_type = str(match.get("type") or "")
+        venue_key = _VENUE_TYPE_TO_NAME.get(venue_type, "").lower()
+        if not venue_key:
+            return None
+
+        is_paper = bool(match.get("isPaper", True))
+        if is_paper:
+            paper_bal = s.paper_balance if hasattr(s, "paper_balance") else 10_000.0
+            account = _build_account_payload(paper_bal, paper_bal, len(s.paper_positions), paper_bal)
+            positions = list(s.paper_positions)
+            s.connected_account_cache = account
+            s.connected_positions_cache = positions
+            s.connected_snapshot_at = now
+            return account, positions, True
+
+        stored_market = str(match.get("market") or _default_market_for_venue_type(venue_type)).lower()
+        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(venue_key, stored_market)
+        _inject_venue_env(
+            venue_match_key,
+            venue_market,
+            is_paper=False,
+            api_key=match.get("apiKey") or "",
+            api_secret=match.get("apiSecret") or "",
+            api_passphrase=match.get("apiPassphrase") or "",
+            account_id=match.get("accountId") or "",
+            network=match.get("network") or "",
+            meta_token=match.get("metaApiToken") or "",
+            meta_account_id=match.get("metaApiAccountId") or "",
+            ccxt_exchange=match.get("ccxtExchangeId") or "",
+        )
+        venue = get_venue(venue_registry_name)
+        venue.is_paper = False
+        balances = await venue.get_balances()
+        positions_raw = await venue.get_positions()
+        balance, _currency = _extract_cash_balance(balances)
+        pnl_total = sum(getattr(p, "unrealized_pnl", 0.0) for p in positions_raw)
+        equity = balance + pnl_total
+        positions = _serialize_positions(positions_raw)
+        account = _build_account_payload(balance, equity, len(positions))
+
+        s.connected_account_cache = account
+        s.connected_positions_cache = positions
+        s.connected_snapshot_at = now
+        return account, positions, False
+    except Exception as e:
+        logger.warning("Connected venue snapshot failed for %s: %s", clerk_user_id, e)
+        return None
 
 
 # ── Agent state ───────────────────────────────────────────────────────────────
@@ -346,6 +523,9 @@ class AgentState:
         self.tick_count:     int             = 0
         self.error:          str | None      = None
         self.last_tick_at:   datetime | None = None  # dead man's switch anchor
+        self.connected_account_cache: dict | None = None
+        self.connected_positions_cache: list[dict] = []
+        self.connected_snapshot_at: datetime | None = None
         # Tracks last known unrealized PnL per symbol — used to record realized PnL on close
         self.prev_position_pnl: dict[str, float] = {}
 
@@ -772,23 +952,14 @@ async def _tick_for(s: "AgentState"):
             pnl_total = sum(p.get("unrealized_pnl", 0.0) for p in s.paper_positions)
         equity = balance + pnl_total
     else:
-        usdt      = next((b for b in balances if b.currency in ("USDT", "USD", "BUSD")), None)
-        balance   = usdt.available if usdt else 0.0
+        balance, _currency = _extract_cash_balance(balances)
         pnl_total = sum(p.unrealized_pnl for p in positions)
         equity    = balance + pnl_total
 
     if s.initial_equity is None:
         s.initial_equity = equity
-    ret_pct = ((equity - s.initial_equity) / s.initial_equity * 100) if s.initial_equity else 0.0
-
-    s.account = {
-        "balance":          round(balance, 4),
-        "equity":           round(equity, 4),
-        "initial_equity":   round(s.initial_equity, 4),
-        "total_return_pct": round(ret_pct, 4),
-        "open_positions":   len(positions),
-        "sharpe":           _sharpe(s.trade_log),
-    }
+    s.account = _build_account_payload(balance, equity, len(positions), s.initial_equity)
+    s.account["sharpe"] = _sharpe(s.trade_log)
     # Persist equity point every tick (fire-and-forget)
     if s.user_id:
         asyncio.create_task(_persist_equity(s.user_id, equity, balance, pnl_total, s.tick_count))
@@ -812,18 +983,10 @@ async def _tick_for(s: "AgentState"):
     # Update prev_position_pnl for next tick
     s.prev_position_pnl = {p.symbol: round(p.unrealized_pnl, 4) for p in positions}
 
-    s.positions = [
-        {
-            "symbol":            p.symbol,
-            "quantity":          p.quantity,
-            "entry_price":       p.entry_price,
-            "current_price":     s.price_cache.get(p.symbol.replace("/", ""), p.entry_price),
-            "unrealized_pnl":    round(p.unrealized_pnl, 4),
-            "leverage":          p.leverage,
-            "liquidation_price": p.liquidation_price,
-        }
-        for p in positions
-    ]
+    s.positions = _serialize_positions(positions, s.price_cache)
+    s.connected_account_cache = s.account
+    s.connected_positions_cache = s.positions
+    s.connected_snapshot_at = datetime.now(timezone.utc)
     await _broadcast({"type": "account_update", "data": s.account}, s.user_id)
 
     # ── Force-close positions that breach max_loss_per_position_pct ──────────
@@ -1708,11 +1871,9 @@ async def test_stored_key(request: Request, userId: Optional[str] = None):
     Does NOT call the exchange — purely local validation.
     Shows key length, first 4 chars, last 4 chars so the user can verify without exposing it."""
     # Internal token guard — only Next.js proxy may pass userId
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        return {"ok": False, "error": "Forbidden"}
+    userId = await _resolve_request_user_id(request, userId)
     if not userId:
-        return {"ok": False, "error": "userId required"}
+        return {"ok": False, "error": "Forbidden"}
     try:
         from src.services.supabase_reader import get_user_venues
         venues = await get_user_venues(userId)
@@ -1744,11 +1905,7 @@ async def test_stored_key(request: Request, userId: Optional[str] = None):
 
 @app.get("/api/status")
 async def get_status(request: Request, userId: Optional[str] = None):
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s      = get_state(userId)
     now    = datetime.now(timezone.utc)
     uptime = int((now - s.start_time).total_seconds()) if s.start_time else 0
@@ -1781,14 +1938,14 @@ async def get_status(request: Request, userId: Optional[str] = None):
 
 @app.get("/api/account")
 async def get_account(request: Request, userId: Optional[str] = None):
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
-    if s.account:
+    if s.account and s.status in ("running", "stopping"):
         return s.account
+    snapshot = await _load_connected_snapshot(s, userId)
+    if snapshot:
+        account, _positions, _is_paper = snapshot
+        return account
     # Agent not running yet — show paper starting balance if paper mode, else zeros
     paper_bal = s.paper_balance if hasattr(s, "paper_balance") else 10_000.0
     is_paper  = s.is_paper
@@ -1802,26 +1959,24 @@ async def get_account(request: Request, userId: Optional[str] = None):
 
 @app.get("/api/positions")
 async def get_positions(request: Request, userId: Optional[str] = None):
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
     # Always return paper positions in paper mode (real exchange positions are irrelevant)
-    if s.is_paper:
+    if s.status in ("running", "stopping") and s.is_paper:
         return {"positions": s.paper_positions, "is_paper": True}
-    return {"positions": s.positions, "is_paper": False}
+    if s.status in ("running", "stopping"):
+        return {"positions": s.positions, "is_paper": False}
+    snapshot = await _load_connected_snapshot(s, userId)
+    if snapshot:
+        _account, positions, is_paper = snapshot
+        return {"positions": positions, "is_paper": is_paper}
+    return {"positions": s.paper_positions if s.is_paper else [], "is_paper": s.is_paper}
 
 
 @app.get("/api/risk")
 async def get_risk(request: Request, userId: Optional[str] = None):
     """Live risk config for the requesting user's session (or fallback global)."""
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
     if s.risk_mgr:
         cfg = s.risk_mgr.config if s.risk_mgr and hasattr(s.risk_mgr, "config") else {}
@@ -1889,22 +2044,14 @@ async def refresh_risk(req: RiskRefreshRequest):
 
 @app.get("/api/decisions")
 async def get_decisions(request: Request, limit: int = 20, userId: Optional[str] = None):
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     return {"decisions": list(get_state(userId).decisions)[:limit]}
 
 
 @app.get("/api/trust/metrics")
 async def get_trust_metrics(request: Request, userId: Optional[str] = None):
     """Trust Dashboard — win rate, profit curve, drawdown, Sharpe, AI accuracy."""
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
     trades = list(s.trade_log)
 
@@ -2023,11 +2170,7 @@ async def get_candles(
 
 @app.get("/api/logs")
 async def get_logs(request: Request, limit: int = 100, userId: Optional[str] = None):
-    # Only trust user_id from authenticated internal calls (Next.js proxy)
-    # Direct external callers cannot specify which user's data they see
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None  # untrusted — fall back to global state
+    userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
     return {"logs": list(s.logs)[-limit:]}
 
@@ -2359,6 +2502,9 @@ async def _do_start(
     final_state.tick_count          = 0
     final_state.error               = None
     final_state.last_tick_at        = datetime.now(timezone.utc)
+    final_state.connected_account_cache = None
+    final_state.connected_positions_cache = []
+    final_state.connected_snapshot_at = None
     final_state.min_confidence_pct  = min_confidence_pct
     final_state.max_daily_loss_pct  = max_daily_loss_pct
     final_state.max_trades_per_day  = max_trades_per_day
@@ -2840,10 +2986,7 @@ async def get_price_live(
     Falls back to global state's venue if user_id is not provided.
     Always validates the internal token if PYTHON_INTERNAL_TOKEN is set.
     """
-    # Internal token guard — only Next.js proxy may pass userId
-    _internal_token = os.getenv("PYTHON_INTERNAL_TOKEN", "")
-    if _internal_token and request.headers.get("x-internal-token") != _internal_token:
-        userId = None
+    userId = await _resolve_request_user_id(request, userId)
 
     # 1) Try the running agent's venue first (cheapest — already authenticated)
     s = get_state(userId) if userId else _state

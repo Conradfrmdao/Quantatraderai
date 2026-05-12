@@ -11,8 +11,9 @@ import { NextRequest, NextResponse } from "next/server";
 const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 
 export async function GET(req: NextRequest) {
-  const { userId } = await auth();
+  const { userId, getToken } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const sessionToken = await getToken().catch(() => null);
 
   const url    = new URL(req.url);
   const symbol = url.searchParams.get("symbol");
@@ -27,7 +28,11 @@ export async function GET(req: NextRequest) {
 
     const res = await fetch(`${PYTHON_API}/api/price/live?${qs.toString()}`, {
       signal: ctrl.signal,
-      headers: { "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "" },
+      headers: {
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "X-User-Id": userId,
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+      },
       cache: "no-store",
     });
     clearTimeout(t);

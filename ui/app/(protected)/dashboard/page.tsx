@@ -184,9 +184,23 @@ export default function Dashboard() {
       account.refresh();
     }
     if (lastEvent.type === "status_update") {
+      const ev = lastEvent as { type: string; status?: string; paper?: boolean };
+      status.set((prev) => ({
+        ...(prev ?? {
+          provider: "groq",
+          model: "llama-3.3-70b-versatile",
+          venue: VENUE_REGISTRY_NAME[venueType] ?? "binance",
+          tick_count: 0,
+          uptime_seconds: 0,
+          assets: [],
+          timeframe: timeframe,
+        }),
+        status: ev.status ?? prev?.status ?? "idle",
+        is_paper: typeof ev.paper === "boolean" ? ev.paper : prev?.is_paper,
+      }));
       status.refresh();
     }
-  }, [lastEvent, symbol]);
+  }, [account, decisions, handleWsEvent, lastEvent, positions, status, symbol, timeframe, venueType]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -246,6 +260,20 @@ export default function Dashboard() {
         toast(msg, res.status === 402 ? "warning" : "error");
       } else {
         const data = await res.json().catch(() => ({})) as { warning?: string };
+        status.set((prev) => ({
+          ...(prev ?? {
+            provider: "groq",
+            model: "llama-3.3-70b-versatile",
+            tick_count: 0,
+            uptime_seconds: 0,
+            assets: [],
+          }),
+          status: "running",
+          venue: venueName,
+          assets: [symbol],
+          timeframe: timeframe,
+          is_paper: activeVenue?.isPaper ?? true,
+        }));
         toast(`Agent started on ${VENUE_LABEL[venueType] ?? venueType}`, "success");
         if (data.warning) toast(data.warning, "warning");
       }
@@ -269,6 +297,8 @@ export default function Dashboard() {
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           toast((err as { error?: string }).error ?? `Failed (HTTP ${res.status})`, "error");
+        } else {
+          status.set((prev) => prev ? { ...prev, status: "stopped" } : prev);
         }
         setTimeout(() => { status.refresh(); setAgentLoading(false); }, 1200);
       } catch { setAgentLoading(false); }

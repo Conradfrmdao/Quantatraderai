@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -61,6 +62,117 @@ def test_get_state_fallback_for_none():
     from src.server import get_state, _state
     s = get_state(None)
     assert s is _state
+
+
+@pytest.mark.asyncio
+async def test_resolve_request_user_id_accepts_bearer_when_internal_token_mismatch(monkeypatch):
+    import src.server as srv
+
+    monkeypatch.setenv("PYTHON_INTERNAL_TOKEN", "expected-secret")
+    req = SimpleNamespace(headers={
+        "x-internal-token": "wrong-secret",
+        "authorization": "Bearer clerk-session-token",
+        "x-user-id": "header-user",
+    })
+
+    with patch("src.server._verify_clerk_token", AsyncMock(return_value=(True, "clerk_user_123"))):
+        resolved = await srv._resolve_request_user_id(req, "query-user")
+
+    assert resolved == "clerk_user_123"
+
+
+@pytest.mark.asyncio
+async def test_get_account_returns_connected_live_balance_when_idle():
+    import src.server as srv
+    from src.venues.models import Balance
+
+    class StubVenue:
+        is_paper = False
+
+        async def get_balances(self):
+            return [Balance(currency="USDC", total=4321.0, available=4000.0)]
+
+        async def get_positions(self):
+            return []
+
+    s = srv.get_state("clerk_live_balance")
+    s.status = "idle"
+    s.account = {}
+    s.connected_account_cache = None
+    s.connected_positions_cache = []
+    s.connected_snapshot_at = None
+
+    req = SimpleNamespace(headers={})
+    venue_row = [{
+        "type": "BINANCE",
+        "market": "spot",
+        "isPaper": False,
+        "apiKey": "key",
+        "apiSecret": "secret",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+        "isActive": True,
+    }]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_balance")):
+        with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
+            with patch("src.server.get_venue", return_value=StubVenue()):
+                data = await srv.get_account(req, userId="ignored")
+
+    assert data["balance"] == 4000.0
+    assert data["equity"] == 4000.0
+    assert data["open_positions"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_positions_returns_connected_live_positions_when_idle():
+    import src.server as srv
+    from src.venues.models import Balance, Position
+
+    class StubVenue:
+        is_paper = False
+
+        async def get_balances(self):
+            return [Balance(currency="USDT", total=2000.0, available=1500.0)]
+
+        async def get_positions(self):
+            return [Position(symbol="BTC/USDT", quantity=0.05, entry_price=60000.0, unrealized_pnl=125.0)]
+
+    s = srv.get_state("clerk_live_positions")
+    s.status = "idle"
+    s.positions = []
+    s.connected_account_cache = None
+    s.connected_positions_cache = []
+    s.connected_snapshot_at = None
+
+    req = SimpleNamespace(headers={})
+    venue_row = [{
+        "type": "BINANCE",
+        "market": "spot",
+        "isPaper": False,
+        "apiKey": "key",
+        "apiSecret": "secret",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+        "isActive": True,
+    }]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_positions")):
+        with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
+            with patch("src.server.get_venue", return_value=StubVenue()):
+                data = await srv.get_positions(req, userId="ignored")
+
+    assert data["is_paper"] is False
+    assert len(data["positions"]) == 1
+    assert data["positions"][0]["symbol"] == "BTC/USDT"
 
 
 # ── Risk manager smoke test ────────────────────────────────────────────────────

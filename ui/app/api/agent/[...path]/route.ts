@@ -25,8 +25,9 @@ function buildPythonPath(subpath: string): string {
 }
 
 async function proxy(req: NextRequest, params: { path: string[] }) {
-  const { userId } = await auth();
+  const { userId, getToken } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const sessionToken = await getToken().catch(() => null);
 
   const subpath = params.path.join("/");
 
@@ -85,7 +86,11 @@ async function proxy(req: NextRequest, params: { path: string[] }) {
     const url = `${PYTHON_API}${pythonPath}?${params.toString()}`;
     try {
       const res  = await fetch(url, {
-        headers: { "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "" },
+        headers: {
+          "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+          "X-User-Id": userId,
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
       });
       const data = await res.json().catch(() => ({}));
       return NextResponse.json(data, { status: res.status });
@@ -104,6 +109,7 @@ async function proxy(req: NextRequest, params: { path: string[] }) {
         "Content-Type": "application/json",
         "X-User-Id": userId,
         "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
       },
       body:    JSON.stringify(enriched),
     });
