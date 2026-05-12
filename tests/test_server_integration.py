@@ -129,6 +129,64 @@ async def test_get_account_returns_connected_live_balance_when_idle():
 
 
 @pytest.mark.asyncio
+async def test_get_account_returns_connected_spot_equity_when_idle():
+    import src.server as srv
+    from src.venues.models import Balance, Position
+
+    class StubVenue:
+        is_paper = False
+
+        async def get_balances(self):
+            return [
+                Balance(currency="USDT", total=1500.0, available=1500.0),
+                Balance(currency="BTC", total=0.05, available=0.05),
+            ]
+
+        async def get_positions(self):
+            return [
+                Position(
+                    symbol="BTC/USDT",
+                    quantity=0.05,
+                    entry_price=60000.0,
+                    unrealized_pnl=250.0,
+                    current_price=65000.0,
+                )
+            ]
+
+    s = srv.get_state("clerk_live_spot_equity")
+    s.status = "idle"
+    s.account = {}
+    s.connected_account_cache = None
+    s.connected_positions_cache = []
+    s.connected_snapshot_at = None
+
+    req = SimpleNamespace(headers={})
+    venue_row = [{
+        "type": "BINANCE",
+        "market": "spot",
+        "isPaper": False,
+        "apiKey": "key",
+        "apiSecret": "secret",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+        "isActive": True,
+    }]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_spot_equity")):
+        with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
+            with patch("src.server.get_venue", return_value=StubVenue()):
+                data = await srv.get_account(req, userId="ignored")
+
+    assert data["balance"] == 1500.0
+    assert data["equity"] == 4750.0
+    assert data["open_positions"] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_positions_returns_connected_live_positions_when_idle():
     import src.server as srv
     from src.venues.models import Balance, Position
@@ -140,7 +198,15 @@ async def test_get_positions_returns_connected_live_positions_when_idle():
             return [Balance(currency="USDT", total=2000.0, available=1500.0)]
 
         async def get_positions(self):
-            return [Position(symbol="BTC/USDT", quantity=0.05, entry_price=60000.0, unrealized_pnl=125.0)]
+            return [
+                Position(
+                    symbol="BTC/USDT",
+                    quantity=0.05,
+                    entry_price=60000.0,
+                    unrealized_pnl=125.0,
+                    current_price=62500.0,
+                )
+            ]
 
     s = srv.get_state("clerk_live_positions")
     s.status = "idle"
@@ -173,6 +239,42 @@ async def test_get_positions_returns_connected_live_positions_when_idle():
     assert data["is_paper"] is False
     assert len(data["positions"]) == 1
     assert data["positions"][0]["symbol"] == "BTC/USDT"
+    assert data["positions"][0]["current_price"] == 62500.0
+
+
+def test_calculate_live_account_snapshot_does_not_double_count_spot_holdings():
+    import src.server as srv
+    from src.venues.models import Balance, Position
+
+    balances = [Balance(currency="BTC", total=0.05, available=0.05)]
+    positions = [
+        Position(
+            symbol="BTC/USDT",
+            quantity=0.05,
+            entry_price=60000.0,
+            unrealized_pnl=250.0,
+            current_price=65000.0,
+        )
+    ]
+
+    balance, equity, pnl_total = srv._calculate_live_account_snapshot(
+        balances,
+        positions,
+        "binance",
+        "spot",
+    )
+
+    assert balance == 0.0
+    assert equity == 3250.0
+    assert pnl_total == 250.0
+
+
+def test_infer_asset_class_respects_explicit_spot_market():
+    import src.server as srv
+
+    assert srv._infer_asset_class("bybit", "spot") == "crypto_spot"
+    assert srv._infer_asset_class("okx", "spot") == "crypto_spot"
+    assert srv._infer_asset_class("ccxt", "spot") == "crypto_spot"
 
 
 # ── Risk manager smoke test ────────────────────────────────────────────────────

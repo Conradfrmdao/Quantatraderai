@@ -47,6 +47,7 @@ class Position:
     unrealized_pnl: float = 0.0
     leverage: float | None = None
     liquidation_price: float | None = None
+    current_price: float | None = None
 
 
 @dataclass

@@ -64,6 +64,7 @@ from src.config_loader import CONFIG
 from src.risk_manager import RiskManager
 from src.agent.decision_maker import TradingAgent
 from src.venues.base import Venue
+from src.venues.crypto.spot_portfolio import PREFERRED_SPOT_QUOTES
 from src.venues.registry import get_venue
 from src.indicators.local_indicators import compute_all, latest
 from src.utils.prompt_utils import round_or_none
@@ -365,11 +366,11 @@ def _candle_dict(c) -> dict:
     }
 
 
-_CASH_BALANCE_CODES = ("USDT", "USDC", "USD", "BUSD", "USDP")
+_CASH_BALANCE_CODES = PREFERRED_SPOT_QUOTES
 _CONNECTED_SNAPSHOT_TTL_S = 12
 
 
-def _extract_cash_balance(balances) -> tuple[float, str | None]:
+def _extract_cash_balance(balances, *, allow_fallback: bool = True) -> tuple[float, str | None]:
     for code in _CASH_BALANCE_CODES:
         match = next((b for b in balances if str(getattr(b, "currency", "")).upper() == code), None)
         if match:
@@ -377,7 +378,7 @@ def _extract_cash_balance(balances) -> tuple[float, str | None]:
             total = float(getattr(match, "total", 0) or 0)
             return (available if available > 0 else total), code
 
-    if not balances:
+    if not balances or not allow_fallback:
         return 0.0, None
 
     richest = max(
@@ -397,7 +398,10 @@ def _serialize_positions(positions, price_cache: dict[str, float] | None = None)
             "symbol":            p.symbol,
             "quantity":          p.quantity,
             "entry_price":       p.entry_price,
-            "current_price":     cache.get(p.symbol.replace("/", ""), p.entry_price),
+            "current_price":     (
+                float(getattr(p, "current_price", 0) or 0)
+                or cache.get(p.symbol.replace("/", "").split(":")[0], p.entry_price)
+            ),
             "unrealized_pnl":    round(p.unrealized_pnl, 4),
             "leverage":          p.leverage,
             "liquidation_price": p.liquidation_price,
@@ -417,6 +421,29 @@ def _build_account_payload(balance: float, equity: float, open_positions: int, i
         "open_positions":   open_positions,
         "sharpe":           0,
     }
+
+
+def _is_live_spot_account(venue_name: str | None, market: str | None) -> bool:
+    return _infer_asset_class(str(venue_name or ""), str(market or "")) == "crypto_spot"
+
+
+def _calculate_live_account_snapshot(
+    balances,
+    positions,
+    venue_name: str | None,
+    market: str | None,
+) -> tuple[float, float, float]:
+    pnl_total = sum(float(getattr(p, "unrealized_pnl", 0.0) or 0.0) for p in positions)
+    if _is_live_spot_account(venue_name, market):
+        cash_balance, _currency = _extract_cash_balance(balances, allow_fallback=False)
+        holdings_value = sum(
+            abs(float(getattr(p, "quantity", 0.0) or 0.0)) * float(getattr(p, "current_price", 0.0) or 0.0)
+            for p in positions
+        )
+        return cash_balance, cash_balance + holdings_value, pnl_total
+
+    cash_balance, _currency = _extract_cash_balance(balances)
+    return cash_balance, cash_balance + pnl_total, pnl_total
 
 
 async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -> tuple[dict, list[dict], bool] | None:
@@ -475,9 +502,12 @@ async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -
         venue.is_paper = False
         balances = await venue.get_balances()
         positions_raw = await venue.get_positions()
-        balance, _currency = _extract_cash_balance(balances)
-        pnl_total = sum(getattr(p, "unrealized_pnl", 0.0) for p in positions_raw)
-        equity = balance + pnl_total
+        balance, equity, _pnl_total = _calculate_live_account_snapshot(
+            balances,
+            positions_raw,
+            venue_key,
+            venue_market,
+        )
         positions = _serialize_positions(positions_raw)
         account = _build_account_payload(balance, equity, len(positions))
 
@@ -952,9 +982,12 @@ async def _tick_for(s: "AgentState"):
             pnl_total = sum(p.get("unrealized_pnl", 0.0) for p in s.paper_positions)
         equity = balance + pnl_total
     else:
-        balance, _currency = _extract_cash_balance(balances)
-        pnl_total = sum(p.unrealized_pnl for p in positions)
-        equity    = balance + pnl_total
+        balance, equity, pnl_total = _calculate_live_account_snapshot(
+            balances,
+            positions,
+            s.venue_name,
+            s.market,
+        )
 
     if s.initial_equity is None:
         s.initial_equity = equity
@@ -1810,7 +1843,6 @@ async def _on_startup():
     for row in running:
         venue_name = row.get("venue") or "binance"
         stored_market = row.get("market") or "spot"
-        safe_market = stored_market if stored_market != "futures" else "spot"
         try:
             logger.info("Auto-resuming agent for userId=%s venue=%s symbols=%s",
                         row["userId"], venue_name, row["symbols"])
@@ -1820,7 +1852,7 @@ async def _on_startup():
                 symbols=list(row["symbols"]),
                 timeframe=row["timeframe"],
                 is_paper=row["isPaper"],
-                market=safe_market,
+                market=stored_market,
                 api_key=None,
                 api_secret=None,
             )
@@ -2267,6 +2299,8 @@ def _infer_asset_class(venue_name: str, market: str) -> str:
         return "crypto_perp"
     if v in ("binance", "bybit", "okx", "ccxt") and m in _FUTURES_MARKETS:
         return "crypto_perp"
+    if v in ("binance", "bybit", "okx", "ccxt") and m == "spot":
+        return "crypto_spot"
     return _ASSET_CLASS.get(v, "crypto_spot")
 
 

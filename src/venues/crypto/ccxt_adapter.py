@@ -14,9 +14,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 
 from src.config_loader import CONFIG
 from src.venues.base import Venue
+from src.venues.crypto.spot_portfolio import (
+    SPOT_BALANCE_CACHE_TTL_S,
+    base_currency_from_symbol,
+    build_balances_from_ccxt_payload,
+    is_cash_equivalent,
+    pick_best_spot_symbol,
+)
 from src.venues.models import (
     Balance,
     Candle,
@@ -81,7 +89,11 @@ class CcxtVenue(Venue):
             self.asset_class = "crypto_perp"
         else:
             self.asset_class = "crypto_spot"
+        self._market_pref = market_pref
         self.is_paper = False
+        self._spot_balances_cache: list[Balance] = []
+        self._spot_balances_at: float = 0.0
+        self._spot_cost_basis: dict[str, dict[str, float]] = {}
 
     # CCXT's sync calls wrapped in to_thread keep the adapter async-compatible.
     async def _call(self, fn, *args, **kwargs):
@@ -93,18 +105,122 @@ class CcxtVenue(Venue):
                 "standard ASCII characters and re-save the venue in Settings."
             ) from e
 
-    async def get_balances(self) -> list[Balance]:
-        bal = await self._call(self.client.fetch_balance)
-        out: list[Balance] = []
-        for currency, amounts in (bal.get("total") or {}).items():
-            total = float(amounts or 0)
-            if total == 0:
+    async def _load_markets(self):
+        if not getattr(self.client, "markets", None):
+            await self._call(self.client.load_markets)
+
+    async def _get_spot_balances(self, *, force: bool = False) -> list[Balance]:
+        now = time.monotonic()
+        if (
+            not force
+            and self._spot_balances_cache
+            and (now - self._spot_balances_at) < SPOT_BALANCE_CACHE_TTL_S
+        ):
+            return list(self._spot_balances_cache)
+
+        payload = await self._call(self.client.fetch_balance)
+        balances = build_balances_from_ccxt_payload(payload)
+        self._spot_balances_cache = balances
+        self._spot_balances_at = now
+        return list(balances)
+
+    def _remember_spot_cost_basis(self, base_currency: str, quantity: float, entry_price: float) -> None:
+        base = str(base_currency or "").upper()
+        qty = float(quantity or 0)
+        price = float(entry_price or 0)
+        if not base or qty <= 0 or price <= 0:
+            self._spot_cost_basis.pop(base, None)
+            return
+        self._spot_cost_basis[base] = {"quantity": qty, "entry_price": price}
+
+    async def _sync_spot_cost_basis_after_fill(self, symbol: str, side: str, fill_price: float) -> None:
+        base = base_currency_from_symbol(symbol)
+        previous = self._spot_cost_basis.get(base) or {}
+        previous_qty = float(previous.get("quantity") or 0.0)
+        previous_entry = float(previous.get("entry_price") or 0.0)
+
+        balances = await self._get_spot_balances(force=True)
+        holding = next((b for b in balances if str(b.currency).upper() == base), None)
+        actual_qty = float(getattr(holding, "total", 0.0) or 0.0)
+
+        if actual_qty <= 0:
+            self._spot_cost_basis.pop(base, None)
+            return
+
+        basis_price = float(fill_price or previous_entry or 0.0)
+        if side == "buy" and previous_qty > 0 and previous_entry > 0:
+            added_qty = max(actual_qty - previous_qty, 0.0)
+            if added_qty > 0 and basis_price > 0:
+                basis_price = ((previous_qty * previous_entry) + (added_qty * basis_price)) / actual_qty
+            else:
+                basis_price = previous_entry
+        elif previous_entry > 0:
+            basis_price = previous_entry
+
+        if basis_price <= 0:
+            basis_price = float(fill_price or 0.0)
+        self._remember_spot_cost_basis(base, actual_qty, basis_price)
+
+    async def _build_spot_positions(self) -> list[Position]:
+        balances = await self._get_spot_balances()
+        await self._load_markets()
+
+        holdings = [b for b in balances if float(b.total or 0) > 0 and not is_cash_equivalent(b.currency)]
+        if not holdings:
+            self._spot_cost_basis = {}
+            return []
+
+        ticker_tasks: dict[str, asyncio.Task] = {}
+        symbol_by_base: dict[str, str] = {}
+        for balance in holdings:
+            base = str(balance.currency or "").upper()
+            symbol = pick_best_spot_symbol(self.client.markets or {}, base)
+            if not symbol:
                 continue
-            available = float((bal.get("free") or {}).get(currency) or 0)
-            out.append(Balance(currency=currency, total=total, available=available))
-        return out
+            symbol_by_base[base] = symbol
+            ticker_tasks[base] = asyncio.create_task(self.get_ticker(symbol))
+
+        positions: list[Position] = []
+        next_basis: dict[str, dict[str, float]] = {}
+        for balance in holdings:
+            base = str(balance.currency or "").upper()
+            symbol = symbol_by_base.get(base)
+            if not symbol:
+                continue
+
+            ticker = await ticker_tasks[base]
+            current_price = float(getattr(ticker, "last", 0) or 0)
+            if current_price <= 0:
+                continue
+
+            quantity = float(balance.total or 0)
+            cached = self._spot_cost_basis.get(base) or {}
+            entry_price = float(cached.get("entry_price") or current_price)
+            unrealized_pnl = (current_price - entry_price) * quantity
+            next_basis[base] = {"quantity": quantity, "entry_price": entry_price}
+            positions.append(
+                Position(
+                    symbol=symbol,
+                    quantity=quantity,
+                    entry_price=entry_price,
+                    unrealized_pnl=unrealized_pnl,
+                    current_price=current_price,
+                )
+            )
+
+        self._spot_cost_basis = next_basis
+        return positions
+
+    async def get_balances(self) -> list[Balance]:
+        if self.asset_class == "crypto_spot":
+            return await self._get_spot_balances()
+
+        bal = await self._call(self.client.fetch_balance)
+        return build_balances_from_ccxt_payload(bal)
 
     async def get_positions(self) -> list[Position]:
+        if self.asset_class == "crypto_spot":
+            return await self._build_spot_positions()
         if not self.client.has.get("fetchPositions"):
             return []  # spot exchanges don't have positions
         raw = await self._call(self.client.fetch_positions)
@@ -210,7 +326,7 @@ class CcxtVenue(Venue):
             price,
             params,
         )
-        return Order(
+        order = Order(
             order_id=str(result.get("id") or ""),
             symbol=symbol,
             side=side,
@@ -223,6 +339,10 @@ class CcxtVenue(Venue):
             filled_quantity=float(result.get("filled") or 0),
             avg_fill_price=float(result.get("average") or 0) or None,
         )
+        if self.asset_class == "crypto_spot":
+            fill_price = float(order.avg_fill_price or price or 0.0)
+            await self._sync_spot_cost_basis_after_fill(symbol, side, fill_price)
+        return order
 
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         try:
