@@ -7,38 +7,16 @@ type TF = (typeof TIMEFRAMES)[number];
 interface Props {
   symbol?:    string;
   venueType?: string;
+  venueLabel?: string;
+  assetClass?: string;
   livePrice?: number | null; // Real-time price from WebSocket — updates last bar instantly
 }
 
-// Crypto venues where Binance public data is a valid fallback
-const CRYPTO_VENUES = new Set(["BINANCE", "BYBIT", "OKX", "KRAKEN", "COINBASE", "HYPERLIQUID", "CCXT"]);
-const FOREX_VENUES  = new Set(["OANDA", "METATRADER"]);
-const STOCK_VENUES  = new Set(["ALPACA", "IBKR"]);
-
-/**
- * Convert venue symbol → Yahoo Finance ticker symbol for public data.
- * Works without any API key — same data source as TradingView free tier.
- */
-function toYahooSymbol(sym: string, venueType: string): string {
-  const upper = sym.toUpperCase().replace(/[/_\s-]/g, "");
-  if (FOREX_VENUES.has(venueType)) {
-    // EURUSD → EURUSD=X, XAUUSD → GC=F (Gold), XAGUSD → SI=F (Silver)
-    const metalMap: Record<string, string> = {
-      XAUUSD: "GC=F", XAUEUR: "GC=F", GOLD: "GC=F",
-      XAGUSD: "SI=F", SILVER: "SI=F",
-      US30: "^DJI", DJI: "^DJI", DOW: "^DJI",
-      NAS100: "^NDX", NASDAQ: "^NDX", NDX: "^NDX",
-      SPX500: "^GSPC", SP500: "^GSPC", GSPC: "^GSPC",
-      DE40: "^GDAXI", UK100: "^FTSE", JP225: "^N225",
-      OIL: "CL=F", USOIL: "CL=F", WTI: "CL=F",
-    };
-    if (metalMap[upper]) return metalMap[upper];
-    // Forex pair: EURUSD → EURUSD=X
-    if (upper.length === 6 && !upper.includes("=")) return `${upper}=X`;
-    return upper;
-  }
-  if (STOCK_VENUES.has(venueType)) return upper; // AAPL, TSLA etc.
-  return upper;
+function inferAssetClassFromVenueType(venueType: string): "crypto" | "forex" | "stocks" | "prediction" {
+  if (venueType === "OANDA" || venueType === "METATRADER") return "forex";
+  if (venueType === "ALPACA" || venueType === "IBKR") return "stocks";
+  if (venueType === "POLYMARKET") return "prediction";
+  return "crypto";
 }
 
 /** Yahoo Finance timeframe → interval+range query params */
@@ -59,12 +37,12 @@ function normaliseBinanceSymbol(sym: string): string {
   return sym.replace(/[/_\-]/g, "").toUpperCase();
 }
 
-function formatPrice(price: number, venueType: string): string {
-  if (FOREX_VENUES.has(venueType)) {
+function formatPrice(price: number, assetClass: string): string {
+  if (assetClass === "forex") {
     // Forex: no currency prefix, 4 decimal places
     return price.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 5 });
   }
-  if (STOCK_VENUES.has(venueType)) {
+  if (assetClass === "stocks") {
     return `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
   // Crypto: 2 decimals for high-value, 6 for small
@@ -73,7 +51,7 @@ function formatPrice(price: number, venueType: string): string {
 
 type Bar = { time: number; open: number; high: number; low: number; close: number };
 
-export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", livePrice }: Props) {
+export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venueLabel, assetClass, livePrice }: Props) {
   const containerRef   = useRef<HTMLDivElement>(null);
   const chartRef       = useRef<any>(null);
   const seriesRef      = useRef<any>(null);
@@ -81,6 +59,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
   const pollRef        = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastBarTimeRef = useRef<number>(0);
 
+  const resolvedAssetClass = assetClass ?? inferAssetClassFromVenueType(venueType);
   const [ready,       setReady]       = useState(false);
   const [tf,          setTf]          = useState<TF>("1h");
   const [price,       setPrice]       = useState<number | null>(null);
@@ -90,8 +69,9 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
   const [noData,      setNoData]      = useState(false);   // agent not running yet
   const [dataSource,  setDataSource]  = useState("");      // "live" | "cached" | "public"
 
-  const isCrypto = CRYPTO_VENUES.has(venueType);
-  const isForex  = FOREX_VENUES.has(venueType);
+  const isCrypto = resolvedAssetClass === "crypto";
+  const isForex  = resolvedAssetClass === "forex";
+  const isStocks = resolvedAssetClass === "stocks";
 
   // ── 0. Push WebSocket live price to last bar instantly ──────────
   // When the parent passes livePrice (from the WS price_update event),
@@ -414,20 +394,13 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
     };
   }, [ready, symbol, tf, venueType, isCrypto]);
 
-  // ── Friendly venue label ────────────────────────────────────────
-  const venueLabel: Record<string, string> = {
-    OANDA: "OANDA", METATRADER: "MetaTrader", ALPACA: "Alpaca", IBKR: "Interactive Brokers",
-    HYPERLIQUID: "Hyperliquid", BINANCE: "Binance", BYBIT: "Bybit", OKX: "OKX",
-    KRAKEN: "Kraken", COINBASE: "Coinbase",
-  };
-
   return (
     <div>
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span style={{ fontSize: 20, fontWeight: 600, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-            {price !== null ? formatPrice(price, venueType) : "—"}
+            {price !== null ? formatPrice(price, resolvedAssetClass) : "—"}
           </span>
           {change !== null && (
             <span style={{ fontSize: 13, fontWeight: 500, color: change >= 0 ? "#4ade80" : "#f87171" }}>
@@ -470,14 +443,14 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
         {!loading && noData && (
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 32, textAlign: "center" }}>
             <div style={{ fontSize: 32, lineHeight: 1 }}>
-              {isForex ? "💱" : STOCK_VENUES.has(venueType) ? "📈" : "📊"}
+              {isForex ? "💱" : isStocks ? "📈" : "📊"}
             </div>
             <p style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>
-              {venueLabel[venueType] ?? venueType} — {symbol}
+              {(venueLabel ?? venueType)} — {symbol}
             </p>
             <p style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", lineHeight: 1.6, maxWidth: 280 }}>
               Could not load chart data for <strong style={{ color: "rgba(255,255,255,0.6)" }}>{symbol}</strong>.
-              Check the symbol is correct for {venueLabel[venueType] ?? venueType}.
+              Check the symbol is correct for {venueLabel ?? venueType}.
             </p>
           </div>
         )}

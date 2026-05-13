@@ -13,7 +13,11 @@ import { prisma } from "@/lib/prisma";
 import { VenueType } from "@prisma/client";
 import { encrypt } from "@/lib/encryption";
 import { getPlanLimits, type Plan } from "@/lib/plan-limits";
-import { normalizeVenueMarket } from "@/lib/venue-market";
+import {
+  getVenueCapability,
+  getVenueCatalog,
+  normalizeVenueMarket,
+} from "@/lib/server/venue-capabilities";
 
 function normalizePaperCapital(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -47,6 +51,8 @@ export async function GET() {
     orderBy: { createdAt: "asc" },
   });
 
+  const catalog = getVenueCatalog();
+
   // SECURITY: scrub all sensitive fields before sending to client
   const safe = venues.map(v => ({
     id:               v.id,
@@ -69,8 +75,9 @@ export async function GET() {
     hasApiKey:        Boolean(v.apiKey),
     hasApiSecret:     Boolean(v.apiSecret),
     riskProfile:      v.riskProfile,
+    capability:       getVenueCapability(v.type),
   }));
-  return NextResponse.json(safe);
+  return NextResponse.json({ venues: safe, catalog });
 }
 
 export async function POST(req: Request) {
@@ -201,6 +208,7 @@ export async function POST(req: Request) {
     hasApiKey:        Boolean(venue.apiKey),
     hasApiSecret:     Boolean(venue.apiSecret),
     riskProfile:      venue.riskProfile,
+    capability:       getVenueCapability(venue.type),
     connectionTest,
   }, { status: 201 });
 }

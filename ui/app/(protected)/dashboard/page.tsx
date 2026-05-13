@@ -26,16 +26,16 @@ import { LogoWordmark }      from "@/components/Logo";
 import { MacroIntelStrip }   from "@/components/MacroIntelStrip";
 import { NLCommandBar }      from "@/components/NLCommandBar";
 import { ErrorBoundary }     from "@/components/ErrorBoundary";
-import { useVenues, VENUE_SYMBOLS, VENUE_REGISTRY_NAME, VENUE_LABEL } from "@/hooks/useVenues";
+import { useVenues } from "@/hooks/useVenues";
 import { useToast }            from "@/components/Toast";
 import { DarkSelect }          from "@/components/ui/dark-select";
 import { MobileBottomNav }    from "@/components/MobileBottomNav";
 import {
-  defaultMarketForVenueType,
-  marketOptionsForVenueType,
-  normalizeVenueMarket,
-  venueSupportsEditableMarket,
-} from "@/lib/venue-market";
+  capabilitySupportsEditableMarket,
+  getVenueCapability,
+  normalizeCapabilityMarket,
+  type VenueCapability,
+} from "@/lib/venue-capabilities";
 
 const TradingChart = dynamic(
   () => import("@/components/TradingChart").then((m) => m.TradingChart),
@@ -60,34 +60,51 @@ function buildWebSocketEndpoint(): string | null {
  * SECURITY: usePolled clears state when sessionKey changes (user sign-out / switch),
  * never displays previous user's data on shared devices.
  */
-function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null) {
+function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null, enabled = true) {
   const [data, setData] = useState<T | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [healthy, setHealthy] = useState(false);
+  const [lastSuccessAt, setLastSuccessAt] = useState<number | null>(null);
   const proxyPath = path.startsWith("/api/")
     ? `/api/agent/${path.replace(/^\/api\//, "")}`
     : path;
-  const fetch_ = useCallback(() => {
-    if (!sessionKey) return; // do not fetch when unauthenticated
-    fetch(proxyPath, { credentials: "same-origin" })
-      .then((r) => r.json())
-      .then(setData)
-      .catch(() => {});
-  }, [proxyPath, sessionKey]);
+  const fetch_ = useCallback(async () => {
+    if (!sessionKey || !enabled) return false;
+    try {
+      const r = await fetch(proxyPath, { credentials: "same-origin", cache: "no-store" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const next = await r.json() as T;
+      setData(next);
+      setLoaded(true);
+      setHealthy(true);
+      setLastSuccessAt(Date.now());
+      return true;
+    } catch {
+      setHealthy(false);
+      return false;
+    }
+  }, [enabled, proxyPath, sessionKey]);
 
   // Clear data immediately when user changes / signs out
-  useEffect(() => { setData(null); }, [sessionKey]);
+  useEffect(() => {
+    setData(null);
+    setLoaded(false);
+    setHealthy(false);
+    setLastSuccessAt(null);
+  }, [enabled, proxyPath, sessionKey]);
 
   useEffect(() => {
-    if (!sessionKey) return;
+    if (!sessionKey || !enabled) return;
     fetch_();
     const id = setInterval(fetch_, interval);
     return () => clearInterval(id);
-  }, [fetch_, interval, sessionKey]);
-  return { data, refresh: fetch_, set: setData };
+  }, [enabled, fetch_, interval, sessionKey]);
+  return { data, refresh: fetch_, set: setData, loaded, healthy, lastSuccessAt };
 }
 
 interface AccountData   { balance: number; equity: number; initial_equity: number; total_return_pct: number; open_positions: number; sharpe: number }
 interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage?: number; liquidation_price?: number }[]; is_paper?: boolean }
-interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
+interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; market?: string; asset_class?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean }[] }[] }
 
@@ -106,14 +123,15 @@ function humanizeDecisionRationale(rationale?: string | null): string {
 export default function Dashboard() {
   // SECURITY: every piece of state is keyed off Clerk session ID.
   // When the user signs out / switches accounts, every cached datum is wiped.
-  const { session } = useSession();
+  const { session, isLoaded: sessionLoaded } = useSession();
   const sessionKey  = session?.id ?? null;
 
-  const account   = usePolled<AccountData>  ("/api/account",   8000,  sessionKey);
-  const positions = usePolled<PositionsData>("/api/positions", 8000,  sessionKey);
-  const status    = usePolled<StatusData>   ("/api/status",    5000, sessionKey);
-  const risk      = usePolled<RiskData>     ("/api/risk",     60000, sessionKey);
-  const decisions = usePolled<DecisionsData>("/api/decisions",10000, sessionKey);
+  const pollingEnabled = sessionLoaded && Boolean(sessionKey);
+  const account   = usePolled<AccountData>  ("/api/account",   8000,  sessionKey, pollingEnabled);
+  const positions = usePolled<PositionsData>("/api/positions", 8000,  sessionKey, pollingEnabled);
+  const status    = usePolled<StatusData>   ("/api/status",    5000, sessionKey, pollingEnabled);
+  const risk      = usePolled<RiskData>     ("/api/risk",     60000, sessionKey, pollingEnabled);
+  const decisions = usePolled<DecisionsData>("/api/decisions",10000, sessionKey, pollingEnabled);
 
   const [refreshing, setRefreshing]       = useState(false);
   const [agentLoading, setAgentLoading]   = useState(false);
@@ -131,31 +149,35 @@ export default function Dashboard() {
   const [showStartConfirm, setShowStartConfirm] = useState(false);
 
   // Venue + symbol (driven by user's configured venues)
-  const { venues: userVenues, loading: venuesLoading, reload: reloadVenues } = useVenues();
+  const { venues: userVenues, catalog: venueCatalog, loading: venuesLoading, reload: reloadVenues } = useVenues();
   const activeVenue  = userVenues.find(v => v.isActive) ?? userVenues[0];
   const venueType    = activeVenue?.type ?? "BINANCE";
-  const venueSymbols = VENUE_SYMBOLS[venueType] ?? VENUE_SYMBOLS.BINANCE;
-  const marketOptions = marketOptionsForVenueType(venueType);
-  const canEditMarket = venueSupportsEditableMarket(venueType);
+  const activeCapability: VenueCapability = getVenueCapability(venueCatalog, venueType);
+  const venueSymbols = activeCapability.symbols.defaultSymbols;
+  const marketOptions = activeCapability.markets;
+  const canEditMarket = capabilitySupportsEditableMarket(activeCapability);
+  const venueLabel = activeCapability.label;
+  const venueRegistryName = activeCapability.registryName;
+  const symbolPlaceholder = activeCapability.symbols.placeholder;
   const [symbol, setSymbol] = useState("BTCUSDT");
 
   // When the active venue changes (or loads for the first time), sync the default
   // symbol and chart venue type so a FOREX user sees EUR/USD not BTC/USDT.
   useEffect(() => {
     if (!venuesLoading && activeVenue) {
-      const defaultSym = VENUE_SYMBOLS[venueType]?.[0] ?? "BTCUSDT";
+      const defaultSym = activeCapability.symbols.defaultSymbols[0] ?? activeCapability.symbols.placeholder ?? "BTC/USDT";
       setSymbol(defaultSym);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeVenue?.id, venueType, venuesLoading]);
+  }, [activeCapability.symbols.defaultSymbols, activeCapability.symbols.placeholder, activeVenue?.id, venueType, venuesLoading]);
 
   useEffect(() => {
     if (!venuesLoading && activeVenue) {
-      setMarket(normalizeVenueMarket(venueType, activeVenue.market));
+      setMarket(normalizeCapabilityMarket(activeCapability, activeVenue.market));
     } else if (!venuesLoading) {
-      setMarket(defaultMarketForVenueType("BINANCE"));
+      setMarket(activeCapability.defaultMarket);
     }
-  }, [activeVenue?.id, activeVenue?.market, venueType, venuesLoading]);
+  }, [activeCapability.defaultMarket, activeVenue?.id, activeVenue?.market, venueType, venuesLoading]);
 
   useEffect(() => {
     if (!venuesLoading && activeVenue) {
@@ -165,7 +187,7 @@ export default function Dashboard() {
     }
   }, [activeVenue?.id, activeVenue?.paperCapital, venuesLoading]);
 
-  const isForexVenue = venueType === "OANDA" || venueType === "METATRADER";
+  const isForexVenue = activeCapability.assetClass === "forex";
 
   const toast = useToast();
 
@@ -183,7 +205,7 @@ export default function Dashboard() {
   );
 
   const wsEndpoint = buildWebSocketEndpoint();
-  const { connected, lastEvent } = useWebSocket(wsEndpoint, getToken);
+  const { connected, lastEvent, lastConnectedAt, lastMessageAt } = useWebSocket(wsEndpoint, getToken);
   const { handleWsEvent, requestPermission } = usePushNotifications(true);
 
   // Request notification permission once on mount
@@ -193,6 +215,42 @@ export default function Dashboard() {
   useEffect(() => {
     if (!lastEvent) return;
     handleWsEvent(lastEvent as Parameters<typeof handleWsEvent>[0]);
+    if (lastEvent.type === "init") {
+      const ev = lastEvent as {
+        type: string;
+        status?: string;
+        venue?: string;
+        assets?: string[];
+        timeframe?: string;
+        market?: string;
+        asset_class?: string;
+        paper?: boolean;
+        strategy_type?: string | null;
+        account?: AccountData;
+        positions?: PositionsData["positions"];
+        decisions?: DecisionsData["decisions"];
+      };
+      status.set((prev) => ({
+        ...(prev ?? {
+          provider: "groq",
+          model: "llama-3.3-70b-versatile",
+          tick_count: 0,
+          uptime_seconds: 0,
+          latest_log: null,
+        }),
+        status: ev.status ?? prev?.status ?? "idle",
+        venue: ev.venue ?? prev?.venue ?? venueRegistryName,
+        assets: ev.assets ?? prev?.assets ?? [],
+        timeframe: ev.timeframe ?? prev?.timeframe ?? timeframe,
+        market: ev.market ?? prev?.market ?? market,
+        asset_class: ev.asset_class ?? prev?.asset_class ?? activeCapability.assetClass,
+        is_paper: typeof ev.paper === "boolean" ? ev.paper : prev?.is_paper,
+        strategy_type: ev.strategy_type ?? prev?.strategy_type ?? null,
+      }));
+      if (ev.account) account.set(ev.account);
+      if (ev.positions) positions.set({ positions: ev.positions, is_paper: typeof ev.paper === "boolean" ? ev.paper : positions.data?.is_paper });
+      if (ev.decisions) decisions.set({ decisions: ev.decisions });
+    }
     if (lastEvent.type === "price_update") {
       const ev = lastEvent as { type: string; symbol: string; price: number };
       if (ev.symbol?.toUpperCase() === symbol.toUpperCase()) setLivePrice(ev.price);
@@ -218,29 +276,50 @@ export default function Dashboard() {
         ...(prev ?? {
           provider: "groq",
           model: "llama-3.3-70b-versatile",
-          venue: VENUE_REGISTRY_NAME[venueType] ?? "binance",
+          venue: venueRegistryName,
           tick_count: 0,
           uptime_seconds: 0,
           assets: [],
           timeframe: timeframe,
+          market: market,
+          asset_class: activeCapability.assetClass,
         }),
         status: ev.status ?? prev?.status ?? "idle",
         is_paper: typeof ev.paper === "boolean" ? ev.paper : prev?.is_paper,
       }));
       status.refresh();
     }
-  }, [account, decisions, handleWsEvent, lastEvent, positions, status, symbol, timeframe, venueType]);
+  }, [account, activeCapability.assetClass, decisions, handleWsEvent, lastEvent, market, positions, status, symbol, timeframe, venueRegistryName]);
 
   const acc      = account.data;
   const pos      = positions.data?.positions ?? [];
   const totalPnL = pos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
   const isUp     = (acc?.total_return_pct ?? 0) >= 0;
   const statusValue = status.data?.status ?? "idle";
+  const statusResolved = status.loaded;
   const agentActive = statusValue === "running" || statusValue === "paused" || statusValue === "stopping";
   const running     = statusValue === "running";
   const effectiveIsPaper = agentActive
     ? (status.data?.is_paper ?? activeVenue?.isPaper ?? true)
     : (activeVenue?.isPaper ?? true);
+  const lastRealtimeAt = lastMessageAt ?? lastConnectedAt ?? null;
+  const lastHttpSyncAt = Math.max(
+    status.lastSuccessAt ?? 0,
+    account.lastSuccessAt ?? 0,
+    positions.lastSuccessAt ?? 0,
+  ) || null;
+  const realtimeHealthy = connected;
+  const pollingHealthy = Boolean(lastHttpSyncAt && (Date.now() - lastHttpSyncAt) < 15_000);
+  const realtimeMode = realtimeHealthy ? "realtime" : pollingHealthy ? "polling" : "offline";
+  const agentStatePending = pollingEnabled && !statusResolved;
+
+  useEffect(() => {
+    if (!agentActive || !status.data) return;
+    if (status.data.assets?.[0]) setSymbol(status.data.assets[0]);
+    if (status.data.timeframe) setTimeframe(status.data.timeframe);
+    if (status.data.market) setMarket(normalizeCapabilityMarket(activeCapability, status.data.market));
+    if (status.data.strategy_type) setStrategyType(status.data.strategy_type);
+  }, [activeCapability.defaultMarket, activeCapability.markets, agentActive, status.data]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -249,7 +328,7 @@ export default function Dashboard() {
   }, [account, positions, status, decisions, risk]);
 
   const handleMarketChange = useCallback((nextMarket: string) => {
-    const normalized = normalizeVenueMarket(venueType, nextMarket);
+    const normalized = normalizeCapabilityMarket(activeCapability, nextMarket);
     setMarket(normalized);
     if (!activeVenue || normalized === activeVenue.market) return;
 
@@ -268,7 +347,7 @@ export default function Dashboard() {
       .catch((err: unknown) => {
         toast(err instanceof Error ? err.message : "Could not save market mode", "error");
       });
-  }, [activeVenue, reloadVenues, toast, venueType]);
+  }, [activeCapability, activeVenue, reloadVenues, toast]);
 
   const handlePaperCapitalSave = useCallback((nextPaperCapital: number) => {
     const normalized = Math.min(10_000_000, Math.max(100, Number.isFinite(nextPaperCapital) ? nextPaperCapital : 10_000));
@@ -308,7 +387,7 @@ export default function Dashboard() {
     setShowStartConfirm(false);
     setAgentLoading(true);
     try {
-      const venueName = VENUE_REGISTRY_NAME[venueType] ?? "binance";
+      const venueName = venueRegistryName;
       const body = {
         venue:            venueName,
         symbols:          [symbol],
@@ -344,9 +423,11 @@ export default function Dashboard() {
           venue: venueName,
           assets: [symbol],
           timeframe: timeframe,
+          market: market,
+          asset_class: activeCapability.assetClass,
           is_paper: activeVenue?.isPaper ?? true,
         }));
-        toast(`Agent started on ${VENUE_LABEL[venueType] ?? venueType}`, "success");
+        toast(`Agent started on ${venueLabel}`, "success");
         if (data.warning) toast(data.warning, "warning");
       }
       setTimeout(() => { status.refresh(); setAgentLoading(false); }, 1200);
@@ -354,8 +435,8 @@ export default function Dashboard() {
       setAgentLoading(false);
       toast("Failed to reach the trading backend. Check your connection.", "error");
     }
-  }, [activeVenue, lossCooldown, market, maxDailyLoss, maxTradesDay, minConfidence,
-      paperCapital, status, strategyType, symbol, timeframe, toast, venueType]);
+  }, [activeCapability.assetClass, activeVenue, lossCooldown, market, maxDailyLoss, maxTradesDay, minConfidence,
+      paperCapital, status, strategyType, symbol, timeframe, toast, venueLabel, venueRegistryName]);
 
   const handleAgentToggle = useCallback(async () => {
     const currentStatus = status.data?.status ?? "idle";
@@ -445,13 +526,13 @@ export default function Dashboard() {
   // 15s after mount, we infer the backend is down.
   const [backendDown, setBackendDown] = useState(false);
   useEffect(() => {
-    if (!sessionKey) return;
+    if (!pollingEnabled) return;
     setBackendDown(false);
     const t = setTimeout(() => {
-      if (!status.data && !account.data) setBackendDown(true);
+      if (!status.loaded && !account.loaded) setBackendDown(true);
     }, 15_000);
     return () => clearTimeout(t);
-  }, [sessionKey, status.data, account.data]);
+  }, [account.loaded, pollingEnabled, status.loaded]);
 
   return (
     <ErrorBoundary label="Dashboard">
@@ -468,7 +549,7 @@ export default function Dashboard() {
             strategyName:      PERSONA_DISPLAY[strategyType]?.name     ?? strategyType,
             strategyTagline:   PERSONA_DISPLAY[strategyType]?.tagline  ?? "",
             isPaper:           activeVenue?.isPaper ?? true,
-            venueName:         VENUE_LABEL[venueType] ?? venueType,
+            venueName:         venueLabel,
             market:            market,
             paperCapital:      paperCapital,
             minConfidencePct:  minConfidence,
@@ -493,13 +574,16 @@ export default function Dashboard() {
         </div>
       )}
 
-      {wsEndpoint && !connected && status.data?.status === "running" && (
+      {wsEndpoint && realtimeMode !== "realtime" && status.data?.status === "running" && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 999,
-          background: "#ef4444", color: "#fff", textAlign: "center",
+          background: realtimeMode === "polling" ? "#f59e0b" : "#ef4444",
+          color: "#fff", textAlign: "center",
           padding: "8px 16px", fontSize: 13, fontWeight: 600,
         }}>
-          ⚠ Live data disconnected — reconnecting… Open positions may not reflect current prices.
+          {realtimeMode === "polling"
+            ? "Realtime stream reconnecting — authenticated polling is still keeping the dashboard in sync."
+            : "Live data disconnected — reconnecting… Open positions may not reflect current prices."}
         </div>
       )}
 
@@ -672,10 +756,23 @@ export default function Dashboard() {
         <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
           {/* WS dot */}
           <span
-            title={connected ? "Live feed connected" : wsEndpoint ? "Reconnecting live feed" : "Polling fallback"}
-            style={{ display: "flex", alignItems: "center", flexShrink: 0, color: connected ? "#22c55e" : "rgba(255,255,255,0.3)" }}
+            title={
+              realtimeMode === "realtime"
+                ? `Realtime stream connected${lastRealtimeAt ? ` · last event ${Math.max(0, Math.round((Date.now() - lastRealtimeAt) / 1000))}s ago` : ""}`
+                : realtimeMode === "polling"
+                  ? "Realtime stream reconnecting, but authenticated polling is healthy"
+                  : wsEndpoint
+                    ? "Realtime stream disconnected"
+                    : "Polling fallback"
+            }
+            style={{
+              display: "flex",
+              alignItems: "center",
+              flexShrink: 0,
+              color: realtimeMode === "realtime" ? "#22c55e" : realtimeMode === "polling" ? "#f59e0b" : "rgba(255,255,255,0.3)",
+            }}
           >
-            {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
+            {realtimeMode === "realtime" ? <Wifi size={13} /> : <WifiOff size={13} />}
           </span>
 
           {/* Live price — compact */}
@@ -746,21 +843,21 @@ export default function Dashboard() {
           {/* Start / Stop agent */}
           <button
             onClick={!activeVenue && !agentActive ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
-            disabled={agentLoading}
-            title={!activeVenue && !agentActive ? "Connect a venue in Settings first" : undefined}
+            disabled={agentLoading || agentStatePending}
+            title={agentStatePending ? "Syncing authenticated agent state…" : !activeVenue && !agentActive ? "Connect a venue in Settings first" : undefined}
             style={{
               display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
               background: agentActive ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
               border: `1px solid ${agentActive ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
               color: agentActive ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
               borderRadius: 8, padding: isMobile ? "7px" : "5px 12px",
-              cursor: agentLoading ? "default" : "pointer",
+              cursor: agentLoading || agentStatePending ? "default" : "pointer",
               fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
-              opacity: agentLoading ? 0.6 : 1, transition: "all 0.2s",
+              opacity: agentLoading || agentStatePending ? 0.6 : 1, transition: "all 0.2s",
             }}
           >
             {agentActive ? <Square size={10} /> : <Play size={10} />}
-            {agentLoading ? "…" : agentActive ? "Stop" : !activeVenue ? "No venue" : "Start"}
+            {agentStatePending ? "Syncing" : agentLoading ? "…" : agentActive ? "Stop" : !activeVenue ? "No venue" : "Start"}
           </button>
 
           {/* Kill switch — close ALL positions immediately */}
@@ -855,7 +952,7 @@ export default function Dashboard() {
 
         {/* Status bar */}
         <div style={{ marginBottom: 14 }}>
-          <StatusBar data={status.data} />
+          <StatusBar data={status.data} loading={agentStatePending} />
         </div>
 
         {/* Macro intel strip — fear/greed, MTF bias, news */}
@@ -938,7 +1035,7 @@ export default function Dashboard() {
                     }}
                     options={userVenues.map(v => ({
                       value: v.id,
-                      label: `${VENUE_LABEL[v.type] ?? v.type}`,
+                      label: `${getVenueCapability(venueCatalog, v.type).label}`,
                       sub:   v.isPaper ? "Paper trading" : "Live",
                     }))}
                     style={{ minWidth: 220 }}
@@ -957,7 +1054,7 @@ export default function Dashboard() {
                   <input
                     value={symbol}
                     onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                    placeholder="Enter symbol"
+                    placeholder={symbolPlaceholder}
                     style={{
                       minWidth: 180,
                       padding: "9px 12px",
@@ -971,7 +1068,13 @@ export default function Dashboard() {
                 )}
               </div>
               <ErrorBoundary label="TradingChart">
-                <TradingChart symbol={symbol} venueType={venueType} livePrice={livePrice} />
+                <TradingChart
+                  symbol={symbol}
+                  venueType={venueType}
+                  venueLabel={venueLabel}
+                  assetClass={activeCapability.assetClass}
+                  livePrice={livePrice}
+                />
               </ErrorBoundary>
             </motion.section>
 
@@ -1105,7 +1208,7 @@ export default function Dashboard() {
       <footer style={{ borderTop: "1px solid var(--border)", padding: isMobile ? "16px 12px" : "20px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <LogoWordmark size={24} />
         {!isMobile && <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          Hyperliquid · Binance · Bybit · OKX · Kraken · Coinbase · OANDA · MetaTrader · Alpaca · IBKR
+          {Object.values(venueCatalog).map((cap) => cap.shortLabel).join(" · ") || venueLabel}
         </span>}
         {/* Admin link */}
         <Link href="/admin"
@@ -1134,8 +1237,14 @@ export default function Dashboard() {
       {isMobile && (
         <MobileBottomNav
           running={running}
-          agentLoading={agentLoading}
-          onStart={() => setShowStartConfirm(true)}
+          agentLoading={agentLoading || agentStatePending}
+          onStart={() => {
+            if (!activeVenue) {
+              toast("Connect a venue in Settings first.", "warning");
+              return;
+            }
+            setShowStartConfirm(true);
+          }}
           onStop={handleAgentToggle}
           onKillswitch={handleKillSwitch}
           strategyType={strategyType}

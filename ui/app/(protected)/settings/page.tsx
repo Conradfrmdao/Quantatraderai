@@ -9,17 +9,15 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 import { useToast } from "@/components/Toast";
 import { DarkSelect } from "@/components/ui/dark-select";
 import {
-  defaultMarketForVenueType,
-  marketOptionsForVenueType,
-  normalizeVenueMarket,
-  venueSupportsEditableMarket,
-} from "@/lib/venue-market";
+  capabilitySupportsEditableMarket,
+  getVenueCapability,
+  normalizeCapabilityMarket,
+  type VenueCapability,
+  type VenueCatalog,
+  type VenueType,
+} from "@/lib/venue-capabilities";
 
 /* ─── Types ─────────────────────────────────────────────────────── */
-type VenueType =
-  | "HYPERLIQUID" | "BINANCE" | "OANDA" | "POLYMARKET" | "CCXT"
-  | "METATRADER" | "BYBIT" | "OKX" | "KRAKEN" | "COINBASE" | "ALPACA" | "IBKR";
-
 interface Venue {
   id: string;
   displayName: string;
@@ -37,6 +35,7 @@ interface Venue {
   isPaper: boolean;
   isActive: boolean;
   riskProfile: RiskProfile | null;
+  capability?: VenueCapability;
 }
 
 interface RiskProfile {
@@ -100,26 +99,6 @@ const btnOutline: React.CSSProperties = {
   fontSize: 13, fontWeight: 500, cursor: "pointer",
 };
 
-const VENUE_TYPES: VenueType[] = [
-  "HYPERLIQUID", "BINANCE", "BYBIT", "OKX", "KRAKEN", "COINBASE",
-  "OANDA", "METATRADER", "ALPACA", "IBKR", "POLYMARKET", "CCXT",
-];
-
-const VENUE_LABELS: Record<VenueType, string> = {
-  HYPERLIQUID: "Hyperliquid (DEX perps)",
-  BINANCE:     "Binance (crypto spot + futures)",
-  BYBIT:       "Bybit (crypto perps)",
-  OKX:         "OKX (crypto + DeFi)",
-  KRAKEN:      "Kraken (crypto spot + futures)",
-  COINBASE:    "Coinbase Advanced Trade",
-  OANDA:       "OANDA (forex / CFDs)",
-  METATRADER:  "MetaTrader 4/5 (forex / metals / indices)",
-  ALPACA:      "Alpaca (US stocks / options)",
-  IBKR:        "Interactive Brokers (stocks / options / futures)",
-  POLYMARKET:  "Polymarket (prediction markets)",
-  CCXT:        "Other exchange (CCXT)",
-};
-
 /* ─── Sub-components ─────────────────────────────────────────────── */
 function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -139,18 +118,19 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 /* ─── Venue Form ────────────────────────────────────────────────── */
-function VenueForm({ onSave, onCancel, initialType }: {
+function VenueForm({ onSave, onCancel, initialType, catalog }: {
   onSave: (v: Partial<Venue>) => void;
   onCancel: () => void;
+  catalog: VenueCatalog;
   initialType?: string;
 }) {
-  // Pre-select onboarding choice if it's a valid VenueType
-  const safeInitial = (initialType && VENUE_TYPES.includes(initialType as VenueType))
+  const catalogEntries = Object.values(catalog);
+  const safeInitial = (initialType && catalog[initialType])
     ? (initialType as VenueType)
-    : "HYPERLIQUID";
+    : (catalogEntries[0]?.type ?? "BINANCE");
   const [form, setForm] = useState<Partial<Venue>>({
     type: safeInitial,
-    market: defaultMarketForVenueType(safeInitial),
+    market: getVenueCapability(catalog, safeInitial).defaultMarket,
     paperCapital: 10000,
     isPaper: true,
   });
@@ -158,8 +138,15 @@ function VenueForm({ onSave, onCancel, initialType }: {
   const isMobile = useIsMobile();
   const [showSecret, setShowSecret] = useState(false);
   const [showApiKey, setShowApiKey]  = useState(false);
-  const currentType = form.type ?? "HYPERLIQUID";
-  const marketOptions = marketOptionsForVenueType(currentType);
+  const currentType = (form.type ?? safeInitial) as VenueType;
+  const currentCapability = getVenueCapability(catalog, currentType);
+  const marketOptions = currentCapability.markets;
+  const venueOptions = (catalogEntries.length ? catalogEntries : [currentCapability]).map(cap => ({
+    value: cap.type,
+    label: cap.label,
+    sub: cap.description,
+  }));
+  const auth = currentCapability.auth;
 
   return (
     <div style={{ ...card, border: "1px solid rgba(255,255,255,0.14)" }}>
@@ -174,31 +161,32 @@ function VenueForm({ onSave, onCancel, initialType }: {
             value={currentType}
             onChange={v => setForm(prev => {
               const nextType = v as VenueType;
+              const nextCapability = getVenueCapability(catalog, nextType);
               return {
                 ...prev,
                 type: nextType,
-                market: normalizeVenueMarket(nextType, typeof prev.market === "string" ? prev.market : null),
+                market: normalizeCapabilityMarket(nextCapability, typeof prev.market === "string" ? prev.market : null),
               };
             })}
-            options={VENUE_TYPES.map(t => ({ value: t, label: VENUE_LABELS[t] }))}
+            options={venueOptions}
             style={{ width: "100%" }}
           />
         </FieldGroup>
-        {venueSupportsEditableMarket(currentType) && (
+        {capabilitySupportsEditableMarket(currentCapability) && (
           <FieldGroup label="Market Mode">
             <DarkSelect
-              value={normalizeVenueMarket(currentType, typeof form.market === "string" ? form.market : null)}
+              value={normalizeCapabilityMarket(currentCapability, typeof form.market === "string" ? form.market : null)}
               onChange={v => set("market", v)}
               options={marketOptions.map(option => ({ value: option.value, label: option.label }))}
               style={{ width: "100%" }}
             />
           </FieldGroup>
         )}
-        {form.type !== "POLYMARKET" && form.type !== "METATRADER" && (<>
-          <FieldGroup label={form.type === "HYPERLIQUID" ? "Private Key (API wallet)" : "API Key"}>
+        {auth.apiKey.enabled && (
+          <FieldGroup label={auth.apiKey.label ?? "API Key"}>
             <div style={{ position: "relative" }}>
               <input style={{ ...inputStyle, paddingRight: 36 }}
-                placeholder={form.type === "HYPERLIQUID" ? "0x... (Hyperliquid API wallet key)" : "API key"}
+                placeholder={auth.apiKey.placeholder ?? "API key"}
                 type={showApiKey ? "text" : "password"}
                 value={form.apiKey ?? ""} onChange={e => set("apiKey", e.target.value)} />
               <button type="button" onClick={() => setShowApiKey(s => !s)}
@@ -209,44 +197,45 @@ function VenueForm({ onSave, onCancel, initialType }: {
               </button>
             </div>
           </FieldGroup>
-          {form.type !== "HYPERLIQUID" && (
-            <FieldGroup label="API Secret">
-              <div style={{ position: "relative" }}>
-                <input style={{ ...inputStyle, paddingRight: 36 }} placeholder="API secret"
-                  type={showSecret ? "text" : "password"}
-                  value={form.apiSecret ?? ""} onChange={e => set("apiSecret", e.target.value)} />
-                <button type="button" onClick={() => setShowSecret(s => !s)}
-                  style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
-                  {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
-                </button>
-              </div>
-            </FieldGroup>
-          )}
-        </>)}
-        {(form.type === "OANDA") && (
-          <FieldGroup label="Account ID">
-            <input style={inputStyle} placeholder="101-001-12345678-001" value={form.accountId ?? ""} onChange={e => set("accountId", e.target.value)} />
+        )}
+        {auth.apiSecret.enabled && (
+          <FieldGroup label={auth.apiSecret.label ?? "API Secret"}>
+            <div style={{ position: "relative" }}>
+              <input style={{ ...inputStyle, paddingRight: 36 }} placeholder={auth.apiSecret.placeholder ?? "API secret"}
+                type={showSecret ? "text" : "password"}
+                value={form.apiSecret ?? ""} onChange={e => set("apiSecret", e.target.value)} />
+              <button type="button" onClick={() => setShowSecret(s => !s)}
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "rgba(255,255,255,0.3)", fontSize: 11, padding: 0 }}>
+                {showSecret ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
           </FieldGroup>
         )}
-        {(form.type === "CCXT") && (
-          <FieldGroup label="Exchange ID (CCXT)">
-            <input style={inputStyle} placeholder="e.g. kraken, okx, bybit" value={form.ccxtExchangeId ?? ""} onChange={e => set("ccxtExchangeId", e.target.value)} />
+        {auth.accountId.enabled && (
+          <FieldGroup label={auth.accountId.label ?? "Account ID"}>
+            <input style={inputStyle} placeholder={auth.accountId.placeholder ?? ""} value={form.accountId ?? ""} onChange={e => set("accountId", e.target.value)} />
           </FieldGroup>
         )}
-        {(form.type === "HYPERLIQUID") && (
-          <FieldGroup label="Network">
-            <select style={{ ...inputStyle, appearance: "none" }} value={form.network ?? "testnet"} onChange={e => set("network", e.target.value)}>
-              <option value="testnet">Testnet</option>
-              <option value="mainnet">Mainnet</option>
+        {auth.ccxtExchangeId.enabled && (
+          <FieldGroup label={auth.ccxtExchangeId.label ?? "Exchange ID"}>
+            <input style={inputStyle} placeholder={auth.ccxtExchangeId.placeholder ?? ""} value={form.ccxtExchangeId ?? ""} onChange={e => set("ccxtExchangeId", e.target.value)} />
+          </FieldGroup>
+        )}
+        {auth.network.enabled && (
+          <FieldGroup label={auth.network.label ?? "Network"}>
+            <select style={{ ...inputStyle, appearance: "none" }} value={form.network ?? auth.network.options?.[0]?.value ?? "testnet"} onChange={e => set("network", e.target.value)}>
+              {(auth.network.options ?? []).map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </FieldGroup>
         )}
-        {(form.type === "METATRADER") && (<>
-          <FieldGroup label="MetaAPI Token">
+        {auth.metaApiToken.enabled && (
+          <FieldGroup label={auth.metaApiToken.label ?? "MetaAPI Token"}>
             <div style={{ position: "relative" }}>
-              <input style={{ ...inputStyle, paddingRight: 36 }} placeholder="From metaapi.cloud dashboard"
+              <input style={{ ...inputStyle, paddingRight: 36 }} placeholder={auth.metaApiToken.placeholder ?? ""}
                 type={showSecret ? "text" : "password"}
                 value={form.metaApiToken ?? ""} onChange={e => set("metaApiToken", e.target.value)} />
               <button type="button" onClick={() => setShowSecret(s => !s)}
@@ -257,27 +246,26 @@ function VenueForm({ onSave, onCancel, initialType }: {
               </button>
             </div>
           </FieldGroup>
-          <FieldGroup label="MetaAPI Account ID">
-            <input style={inputStyle} placeholder="MT4/MT5 account ID on MetaAPI" value={form.metaApiAccountId ?? ""} onChange={e => set("metaApiAccountId", e.target.value)} />
-          </FieldGroup>
-        </>)}
-        {(form.type === "POLYMARKET") && (
-          <FieldGroup label="Ethereum Private Key (dedicated trading wallet)">
-            <input style={inputStyle} type="password"
-              placeholder="0x... — never paste your main wallet's key"
-              value={form.apiKey ?? ""} onChange={e => set("apiKey", e.target.value)} />
-            <p style={{ fontSize: 11, color: "rgba(251,191,36,0.7)", marginTop: 6, lineHeight: 1.5 }}>
-              ⚠️ Use a fresh wallet funded only with USDC for trading. The key is encrypted
-              with AES-256-GCM before storage. Connect Wallet (MetaMask) coming soon — no
-              private key required.
-            </p>
+        )}
+        {auth.metaApiAccountId.enabled && (
+          <FieldGroup label={auth.metaApiAccountId.label ?? "MetaAPI Account ID"}>
+            <input style={inputStyle} placeholder={auth.metaApiAccountId.placeholder ?? ""} value={form.metaApiAccountId ?? ""} onChange={e => set("metaApiAccountId", e.target.value)} />
           </FieldGroup>
         )}
-        {!(["METATRADER","ALPACA","IBKR"] as VenueType[]).includes(form.type!) && (
-          <FieldGroup label="Passphrase (optional)">
+        {(form.type === "POLYMARKET") && (
+          <div style={{ marginTop: -6 }}>
+            <p style={{ fontSize: 11, color: "rgba(251,191,36,0.7)", marginTop: 6, lineHeight: 1.5 }}>
+              Use a fresh wallet funded only with USDC for trading. The key is encrypted
+              with AES-256-GCM before storage. Connect Wallet support can replace private-key
+              entry later, but this flow is still wallet-key based today.
+            </p>
+          </div>
+        )}
+        {auth.apiPassphrase.enabled && (
+          <FieldGroup label={auth.apiPassphrase.label ?? "Passphrase (optional)"}>
             <div style={{ position: "relative" }}>
               <input style={{ ...inputStyle, paddingRight: 36 }} type={showSecret ? "text" : "password"}
-                placeholder="Only for Coinbase, OKX, etc."
+                placeholder={auth.apiPassphrase.placeholder ?? ""}
                 value={form.apiPassphrase ?? ""} onChange={e => set("apiPassphrase", e.target.value)} />
               <button type="button" onClick={() => setShowSecret(s => !s)}
                 style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
@@ -289,6 +277,10 @@ function VenueForm({ onSave, onCancel, initialType }: {
           </FieldGroup>
         )}
       </div>
+
+      <p style={{ fontSize: 12, color: "rgba(255,255,255,0.38)", marginTop: 2, marginBottom: 16 }}>
+        {currentCapability.description}
+      </p>
 
       <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginTop: 4, marginBottom: 20 }}>
         <div
@@ -352,7 +344,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
 }
 
 /* ─── Risk Tab ───────────────────────────────────────────────────── */
-function RiskTab({ venues }: { venues: Venue[] }) {
+function RiskTab({ venues, catalog }: { venues: Venue[]; catalog: VenueCatalog }) {
   const [selectedId, setSelectedId] = useState<string>("");
   const [risk, setRisk] = useState<Partial<RiskProfile>>({});
   const [saving, setSaving] = useState(false);
@@ -402,7 +394,7 @@ function RiskTab({ venues }: { venues: Venue[] }) {
               value={selectedId}
               onChange={setSelectedId}
               placeholder="— choose a venue —"
-              options={venues.map(v => ({ value: v.id, label: v.displayName, sub: VENUE_LABELS[v.type] }))}
+              options={venues.map(v => ({ value: v.id, label: v.displayName, sub: getVenueCapability(catalog, v.type).label }))}
               style={{ maxWidth: 340 }}
             />
           </FieldGroup>
@@ -461,6 +453,7 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<TabId>(initialTab);
 
   const [venues, setVenues]       = useState<Venue[]>([]);
+  const [catalog, setCatalog]     = useState<VenueCatalog>({});
   const [showVenueForm, setShowVenueForm] = useState(false);
 
   // C2: First-run UX — auto-open the add-venue form and pre-select the chosen type
@@ -483,7 +476,17 @@ export default function SettingsPage() {
   }, [user]);
 
   const loadVenues = useCallback(() => {
-    fetch("/api/venues").then(r => r.json()).then(d => Array.isArray(d) && setVenues(d)).catch(() => {});
+    fetch("/api/venues", { credentials: "same-origin", cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<{ venues?: Venue[]; catalog?: VenueCatalog } | Venue[]>;
+      })
+      .then((d) => {
+        const payload = Array.isArray(d) ? { venues: d, catalog: {} } : d;
+        setVenues(payload.venues ?? []);
+        setCatalog(payload.catalog ?? {});
+      })
+      .catch(() => {});
   }, []);
 
   const loadAlerts = useCallback(() => {
@@ -733,7 +736,7 @@ export default function SettingsPage() {
                 )}
               </div>
 
-              {showVenueForm && <VenueForm onSave={saveVenue} onCancel={() => setShowVenueForm(false)} initialType={onboardingVenue ?? undefined} />}
+              {showVenueForm && <VenueForm catalog={catalog} onSave={saveVenue} onCancel={() => setShowVenueForm(false)} initialType={onboardingVenue ?? undefined} />}
 
               {venues.length === 0 && !showVenueForm ? (
                 <div style={{ ...card, textAlign: "center", padding: "48px 28px" }}>
@@ -742,7 +745,8 @@ export default function SettingsPage() {
                 </div>
               ) : (
                 venues.map(v => {
-                  const marketLabel = marketOptionsForVenueType(v.type).find(option => option.value === v.market)?.label
+                  const capability = getVenueCapability(catalog, v.type);
+                  const marketLabel = capability.markets.find(option => option.value === v.market)?.label
                     ?? v.market;
                   return (
                     <div key={v.id} style={{ ...card, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
@@ -753,7 +757,7 @@ export default function SettingsPage() {
                             fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
                             textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
                             background: "rgba(255,255,255,0.07)", color: "rgba(255,255,255,0.5)",
-                          }}>{VENUE_LABELS[v.type]}</span>
+                          }}>{capability.label}</span>
                           <span style={{
                             fontSize: 10, fontWeight: 700, letterSpacing: "0.06em",
                             textTransform: "uppercase", padding: "2px 8px", borderRadius: 6,
@@ -827,13 +831,8 @@ export default function SettingsPage() {
                       </button>
                       {/* Phase 5: Paper / Live / Testnet pill */}
                       {(() => {
-                        const isTestnet = !v.isPaper && (
-                          (v.type === "HYPERLIQUID" && v.network === "testnet") ||
-                          (["BINANCE","BYBIT","OKX","KRAKEN","COINBASE","CCXT"].includes(v.type))
-                        ) && v.isPaper;
-                        const label = v.isPaper
-                          ? (v.type === "HYPERLIQUID" && v.network === "testnet" ? "Testnet" : "Paper")
-                          : "Live";
+                        const isTestnet = v.type === "HYPERLIQUID" && v.network === "testnet";
+                        const label = isTestnet ? "Testnet" : v.isPaper ? "Paper" : "Live";
                         const bg    = v.isPaper ? "rgba(74,222,128,0.08)"  : "rgba(239,68,68,0.1)";
                         const bdr   = v.isPaper ? "rgba(74,222,128,0.25)"  : "rgba(239,68,68,0.3)";
                         const clr   = v.isPaper ? "#4ade80"                : "#f87171";
@@ -865,7 +864,7 @@ export default function SettingsPage() {
           {tab === "risk" && (
             <div>
               <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 24, letterSpacing: "-0.02em" }}>Risk Settings</h2>
-              <RiskTab venues={venues} />
+              <RiskTab venues={venues} catalog={catalog} />
             </div>
           )}
 

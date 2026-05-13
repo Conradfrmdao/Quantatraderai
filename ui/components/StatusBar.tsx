@@ -170,8 +170,8 @@ function CalendarChip() {
 }
 
 // ── Main StatusBar ────────────────────────────────────────────────────────────
-export function StatusBar({ data }: { data: StatusData | null }) {
-  const status    = data?.status ?? "idle";
+export function StatusBar({ data, loading = false }: { data: StatusData | null; loading?: boolean }) {
+  const status    = loading ? "syncing" : data?.status ?? "idle";
   const running   = status === "running";
   const active    = status === "running" || status === "paused" || status === "stopping";
   const isForex   = data?.venue === "oanda" || data?.venue === "metatrader";
@@ -199,7 +199,7 @@ export function StatusBar({ data }: { data: StatusData | null }) {
             animation: running ? "pulse-ring 1.4s ease-out infinite" : undefined }} />
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em",
             textTransform: "uppercase", color: running ? "#4ade80" : "var(--muted)" }}>
-            {running ? "Agent Active" : status === "paused" ? "Paused" : status === "stopping" ? "Stopping…" : "Offline"}
+            {loading ? "Syncing…" : running ? "Agent Active" : status === "paused" ? "Paused" : status === "stopping" ? "Stopping…" : "Offline"}
           </span>
           {data?.is_paper !== undefined && active && (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
@@ -220,9 +220,14 @@ export function StatusBar({ data }: { data: StatusData | null }) {
           <Chip label="Persona" value={PERSONA_LABELS[data.strategy_type] ?? data.strategy_type} color="#fbbf24" />
         )}
         {active && <Chip label="Ticks" value={data?.tick_count?.toString() ?? "0"} />}
-        {!active && (
+        {!active && !loading && (
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>
             Start the agent to begin trading
+          </span>
+        )}
+        {loading && (
+          <span style={{ fontSize: 12, color: "rgba(255,255,255,0.3)" }}>
+            Confirming your live agent state…
           </span>
         )}
         {data?.uptime_seconds != null && active && (

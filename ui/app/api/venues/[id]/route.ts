@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/encryption";
-import { normalizeVenueMarket } from "@/lib/venue-market";
+import { getVenueCapability, normalizeVenueMarket } from "@/lib/server/venue-capabilities";
 
 function normalizePaperCapital(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -80,6 +80,7 @@ export async function PATCH(
     hasApiKey: Boolean(v.apiKey), hasApiSecret: Boolean(v.apiSecret),
     apiKey: v.apiKey ? "••••••••" : "", apiSecret: v.apiSecret ? "••••••••" : "",
     riskProfile: v.riskProfile,
+    capability: getVenueCapability(v.type),
   });
 }
 

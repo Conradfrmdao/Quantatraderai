@@ -8,6 +8,7 @@ import { LogoWordmark } from "@/components/Logo";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { DarkSelect } from "@/components/ui/dark-select";
 import { useToast } from "@/components/Toast";
+import type { VenueCapability } from "@/lib/venue-capabilities";
 
 const EquityChart = dynamic(
   () => import("@/components/EquityChart").then((m) => m.EquityChart),
@@ -279,19 +280,35 @@ export default function BacktestPage() {
   const isMobile  = useIsMobile();
   const toast     = useToast();
   const abortRef  = useRef<AbortController | null>(null);
+  const [venueCapabilities, setVenueCapabilities] = useState<VenueCapability[]>([]);
 
   const [symbol,    setSymbol]    = useState("BTC/USDT");
   const [venue,     setVenue]     = useState("binance");
 
+  const getCapabilityForRegistry = useCallback((registryName: string) => {
+    return venueCapabilities.find((cap) => cap.registryName === registryName)
+      ?? venueCapabilities.find((cap) => cap.registryName === "binance")
+      ?? null;
+  }, [venueCapabilities]);
+
+  useEffect(() => {
+    fetch("/api/venues/catalog", { credentials: "same-origin", cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<{ venues?: VenueCapability[] }>;
+      })
+      .then((d) => setVenueCapabilities((d.venues ?? []).filter((cap) => cap.supportsBacktest)))
+      .catch(() => {});
+  }, []);
+
   // When venue changes to FOREX, default to a sensible FOREX symbol
   const handleVenueChange = useCallback((v: string) => {
     setVenue(v);
-    if (v === "oanda")      setSymbol("EUR_USD");
-    else if (v === "metatrader") setSymbol("EURUSD");
-    else if (v === "alpaca")     setSymbol("AAPL");
-    else if (v === "binance" || v === "bybit" || v === "okx" || v === "kraken" || v === "coinbase" || v === "hyperliquid")
-      setSymbol("BTC/USDT");
-  }, []);
+    const capability = getCapabilityForRegistry(v);
+    if (capability) {
+      setSymbol(capability.symbols.defaultSymbols[0] ?? capability.symbols.placeholder);
+    }
+  }, [getCapabilityForRegistry]);
   const [timeframe, setTimeframe] = useState("1h");
   const [days,      setDays]      = useState("30");
   const [capital,   setCapital]   = useState("10000");
@@ -301,6 +318,8 @@ export default function BacktestPage() {
   const [progress, setProgress] = useState(0);
   const [result,   setResult]   = useState<BacktestResult | null>(null);
   const [error,    setError]    = useState<string | null>(null);
+
+  const activeCapability = getCapabilityForRegistry(venue);
 
   // Fake progress animation while waiting for backend
   useEffect(() => {
@@ -384,19 +403,19 @@ export default function BacktestPage() {
               <div>
                 <label style={labelStyle}>Symbol</label>
                 <input style={inputStyle} value={symbol} onChange={e => setSymbol(e.target.value)}
-                  placeholder={venue === "oanda" ? "EUR_USD" : venue === "metatrader" ? "EURUSD" : "BTC/USDT"} />
+                  placeholder={activeCapability?.symbols.placeholder ?? "BTC/USDT"} />
               </div>
               <div><label style={labelStyle}>Venue</label>
                 <DarkSelect value={venue} onChange={handleVenueChange}
-                  options={[
-                    { value: "binance",     label: "Binance" },
-                    { value: "hyperliquid", label: "Hyperliquid" },
-                    { value: "bybit",       label: "Bybit" },
-                    { value: "okx",         label: "OKX" },
-                    { value: "oanda",       label: "OANDA (Forex)" },
-                    { value: "metatrader",  label: "MetaTrader (Forex)" },
-                    { value: "alpaca",      label: "Alpaca (Stocks)" },
-                  ]} />
+                  options={(venueCapabilities.length ? venueCapabilities : [{
+                    registryName: "binance",
+                    shortLabel: "Binance",
+                    description: "Crypto",
+                  } as VenueCapability]).map((cap) => ({
+                    value: cap.registryName,
+                    label: cap.shortLabel,
+                    sub: cap.description,
+                  }))} />
               </div>
               <div><label style={labelStyle}>Timeframe</label>
                 <DarkSelect value={timeframe} onChange={setTimeframe}
