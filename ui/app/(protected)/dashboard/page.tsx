@@ -106,7 +106,39 @@ interface AccountData   { balance: number; equity: number; initial_equity: numbe
 interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage?: number; liquidation_price?: number }[]; is_paper?: boolean }
 interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; market?: string; asset_class?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
-interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean }[] }[] }
+interface CommitteeOpinionData { role?: string; provider: string; action: string; rationale: string; confidence: number; veto?: boolean }
+interface CommitteeSummaryData { asset: string; opinions: CommitteeOpinionData[]; vote: string; confidence: number; deadlock: boolean }
+interface DecisionsData {
+  decisions: {
+    ts: string;
+    trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean; council?: CommitteeOpinionData[] }[];
+    council?: CommitteeSummaryData[];
+  }[]
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  market_analyst: "Market Analyst",
+  risk_officer: "Risk Officer",
+  execution_arbiter: "Execution Arbiter",
+  portfolio_allocator: "Allocator",
+  committee_chair: "Chair",
+};
+
+function formatPlanLabel(plan: string, compact = false): string {
+  if (!compact) return plan;
+  switch (plan) {
+    case "STARTER":
+      return "Starter";
+    case "ENTERPRISE":
+      return "Ent";
+    default:
+      return plan;
+  }
+}
+
+function roleLabel(role?: string): string {
+  return ROLE_LABEL[role ?? ""] ?? role ?? "Committee";
+}
 
 function humanizeDecisionRationale(rationale?: string | null): string {
   const text = String(rationale ?? "").trim();
@@ -613,8 +645,13 @@ export default function Dashboard() {
           <div style={{
             background: "linear-gradient(90deg, rgba(239,68,68,0.15), rgba(251,146,60,0.12))",
             borderBottom: "1px solid rgba(239,68,68,0.35)",
-            padding: "8px 20px", display: "flex", alignItems: "center",
-            justifyContent: "center", gap: 10,
+            padding: isMobile ? "10px 12px" : "8px 20px",
+            display: "flex",
+            alignItems: isMobile ? "flex-start" : "center",
+            justifyContent: isMobile ? "flex-start" : "center",
+            gap: 10,
+            flexWrap: "wrap",
+            flexDirection: isMobile ? "column" : "row",
           }}>
             <motion.span animate={{ opacity: [1, 0.5, 1] }} transition={{ duration: 1.2, repeat: Infinity }}
               style={{ width: 7, height: 7, borderRadius: "50%", background: "#ef4444",
@@ -623,7 +660,7 @@ export default function Dashboard() {
               letterSpacing: "0.08em", textTransform: "uppercase" }}>
               LIVE TRADING — Real money at risk. AI is placing real orders.
             </span>
-            <a href="/settings?tab=venues" style={{ marginLeft: 4, fontSize: 10,
+            <a href="/settings?tab=venues" style={{ marginLeft: isMobile ? 0 : 4, fontSize: 10,
               color: "rgba(252,165,165,0.55)", textDecoration: "underline" }}>
               Switch to paper
             </a>
@@ -633,8 +670,13 @@ export default function Dashboard() {
           <div style={{
             background: "rgba(74,222,128,0.04)",
             borderBottom: "1px solid rgba(74,222,128,0.15)",
-            padding: "7px 20px", display: "flex", alignItems: "center",
-            justifyContent: "center", gap: 10,
+            padding: isMobile ? "10px 12px" : "7px 20px",
+            display: "flex",
+            alignItems: isMobile ? "flex-start" : "center",
+            justifyContent: isMobile ? "flex-start" : "center",
+            gap: 10,
+            flexWrap: "wrap",
+            flexDirection: isMobile ? "column" : "row",
           }}>
             <span style={{ fontSize: 9, fontWeight: 700, color: "#4ade80",
               background: "rgba(74,222,128,0.12)", border: "1px solid rgba(74,222,128,0.25)",
@@ -753,8 +795,8 @@ export default function Dashboard() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
         style={{
-          padding: isMobile ? "0 12px" : "0 28px",
-          height: 60,
+          padding: isMobile ? "10px 12px" : "0 28px",
+          minHeight: 60,
           borderBottom: "1px solid var(--border)",
           display: "flex",
           alignItems: "center",
@@ -766,13 +808,14 @@ export default function Dashboard() {
           backdropFilter: "blur(20px)",
           WebkitBackdropFilter: "blur(20px)",
           overflow: "hidden",
+          gap: 10,
         }}
       >
-        <Link href="/" style={{ textDecoration: "none" }}>
-          <LogoWordmark size={30} />
+        <Link href="/" style={{ textDecoration: "none", flexShrink: 0 }}>
+          <LogoWordmark size={isMobile ? 26 : 30} />
         </Link>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 6, minWidth: 0, overflow: "hidden" }}>
           {/* WS dot */}
           <span
             title={
@@ -860,27 +903,29 @@ export default function Dashboard() {
           )}
 
           {/* Start / Stop agent */}
-          <button
-            onClick={!activeVenue && !agentActive ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
-            disabled={agentLoading || agentStatePending}
-            title={agentStatePending ? "Syncing authenticated agent state…" : !activeVenue && !agentActive ? "Connect a venue in Settings first" : undefined}
-            style={{
-              display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
-              background: agentActive ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
-              border: `1px solid ${agentActive ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
-              color: agentActive ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
-              borderRadius: 8, padding: isMobile ? "7px" : "5px 12px",
-              cursor: agentLoading || agentStatePending ? "default" : "pointer",
-              fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
-              opacity: agentLoading || agentStatePending ? 0.6 : 1, transition: "all 0.2s",
-            }}
-          >
-            {agentActive ? <Square size={10} /> : <Play size={10} />}
-            {agentStatePending ? "Syncing" : agentLoading ? "…" : agentActive ? "Stop" : !activeVenue ? "No venue" : "Start"}
-          </button>
+          {!isMobile && (
+            <button
+              onClick={!activeVenue && !agentActive ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
+              disabled={agentLoading || agentStatePending}
+              title={agentStatePending ? "Syncing authenticated agent state…" : !activeVenue && !agentActive ? "Connect a venue in Settings first" : undefined}
+              style={{
+                display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
+                background: agentActive ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
+                border: `1px solid ${agentActive ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
+                color: agentActive ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
+                borderRadius: 8, padding: "5px 12px",
+                cursor: agentLoading || agentStatePending ? "default" : "pointer",
+                fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+                opacity: agentLoading || agentStatePending ? 0.6 : 1, transition: "all 0.2s",
+              }}
+            >
+              {agentActive ? <Square size={10} /> : <Play size={10} />}
+              {agentStatePending ? "Syncing" : agentLoading ? "…" : agentActive ? "Stop" : !activeVenue ? "No venue" : "Start"}
+            </button>
+          )}
 
           {/* Kill switch — close ALL positions immediately */}
-          {agentActive && (
+          {!isMobile && agentActive && (
             <button
               onClick={handleKillSwitch}
               disabled={agentLoading}
@@ -890,7 +935,7 @@ export default function Dashboard() {
                 background: killConfirm ? "rgba(239,68,68,0.25)" : "rgba(239,68,68,0.07)",
                 border: `1px solid ${killConfirm ? "rgba(239,68,68,0.7)" : "rgba(239,68,68,0.2)"}`,
                 color: "#ef4444",
-                borderRadius: 10, padding: isMobile ? "7px" : "6px 12px",
+                borderRadius: 10, padding: "6px 12px",
                 cursor: agentLoading ? "default" : "pointer",
                 fontSize: 12, fontWeight: 500,
                 opacity: agentLoading ? 0.6 : 1,
@@ -898,7 +943,7 @@ export default function Dashboard() {
               }}
             >
               <Zap size={11} />
-              {!isMobile && (killConfirm ? "Tap to close ALL positions" : "Emergency: Close All")}
+              {killConfirm ? "Tap to close ALL positions" : "Emergency: Close All"}
             </button>
           )}
 
@@ -934,32 +979,36 @@ export default function Dashboard() {
               border: `1px solid ${currentPlan === "FREE" ? "rgba(255,255,255,0.1)"
                 : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "rgba(74,222,128,0.3)"
                 : "rgba(167,139,250,0.3)"}`,
-              borderRadius: 7, padding: "4px 8px",
+              borderRadius: 7, padding: isMobile ? "4px 7px" : "4px 8px",
               color: currentPlan === "FREE" ? "rgba(255,255,255,0.4)"
                 : currentPlan === "PRO" || currentPlan === "ENTERPRISE" ? "var(--green)"
                 : "#a78bfa",
               fontSize: 10, fontWeight: 700, letterSpacing: "0.05em",
               textDecoration: "none", whiteSpace: "nowrap" }}>
-            {currentPlan}
-            {currentPlan === "FREE" && <span style={{ fontSize: 9, opacity: 0.6 }}>↑</span>}
+            {formatPlanLabel(currentPlan, isMobile)}
+            {currentPlan === "FREE" && !isMobile && <span style={{ fontSize: 9, opacity: 0.6 }}>↑</span>}
           </Link>
-          <Link href="/settings" title="Settings"
-            style={{ display: "flex", alignItems: "center", justifyContent: "center",
-              width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-              color: "var(--muted)", textDecoration: "none" }}>
-            <Settings size={13} />
-          </Link>
+          {!isMobile && (
+            <Link href="/settings" title="Settings"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+                color: "var(--muted)", textDecoration: "none" }}>
+              <Settings size={13} />
+            </Link>
+          )}
           <UserButton />
-          <button onClick={handleRefresh} disabled={refreshing} title="Refresh data"
-            style={{ display: "flex", alignItems: "center", justifyContent: "center",
-              width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-              background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-              cursor: refreshing ? "default" : "pointer",
-              color: refreshing ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.5)",
-              transition: "all 0.2s" }}>
-            <RefreshCw size={12} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }} />
-          </button>
+          {!isMobile && (
+            <button onClick={handleRefresh} disabled={refreshing} title="Refresh data"
+              style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+                cursor: refreshing ? "default" : "pointer",
+                color: refreshing ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.5)",
+                transition: "all 0.2s" }}>
+              <RefreshCw size={12} style={{ animation: refreshing ? "spin 1s linear infinite" : undefined }} />
+            </button>
+          )}
         </div>
       </motion.header>
 
@@ -994,25 +1043,25 @@ export default function Dashboard() {
             label="Portfolio Equity"
             value={acc ? `$${(acc.equity ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
             sub={acc ? `${isUp ? "▲" : "▼"} ${Math.abs(acc.total_return_pct ?? 0).toFixed(2)}% total return` : undefined}
-            icon={TrendingUp} trend={isUp ? "up" : "down"} glow delay={0}
+            icon={TrendingUp} trend={isUp ? "up" : "down"} glow delay={0} compact={isMobile}
           />
           <StatCard
             label="Unrealised PnL"
             value={totalPnL ? `${totalPnL >= 0 ? "+" : ""}$${totalPnL.toFixed(2)}` : "$0.00"}
             sub={acc ? `Available: $${(acc.balance ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : undefined}
-            icon={totalPnL >= 0 ? TrendingUp : TrendingDown} trend={totalPnL >= 0 ? "up" : "down"} delay={0.07}
+            icon={totalPnL >= 0 ? TrendingUp : TrendingDown} trend={totalPnL >= 0 ? "up" : "down"} delay={0.07} compact={isMobile}
           />
           <StatCard
             label="Open Positions"
             value={pos.length.toString()}
             sub={`Max ${risk.data?.max_concurrent_positions ?? "—"} allowed`}
-            icon={Layers} trend="neutral" delay={0.14}
+            icon={Layers} trend="neutral" delay={0.14} compact={isMobile}
           />
           <StatCard
             label="Sharpe Ratio"
             value={acc ? (acc.sharpe ?? 0).toFixed(3) : "—"}
             sub="Risk-adjusted return"
-            icon={Activity} trend={acc && acc.sharpe > 0 ? "up" : "neutral"} delay={0.21}
+            icon={Activity} trend={acc && acc.sharpe > 0 ? "up" : "neutral"} delay={0.21} compact={isMobile}
           />
         </div>
 
@@ -1146,6 +1195,15 @@ export default function Dashboard() {
                 const bg    = isBuy ? "rgba(74,222,128,0.06)" : isSell ? "rgba(239,68,68,0.06)" : "rgba(255,255,255,0.02)";
                 const border= isBuy ? "rgba(74,222,128,0.2)"  : isSell ? "rgba(239,68,68,0.2)"  : "rgba(255,255,255,0.07)";
                 const conf  = d.confidence ? Math.round(Number(d.confidence) * 100) : null;
+                const councilSummary = latest.council?.find((entry) => normalizeMarketSymbol(entry.asset) === normalizeMarketSymbol(d.asset));
+                const councilOpinions = councilSummary?.opinions ?? d.council ?? [];
+                const supportingRoles = councilOpinions
+                  .filter((op) => op.action === d.action && d.action !== "hold")
+                  .map((op) => roleLabel(op.role));
+                const blockingRoles = councilOpinions
+                  .filter((op) => op.veto || (d.action !== "hold" && op.action === "hold" && op.role === "risk_officer"))
+                  .map((op) => roleLabel(op.role));
+                const chairOpinion = councilOpinions.find((op) => op.role === "committee_chair");
                 return (
                   <div style={{ background: bg, border: `1px solid ${border}`,
                     borderRadius: 12, padding: "14px 16px", marginBottom: 12 }}>
@@ -1178,6 +1236,28 @@ export default function Dashboard() {
                           <strong style={{ color: "rgba(255,255,255,0.7)" }}>Why:</strong>{" "}
                           {humanizeDecisionRationale(d.rationale).slice(0, 220)}
                         </p>
+                        {councilOpinions.length > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 8 }}>
+                            {supportingRoles.length > 0 && (
+                              <p style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", lineHeight: 1.5 }}>
+                                <strong style={{ color: "rgba(255,255,255,0.72)" }}>Wanted it:</strong>{" "}
+                                {supportingRoles.join(", ")}
+                              </p>
+                            )}
+                            {blockingRoles.length > 0 && (
+                              <p style={{ fontSize: 10, color: "#fca5a5", lineHeight: 1.5 }}>
+                                <strong style={{ color: "#f87171" }}>Blocked it:</strong>{" "}
+                                {blockingRoles.join(", ")}
+                              </p>
+                            )}
+                            {chairOpinion && (
+                              <p style={{ fontSize: 10, color: "#FBBF24", lineHeight: 1.5 }}>
+                                <strong style={{ color: "#FBBF24" }}>Chair intervened:</strong>{" "}
+                                {chairOpinion.action.toUpperCase()} · {humanizeDecisionRationale(chairOpinion.rationale).slice(0, 96)}
+                              </p>
+                            )}
+                          </div>
+                        )}
                         {(d.tp_price || d.sl_price) && !isHold && (
                           <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
                             {d.tp_price && (

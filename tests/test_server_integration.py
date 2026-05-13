@@ -365,25 +365,68 @@ async def test_get_candles_uses_normalized_cache_key():
     import src.server as srv
 
     s = srv.get_state("clerk_cached_candles")
+    now_ts = 650
     s.candle_cache["BTCUSDT:5m"] = [
-        {"time": 1, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
-        {"time": 2, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+        {"time": 300, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+        {"time": 600, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
     ]
 
     req = SimpleNamespace(headers={})
     with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_cached_candles")):
-        data = await srv.get_candles(
-            req,
-            symbol="BTC/USDT",
-            timeframe="5m",
-            limit=1,
-            venue="binance",
-            userId="ignored",
-        )
+        with patch("src.server.time.time", return_value=now_ts):
+            data = await srv.get_candles(
+                req,
+                symbol="BTC/USDT",
+                timeframe="5m",
+                limit=1,
+                venue="binance",
+                userId="ignored",
+            )
 
     assert data["source"] == "cache"
     assert data["candles"] == [
-        {"time": 2, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+        {"time": 600, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_candles_refreshes_stale_cache_from_saved_venue():
+    import src.server as srv
+    from src.venues.models import Candle
+
+    s = srv.get_state("clerk_stale_candles")
+    s.candle_cache["BTCUSDT:1h"] = [
+        {"time": 10 * 3600, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+    ]
+
+    class StubVenue:
+        async def get_candles(self, symbol, timeframe, lookback):
+            assert symbol == "BTC/USDT"
+            assert timeframe == "1h"
+            assert lookback == 1
+            return [
+                Candle(ts=13 * 3600, open=11.0, high=13.0, low=10.0, close=12.0, volume=120.0),
+            ]
+
+    req = SimpleNamespace(headers={})
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_stale_candles")):
+        with patch(
+            "src.server._build_user_bound_venue",
+            AsyncMock(return_value=(StubVenue(), {"type": "BINANCE"}, "binance:spot", "spot")),
+        ):
+            with patch("src.server.time.time", return_value=(14 * 3600) + 60):
+                data = await srv.get_candles(
+                    req,
+                    symbol="BTC/USDT",
+                    timeframe="1h",
+                    limit=1,
+                    venue="binance",
+                    userId="ignored",
+                )
+
+    assert data["source"] == "venue"
+    assert data["candles"] == [
+        {"time": 13 * 3600, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
     ]
 
 
@@ -560,7 +603,7 @@ async def test_get_candles_uses_authenticated_user_cache_not_global_state():
     user_state = srv.get_state("clerk_candle_user")
     user_state.candle_cache.clear()
     user_state.candle_cache["BTCUSDT:1h"] = [{
-        "time": 2,
+        "time": 13 * 3600,
         "open": 2.0,
         "high": 2.0,
         "low": 2.0,
@@ -570,7 +613,8 @@ async def test_get_candles_uses_authenticated_user_cache_not_global_state():
 
     req = SimpleNamespace(headers={})
     with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_candle_user")):
-        data = await srv.get_candles(req, symbol="BTCUSDT", timeframe="1h", limit=1, venue="binance", userId="ignored")
+        with patch("src.server.time.time", return_value=(14 * 3600) + 60):
+            data = await srv.get_candles(req, symbol="BTCUSDT", timeframe="1h", limit=1, venue="binance", userId="ignored")
 
     assert data["candles"] == [user_state.candle_cache["BTCUSDT:1h"][0]]
 

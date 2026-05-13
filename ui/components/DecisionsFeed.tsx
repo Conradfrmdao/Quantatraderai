@@ -3,10 +3,12 @@ import { motion, AnimatePresence } from "framer-motion";
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 interface CouncilOpinion {
+  role?:       string;
   provider:   string;
   action:     string;
   confidence: number;  // 0–1
   rationale:  string;
+  veto?:      boolean;
 }
 
 interface TradeDecision {
@@ -41,6 +43,14 @@ const PROVIDER_COLOR: Record<string, string> = {
   gemini:    "#4F8EF7",
   openrouter:"#9B6BF5",
   ollama:    "#22C55E",
+};
+
+const ROLE_LABEL: Record<string, string> = {
+  market_analyst: "Market Analyst",
+  risk_officer: "Risk Officer",
+  execution_arbiter: "Execution Arbiter",
+  portfolio_allocator: "Allocator",
+  committee_chair: "Chair",
 };
 
 function humanizeRationale(rationale?: string) {
@@ -86,16 +96,36 @@ function ConfidenceBar({ value, color = "var(--green)" }: { value: number; color
 function CouncilRow({ opinion }: { opinion: CouncilOpinion }) {
   const style  = ACTION_STYLE[opinion.action?.toLowerCase()] ?? ACTION_STYLE.hold;
   const pColor = PROVIDER_COLOR[opinion.provider?.toLowerCase()] ?? "rgba(255,255,255,0.5)";
+  const roleLabel = ROLE_LABEL[opinion.role ?? ""] ?? opinion.role ?? "Committee";
+  const isChair = opinion.role === "committee_chair";
+  const isVeto = opinion.veto === true;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{ width: 8, height: 8, borderRadius: "50%", background: pColor, flexShrink: 0, display: "inline-block" }} />
-        <span style={{ fontSize: 11, fontWeight: 600, color: pColor, textTransform: "capitalize", minWidth: 64 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: pColor, flexShrink: 0, display: "inline-block", marginTop: 1 }} />
+        <span style={{ fontSize: 11, fontWeight: 600, color: "#fff", minWidth: 0 }}>
+          {roleLabel}
+        </span>
+        <span style={{ fontSize: 10, color: pColor, textTransform: "capitalize" }}>
           {opinion.provider}
         </span>
         <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 7px", borderRadius: 6, background: style.bg, color: style.color, border: `1px solid ${style.border}`, textTransform: "uppercase", letterSpacing: "0.08em" }}>
           {opinion.action}
         </span>
+        {isVeto && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 6,
+            background: "rgba(239,68,68,0.1)", color: "var(--red)", border: "1px solid rgba(239,68,68,0.2)",
+            textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            veto
+          </span>
+        )}
+        {isChair && (
+          <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 7px", borderRadius: 6,
+            background: "rgba(251,191,36,0.1)", color: "#FBBF24", border: "1px solid rgba(251,191,36,0.2)",
+            textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            tie-break
+          </span>
+        )}
       </div>
       <ConfidenceBar value={opinion.confidence ?? 0.5} color={pColor} />
       {opinion.rationale && (
@@ -245,10 +275,10 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
                 >
                   <p style={{ fontSize: 9, fontWeight: 600, textTransform: "uppercase",
                     letterSpacing: "0.1em", color: "rgba(255,255,255,0.25)", marginBottom: 6 }}>
-                    AI Council · {(d.council ?? []).length} votes
+                    AI Committee · {(d.council ?? []).length} roles
                   </p>
-                  {(d.council ?? []).map((op) => (
-                    <CouncilRow key={op.provider} opinion={op} />
+                  {(d.council ?? []).map((op, index) => (
+                    <CouncilRow key={`${op.role ?? "role"}-${op.provider}-${index}`} opinion={op} />
                   ))}
                 </motion.div>
               )}

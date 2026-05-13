@@ -217,7 +217,7 @@ async def _notify_user(user_id: str, event: "TradingEvent") -> None:
                 timeout=_ah.ClientTimeout(total=3),
             )
     except Exception as e:
-        logger.warning("per-user telegram failed", user_id=user_id, error=str(e))
+        logger.warning("per-user telegram failed for %s: %s", user_id, e)
 
 # ── JWKS / JWT helpers ────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
@@ -2283,9 +2283,10 @@ async def get_candles(
     user_id = await _resolve_request_user_id(request, userId)
     state = get_state(user_id) if user_id else None
 
-    key    = _candle_cache_key(symbol, timeframe)
+    key = _candle_cache_key(symbol, timeframe)
     cached = state.candle_cache.get(key) if state else None
-    if cached:
+    stale_cached = cached[-limit:] if cached else None
+    if _candles_are_fresh(cached, timeframe):
         return {"candles": cached[-limit:], "source": "cache"}
 
     v = (venue or (state.venue_name if state else None) or "binance").lower()
@@ -2321,7 +2322,7 @@ async def get_candles(
                         state.candle_cache[key] = candles
                     return {"candles": candles[-limit:], "source": "venue"}
         except Exception as e:
-            logger.warning("Saved venue candle fetch failed", venue=v, symbol=symbol, error=str(e))
+            logger.warning("Saved venue candle fetch failed for %s on %s: %s", symbol, v, e)
 
     # Fallback: Binance public REST for crypto symbols
     try:
@@ -2350,6 +2351,14 @@ async def get_candles(
             state.candle_cache[key] = candles
         return {"candles": candles[-limit:], "source": "public"}
     except Exception as e:
+        if stale_cached:
+            logger.warning(
+                "Returning stale candle cache after live fetch failure for %s %s on %s",
+                symbol,
+                timeframe,
+                v,
+            )
+            return {"candles": stale_cached, "source": "stale_cache"}
         raise HTTPException(status_code=502, detail=f"Candle fetch failed: {e}")
 
 
@@ -2463,6 +2472,33 @@ def _normalize_market_symbol(symbol: str | None) -> str:
 
 def _candle_cache_key(symbol: str | None, timeframe: str | None) -> str:
     return f"{_normalize_market_symbol(symbol)}:{timeframe or '1h'}"
+
+
+_TIMEFRAME_SECONDS: dict[str, int] = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "4h": 14400,
+    "1d": 86400,
+}
+
+
+def _timeframe_seconds(timeframe: str | None) -> int:
+    return _TIMEFRAME_SECONDS.get((timeframe or "1h").lower(), 3600)
+
+
+def _candles_are_fresh(candles: list[dict] | None, timeframe: str | None, now_ts: int | None = None) -> bool:
+    """Treat the current or previous timeframe bucket as fresh cache."""
+    if not candles:
+        return False
+    last_ts = int(candles[-1].get("time") or 0)
+    if last_ts <= 0:
+        return False
+    interval_s = max(_timeframe_seconds(timeframe), 60)
+    current_bucket = (int(now_ts or time.time()) // interval_s) * interval_s
+    return last_ts >= max(0, current_bucket - interval_s)
 
 
 def _resolve_test_venue_target(requested_venue: str, stored_market: str | None = None) -> tuple[str, str, str]:
@@ -3302,7 +3338,7 @@ async def get_price_live(
                         "source": "venue",
                     }
         except Exception as e:
-            logger.warning("price/live venue fetch failed", venue=venue, error=str(e))
+            logger.warning("price/live venue fetch failed for %s: %s", venue, e)
 
     return {"error": "no live price available", "symbol": symbol}
 

@@ -37,6 +37,25 @@ function normaliseBinanceSymbol(sym: string): string {
   return sym.replace(/[/_\-]/g, "").toUpperCase();
 }
 
+const TIMEFRAME_SECONDS: Record<TF, number> = {
+  "1m": 60,
+  "5m": 300,
+  "15m": 900,
+  "30m": 1800,
+  "1h": 3600,
+  "4h": 14400,
+  "1d": 86400,
+};
+
+function timeframeSeconds(tf: TF): number {
+  return TIMEFRAME_SECONDS[tf] ?? 3600;
+}
+
+function alignToBucket(unixTs: number, tf: TF): number {
+  const intervalS = timeframeSeconds(tf);
+  return Math.floor(unixTs / intervalS) * intervalS;
+}
+
 function formatPrice(price: number, assetClass: string): string {
   if (assetClass === "forex") {
     // Forex: no currency prefix, 4 decimal places
@@ -67,6 +86,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
   const wsRef          = useRef<WebSocket | null>(null);
   const pollRef        = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastBarTimeRef = useRef<number>(0);
+  const currentBarsRef = useRef<Bar[]>([]);
 
   const resolvedAssetClass = assetClass ?? inferAssetClassFromVenueType(venueType);
   const [ready,       setReady]       = useState(false);
@@ -90,12 +110,37 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
     if (livePrice == null || !seriesRef.current || !lastBarTimeRef.current) return;
     setPrice(livePrice);
     try {
-      seriesRef.current.update({
-        time:  lastBarTimeRef.current,
-        close: livePrice,
-      } as any);
+      const nowS = Math.floor(Date.now() / 1000);
+      const targetTime = alignToBucket(nowS, tf);
+      const bars = currentBarsRef.current;
+      const prevBar = bars[bars.length - 1];
+      if (!prevBar) return;
+
+      const nextBar =
+        lastBarTimeRef.current < targetTime
+          ? {
+              time: targetTime,
+              open: prevBar.close,
+              high: Math.max(prevBar.close, livePrice),
+              low: Math.min(prevBar.close, livePrice),
+              close: livePrice,
+            }
+          : {
+              ...prevBar,
+              time: lastBarTimeRef.current,
+              high: Math.max(prevBar.high, livePrice),
+              low: Math.min(prevBar.low, livePrice),
+              close: livePrice,
+            };
+
+      currentBarsRef.current =
+        lastBarTimeRef.current < targetTime
+          ? [...bars, nextBar].slice(-500)
+          : [...bars.slice(0, -1), nextBar];
+      lastBarTimeRef.current = nextBar.time;
+      seriesRef.current.update(nextBar as any);
     } catch {}
-  }, [livePrice]);
+  }, [livePrice, tf]);
 
   // ── 1. Create chart instance once ──────────────────────────────
   useEffect(() => {
@@ -186,13 +231,13 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
     setPrice(null);
     setChange(null);
     lastBarTimeRef.current = 0;
+    currentBarsRef.current = [];
 
     let cancelled = false;
     let pricePollId: ReturnType<typeof setInterval> | null = null;
-    let currentBars: Bar[] = [];
 
     const applyBars = (bars: Bar[]) => {
-      currentBars = bars;
+      currentBarsRef.current = bars;
       seriesRef.current?.setData(bars as any[]);
       chartRef.current?.timeScale().fitContent();
       if (bars.length) {
@@ -210,7 +255,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
     // ── A. Always try the backend first (has candle cache when agent runs) ──
     const loadFromBackend = async (): Promise<CandleResponse> => {
       const url = `/api/agent/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return { candles: [], source: "" };
       const data = await res.json() as CandleResponse;
       return { candles: data.candles ?? [], source: data.source ?? "" };
@@ -220,7 +265,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
     // Handles: forex (EURUSD), stocks (AAPL), indices (US30/^DJI), metals (XAUUSD/GC=F)
     const loadFromYahoo = async (): Promise<Bar[]> => {
       try {
-        const res  = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${tf}`);
+        const res  = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${tf}`, { cache: "no-store" });
         if (!res.ok) return [];
         const data = await res.json() as { bars?: Bar[]; error?: string };
         if (data.error || !data.bars?.length) return [];
@@ -293,13 +338,35 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           setLive(realtimeFromVenue);
           setDataSource(realtimeFromVenue ? "live" : "public");
           if (seriesRef.current && lastBarTimeRef.current) {
-            seriesRef.current.update({
-              time:  lastBarTimeRef.current,
-              open:  currentBars[currentBars.length - 1]?.open ?? d.price,
-              high:  d.high  ?? Math.max(currentBars[currentBars.length - 1]?.high ?? d.price, d.price),
-              low:   d.low   ?? Math.min(currentBars[currentBars.length - 1]?.low  ?? d.price, d.price),
-              close: d.price,
-            } as any);
+            const nowS = Math.floor(Date.now() / 1000);
+            const targetTime = alignToBucket(nowS, tf);
+            const bars = currentBarsRef.current;
+            const prevBar = bars[bars.length - 1];
+            if (!prevBar) return;
+
+            const nextBar =
+              lastBarTimeRef.current < targetTime
+                ? {
+                    time: targetTime,
+                    open: prevBar.close,
+                    high: d.high ?? Math.max(prevBar.close, d.price),
+                    low: d.low ?? Math.min(prevBar.close, d.price),
+                    close: d.price,
+                  }
+                : {
+                    ...prevBar,
+                    time: lastBarTimeRef.current,
+                    high: d.high ?? Math.max(prevBar.high, d.price),
+                    low: d.low ?? Math.min(prevBar.low, d.price),
+                    close: d.price,
+                  };
+
+            currentBarsRef.current =
+              lastBarTimeRef.current < targetTime
+                ? [...bars, nextBar].slice(-500)
+                : [...bars.slice(0, -1), nextBar];
+            lastBarTimeRef.current = nextBar.time;
+            seriesRef.current.update(nextBar as any);
           }
         } catch {}
       };
@@ -313,8 +380,15 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
         if (backend.candles?.length) {
           seriesRef.current?.setData(backend.candles as any[]);
           chartRef.current?.timeScale().fitContent();
-          currentBars = backend.candles;
-          setDataSource(backend.source === "cache" ? "cached" : backend.source === "public" ? "public" : "live");
+          currentBarsRef.current = backend.candles;
+          lastBarTimeRef.current = backend.candles[backend.candles.length - 1]?.time ?? 0;
+          setDataSource(
+            backend.source === "cache" || backend.source === "stale_cache"
+              ? "cached"
+              : backend.source === "public"
+                ? "public"
+                : "live"
+          );
           setLive(backend.source === "agent" || backend.source === "venue");
           return;
         }
@@ -322,7 +396,8 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           const freshBars = await loadFromYahoo().catch(() => []);
           if (freshBars.length) {
             seriesRef.current?.setData(freshBars as any[]);
-            currentBars = freshBars;
+            currentBarsRef.current = freshBars;
+            lastBarTimeRef.current = freshBars[freshBars.length - 1]?.time ?? 0;
           }
         }
       }, historyInterval);
@@ -336,7 +411,13 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
         if (cancelled) return;
         if (bars.length) {
           applyBars(bars);
-          setDataSource(backend.source === "cache" ? "cached" : backend.source === "public" ? "public" : "live");
+          setDataSource(
+            backend.source === "cache" || backend.source === "stale_cache"
+              ? "cached"
+              : backend.source === "public"
+                ? "public"
+                : "live"
+          );
           setLive(backend.source === "agent" || backend.source === "venue");
           if (isCrypto && isBinanceVenue) startBinanceLiveWS("live");
           else startVenuePolling(10_000);
@@ -408,10 +489,10 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
         </div>
 
         {/* Timeframe picker */}
-        <div style={{ display: "flex", gap: 2 }}>
+        <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "flex-end" }}>
           {TIMEFRAMES.map(t => (
             <button key={t} onClick={() => setTf(t)} style={{
-              padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
+              padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
               background: tf === t ? "rgba(255,255,255,0.1)" : "transparent",
               border: tf === t ? "1px solid rgba(255,255,255,0.15)" : "1px solid transparent",
               color: tf === t ? "#fff" : "var(--muted)",
