@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from typing import Any
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,16 @@ from tests.conftest import MockVenue
 
 
 NUM_USERS = 20   # fast enough for CI, meaningful for isolation
+
+
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
 
 
 async def _simulate_user_trading(user_index: int) -> dict[str, Any]:
@@ -192,8 +203,10 @@ async def test_concurrency_kill_switch_only_affects_correct_user(mock_env):
     # Kill switch ONLY for user A
     with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
         with patch("src.server._persist_audit", new=AsyncMock()):
-            result = await kill_switch(KillSwitchRequest(
-                confirm=True, ts=time.time(), userId=uid_a))
+            result = await kill_switch(
+                _request_for(uid_a),
+                KillSwitchRequest(confirm=True, ts=time.time(), userId=uid_a),
+            )
 
     assert result["ok"] is True
 

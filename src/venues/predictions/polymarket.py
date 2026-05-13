@@ -47,15 +47,6 @@ class PolymarketVenue(Venue):
     asset_class: AssetClass = "prediction"
 
     def __init__(self):
-        # Lazy import — keeps the optional SDK out of the import-time critical path.
-        try:
-            from py_clob_client.client import ClobClient  # type: ignore
-        except ImportError as e:
-            raise RuntimeError(
-                "py-clob-client is required for PolymarketVenue. "
-                "Install with: pip install py-clob-client"
-            ) from e
-
         eth_key   = os.environ.get("POLYMARKET_ETH_PRIVATE_KEY") or ""
         chain_id  = int(os.environ.get("POLYMARKET_CHAIN_ID") or 137)
         host      = os.environ.get("POLYMARKET_HOST") or "https://clob.polymarket.com"
@@ -67,6 +58,15 @@ class PolymarketVenue(Venue):
                 "Polymarket requires POLYMARKET_ETH_PRIVATE_KEY (a dedicated trading "
                 "wallet's private key). Use Connect Wallet for the secure flow."
             )
+
+        # Lazy import — keeps the optional SDK out of the import-time critical path.
+        try:
+            from py_clob_client.client import ClobClient  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                "py-clob-client is required for PolymarketVenue. "
+                "Install with: pip install py-clob-client"
+            ) from e
 
         # L1 init: derive L2 API creds from the ETH private key (idempotent — safe
         # to call repeatedly; returns the same creds for the same wallet).

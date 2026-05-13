@@ -138,7 +138,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const PYTHON_API = process.env.PYTHON_API_URL ?? "http://localhost:8000";
     await fetch(`${PYTHON_API}/api/plan/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "x-user-id": user.clerkId,
+      },
       body: JSON.stringify({ userId: user.clerkId }),
       signal: AbortSignal.timeout(3000),
     });

@@ -388,10 +388,78 @@ async def test_start_agent_returns_http_409_on_start_failure():
 
     with patch("src.server._do_start", AsyncMock(return_value={"ok": False, "error": "boom"})):
         with pytest.raises(HTTPException) as exc:
-            await srv.start_agent(req)
+            await srv.start_agent(SimpleNamespace(headers={
+                "x-user-id": "user_test",
+                "x-internal-token": os.getenv("PYTHON_INTERNAL_TOKEN", ""),
+            }), req)
 
     assert exc.value.status_code == 409
     assert exc.value.detail == "boom"
+
+
+@pytest.mark.asyncio
+async def test_stop_agent_uses_authenticated_user_not_spoofed_body_user_id():
+    import src.server as srv
+
+    attacker = srv.get_state("clerk_attacker_stop")
+    attacker.user_id = "clerk_attacker_stop"
+    attacker.status = "running"
+    attacker._loop_task = None
+    attacker._price_task = None
+    attacker._deadman_task = None
+    attacker._llm_worker_task = None
+    attacker._order_worker_task = None
+
+    victim = srv.get_state("clerk_victim_stop")
+    victim.user_id = "clerk_victim_stop"
+    victim.status = "running"
+    victim._loop_task = None
+    victim._price_task = None
+    victim._deadman_task = None
+    victim._llm_worker_task = None
+    victim._order_worker_task = None
+
+    req = SimpleNamespace(headers={})
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_attacker_stop")):
+        with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
+            with patch("src.server._persist_audit", new=AsyncMock()):
+                result = await srv.stop_agent(req, {"userId": "clerk_victim_stop"})
+
+    assert result["ok"] is True
+    assert attacker.status == "stopped"
+    assert victim.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_get_candles_uses_authenticated_user_cache_not_global_state():
+    import src.server as srv
+
+    srv._state.candle_cache.clear()
+    srv._state.candle_cache["BTCUSDT:1h"] = [{
+        "time": 1,
+        "open": 1.0,
+        "high": 1.0,
+        "low": 1.0,
+        "close": 1.0,
+        "volume": 1.0,
+    }]
+
+    user_state = srv.get_state("clerk_candle_user")
+    user_state.candle_cache.clear()
+    user_state.candle_cache["BTCUSDT:1h"] = [{
+        "time": 2,
+        "open": 2.0,
+        "high": 2.0,
+        "low": 2.0,
+        "close": 2.0,
+        "volume": 2.0,
+    }]
+
+    req = SimpleNamespace(headers={})
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_candle_user")):
+        data = await srv.get_candles(req, symbol="BTCUSDT", timeframe="1h", limit=1, venue="binance", userId="ignored")
+
+    assert data["candles"] == [user_state.candle_cache["BTCUSDT:1h"][0]]
 
 
 # ── Risk manager smoke test ────────────────────────────────────────────────────
@@ -470,7 +538,7 @@ async def test_killswitch_requires_confirm():
     """C6: Kill switch must reject unconfirmed requests."""
     import time
     from src.server import kill_switch, KillSwitchRequest
-    result = await kill_switch(KillSwitchRequest(confirm=False, ts=time.time()))
+    result = await kill_switch(SimpleNamespace(headers={}), KillSwitchRequest(confirm=False, ts=time.time()))
     assert result["ok"] is False
     assert "confirm" in result["error"].lower()
 
@@ -481,6 +549,6 @@ async def test_killswitch_rejects_stale_timestamp():
     import time
     from src.server import kill_switch, KillSwitchRequest
     stale_ts = time.time() - 30  # 30 seconds ago
-    result = await kill_switch(KillSwitchRequest(confirm=True, ts=stale_ts))
+    result = await kill_switch(SimpleNamespace(headers={}), KillSwitchRequest(confirm=True, ts=stale_ts))
     assert result["ok"] is False
     assert "expired" in result["error"].lower()

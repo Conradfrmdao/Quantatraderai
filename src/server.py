@@ -341,6 +341,14 @@ async def _resolve_request_user_id(request: Request, requested_user_id: str | No
     return token_user_id if verified else None
 
 
+async def _require_request_user_id(request: Request, requested_user_id: str | None = None) -> str:
+    """Resolve the authenticated Clerk user id or raise 401."""
+    user_id = await _resolve_request_user_id(request, requested_user_id)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user_id
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _interval_seconds(iv: str) -> int:
@@ -726,8 +734,7 @@ async def _broadcast(event: dict, user_id: str | None = None):
         # Per-user filtering: only deliver if either no user_id specified
         # (legacy/global) or the client belongs to this user.
         if user_id is not None:
-            ws_user = _ws_user_map.get(ws)
-            if ws_user and ws_user != user_id:
+            if _ws_user_map.get(ws) != user_id:
                 continue
         try:
             await ws.send_json(event)
@@ -2135,21 +2142,23 @@ class PlanRefreshRequest(BaseModel):
 
 
 @app.post("/api/plan/refresh")
-async def refresh_plan(req: PlanRefreshRequest):
+async def refresh_plan(request: Request, req: PlanRefreshRequest):
     """C3: Invalidate the cached plan so next request fetches fresh from DB.
     Called by the Next.js Stripe webhook handler after a successful upgrade."""
-    invalidate_plan_cache(req.userId)
+    user_id = await _require_request_user_id(request, req.userId)
+    invalidate_plan_cache(user_id)
     return {"ok": True}
 
 
 @app.post("/api/risk/refresh")
-async def refresh_risk(req: RiskRefreshRequest):
+async def refresh_risk(request: Request, req: RiskRefreshRequest):
     """C1: Apply risk profile updates to the running agent immediately.
 
     Maps Prisma camelCase fields to internal snake_case config keys, then
     broadcasts the new config to all connected WS clients for instant UI sync.
     """
-    s = get_state(req.userId)
+    user_id = await _require_request_user_id(request, req.userId)
+    s = get_state(user_id)
 
     KEY_MAP = {
         "maxPositionPct":           "max_position_pct",
@@ -2237,10 +2246,12 @@ async def get_trust_metrics(request: Request, userId: Optional[str] = None):
 
 @app.get("/api/candles")
 async def get_candles(
+    request: Request,
     symbol:    str = "BTCUSDT",
     timeframe: str = "1h",
     limit:     int = 200,
     venue:     Optional[str] = None,
+    userId:    Optional[str] = None,
 ):
     """Return candle data for any configured venue.
 
@@ -2249,23 +2260,26 @@ async def get_candles(
       2. Live venue adapter (if agent is running and matches requested venue)
       3. Binance public REST fallback (crypto symbols only)
     """
+    user_id = await _resolve_request_user_id(request, userId)
+    state = get_state(user_id) if user_id else None
+
     key    = f"{symbol}:{timeframe}"
-    cached = _state.candle_cache.get(key)
+    cached = state.candle_cache.get(key) if state else None
     if cached:
         return {"candles": cached[-limit:]}
 
-    v = (venue or _state.venue_name or "binance").lower()
+    v = (venue or (state.venue_name if state else None) or "binance").lower()
 
     # If agent is live and the venue matches, use its adapter
-    if _state.venue is not None and v == _state.venue_name:
+    if state and state.venue is not None and v == state.venue_name:
         try:
-            bars = await _state.venue.get_candles(symbol, timeframe, min(limit, 500))
+            bars = await state.venue.get_candles(symbol, timeframe, min(limit, 500))
             candles = [
                 {"time": c.ts, "open": c.open, "high": c.high,
                  "low": c.low, "close": c.close, "volume": c.volume}
                 for c in bars
             ]
-            _state.candle_cache[key] = candles
+            state.candle_cache[key] = candles
             return {"candles": candles[-limit:]}
         except Exception as e:
             logger.warning("Venue candle fetch failed, falling back to Binance: %s", e)
@@ -2293,7 +2307,8 @@ async def get_candles(
              "volume": float(row[5])}
             for row in data
         ]
-        _state.candle_cache[key] = candles
+        if state:
+            state.candle_cache[key] = candles
         return {"candles": candles[-limit:]}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Candle fetch failed: {e}")
@@ -2689,9 +2704,13 @@ async def _do_start(
 
 
 @app.post("/api/agent/start")
-async def start_agent(req: StartRequest):
+async def start_agent(request: Request, req: StartRequest):
+    user_id = await _resolve_request_user_id(request, req.userId)
+    if req.userId and not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     result = await _do_start(
-        user_id=req.userId,
+        user_id=user_id,
         venue_name=req.venue,
         symbols=req.symbols,
         timeframe=req.timeframe,
@@ -2719,8 +2738,11 @@ async def list_personas():
 
 
 @app.get("/api/agent/timeline")
-async def get_timeline(userId: Optional[str] = None, limit: int = 50):
-    s = get_state(userId)
+async def get_timeline(request: Request, userId: Optional[str] = None, limit: int = 50):
+    resolved_user_id = await _resolve_request_user_id(request, userId)
+    if userId and not resolved_user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    s = get_state(resolved_user_id)
     return {"timeline": list(s.timeline)[-limit:]}
 
 
@@ -2750,10 +2772,14 @@ async def personas_leaderboard():
 
 
 @app.post("/api/agent/stop")
-async def stop_agent(body: dict = {}):
-    userId = body.get("userId") if body else None
+async def stop_agent(request: Request, body: dict = {}):
+    requested_user_id = body.get("userId") if body else None
+    user_id = await _resolve_request_user_id(request, requested_user_id)
+    if requested_user_id and not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     # Resolve the correct per-user state — same pattern as every other endpoint
-    s = get_state(userId)
+    s = get_state(user_id)
     if s.status not in ("running", "starting"):
         return {"ok": False, "error": "Agent is not running"}
     s.status = "stopping"
@@ -2855,16 +2881,17 @@ class VenueTestRequest(BaseModel):
 
 
 @app.post("/api/venues/test")
-async def test_venue(req: VenueTestRequest):
+async def test_venue(request: Request, req: VenueTestRequest):
     """Initialise the venue adapter with the user's stored credentials and
     call get_balances() as a smoke test. Returns {ok, balance, currency}.
 
     B2: Venue-specific error messages so users understand exactly what is wrong.
     """
+    user_id = await _require_request_user_id(request, req.userId)
     venue_match_key, _, _ = _resolve_test_venue_target(req.venue)
     try:
         from src.services.supabase_reader import get_user_venues
-        venues = await get_user_venues(req.userId)
+        venues = await get_user_venues(user_id)
         match = None
         for v in venues:
             name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
@@ -2992,19 +3019,22 @@ class BacktestRequest(BaseModel):
 
 
 @app.get("/api/rag-memory")
-async def get_rag_memories(userId: Optional[str] = None, limit: int = 50):
+async def get_rag_memories(request: Request, userId: Optional[str] = None, limit: int = 50):
     """Return stored RAG decision embeddings for a user."""
     db_url = os.getenv("DATABASE_URL")
-    if not db_url or not userId:
+    clerk_user_id = await _resolve_request_user_id(request, userId)
+    if not db_url or not clerk_user_id:
         return {"memories": []}
     try:
         import asyncpg
         conn = await asyncpg.connect(db_url, timeout=5)
         try:
             rows = await conn.fetch(
-                'SELECT "id","asset","action","rationale","qualityScore","createdAt" '
-                'FROM "DecisionEmbedding" WHERE "userId"=$1 ORDER BY "createdAt" DESC LIMIT $2',
-                userId, limit,
+                'SELECT de."id",de."asset",de."action",de."rationale",de."qualityScore",de."createdAt" '
+                'FROM "DecisionEmbedding" de '
+                'JOIN "User" u ON u.id = de."userId" '
+                'WHERE u."clerkId"=$1 ORDER BY de."createdAt" DESC LIMIT $2',
+                clerk_user_id, limit,
             )
             return {"memories": [dict(r) for r in rows]}
         finally:
@@ -3014,17 +3044,19 @@ async def get_rag_memories(userId: Optional[str] = None, limit: int = 50):
 
 
 @app.delete("/api/rag-memory/{memory_id}")
-async def delete_rag_memory(memory_id: str, userId: Optional[str] = None):
+async def delete_rag_memory(request: Request, memory_id: str, userId: Optional[str] = None):
     db_url = os.getenv("DATABASE_URL")
-    if not db_url or not userId:
-        raise HTTPException(status_code=400, detail="userId required")
+    clerk_user_id = await _require_request_user_id(request, userId)
+    if not db_url:
+        raise HTTPException(status_code=400, detail="Database not configured")
     try:
         import asyncpg
         conn = await asyncpg.connect(db_url, timeout=5)
         try:
             await conn.execute(
-                'DELETE FROM "DecisionEmbedding" WHERE "id"=$1 AND "userId"=$2',
-                memory_id, userId,
+                'DELETE FROM "DecisionEmbedding" de USING "User" u '
+                'WHERE de."id"=$1 AND de."userId" = u.id AND u."clerkId"=$2',
+                memory_id, clerk_user_id,
             )
         finally:
             await conn.close()
@@ -3096,13 +3128,15 @@ async def get_calendar_all():
 
 
 @app.get("/api/var")
-async def get_var(simulations: int = 10000):
+async def get_var(request: Request, simulations: int = 10000, userId: Optional[str] = None):
     """Value at Risk — Monte Carlo + parametric, sourced from EquityPoint history."""
     from src.risk.var import monte_carlo_var, parametric_var
+    clerk_user_id = await _resolve_request_user_id(request, userId)
+    s = get_state(clerk_user_id) if clerk_user_id else None
     equity_vals: list[float] = []
 
     # Primary: read real equity history from EquityPoint table
-    if _state.user_id:
+    if clerk_user_id:
         try:
             import asyncpg
             db_url = os.getenv("DATABASE_URL", "")
@@ -3110,9 +3144,10 @@ async def get_var(simulations: int = 10000):
                 conn = await asyncpg.connect(db_url, timeout=5)
                 try:
                     rows = await conn.fetch(
-                        'SELECT equity FROM "EquityPoint" WHERE "userId" = $1 '
-                        'ORDER BY "createdAt" DESC LIMIT 500',
-                        _state.user_id,
+                        'SELECT ep.equity FROM "EquityPoint" ep '
+                        'JOIN "User" u ON u.id = ep."userId" '
+                        'WHERE u."clerkId" = $1 ORDER BY ep."createdAt" DESC LIMIT 500',
+                        clerk_user_id,
                     )
                     equity_vals = [float(r["equity"]) for r in rows]
                 finally:
@@ -3121,8 +3156,8 @@ async def get_var(simulations: int = 10000):
             pass
 
     # Fallback: in-memory account snapshot
-    if not equity_vals and _state.account:
-        equity_vals = [float(_state.account.get("equity", 0))]
+    if not equity_vals and s and s.account:
+        equity_vals = [float(s.account.get("equity", 0))]
 
     if not equity_vals or len(equity_vals) < 5:
         return {"error": "Not enough equity history yet — run the agent for a few ticks first"}
@@ -3391,19 +3426,22 @@ class PendingOrderRequest(BaseModel):
 
 
 @app.post("/api/agent/pending-order")
-async def create_pending_order(req: PendingOrderRequest):
+async def create_pending_order(request: Request, req: PendingOrderRequest):
     """Stage a trade for 2 seconds. Client can DELETE /api/agent/pending-order/{id}
     within the window to cancel. After 2 s the order executes automatically."""
     import uuid as _uuid
 
     order_id = str(_uuid.uuid4())
+    user_id = await _resolve_request_user_id(request, req.user_id)
+    if req.user_id and not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     async def _execute_after_delay():
         await asyncio.sleep(2.0)
         if order_id not in _pending_orders:
             return
         try:
-            s = get_state(req.user_id) if req.user_id else _state
+            s = get_state(user_id) if user_id else _state
             if s.venue is None or s.risk_mgr is None:
                 return
             equity  = s.account.get("equity", 0.0)
@@ -3439,23 +3477,29 @@ async def create_pending_order(req: PendingOrderRequest):
             await _broadcast({"type": "trade_executed", "data": {
                 "symbol": req.symbol, "action": req.action,
                 "price": price, "qty": qty, "source": "pending",
-            }}, req.user_id)
+            }}, user_id)
         except Exception as e:
             logger.error("Pending order execution failed: %s", e)
         finally:
             _pending_orders.pop(order_id, None)
 
     task = asyncio.create_task(_execute_after_delay())
-    _pending_orders[order_id] = {"task": task, "symbol": req.symbol, "action": req.action}
+    _pending_orders[order_id] = {"task": task, "symbol": req.symbol, "action": req.action, "user_id": user_id}
     return {"ok": True, "order_id": order_id, "cancel_within_seconds": 2}
 
 
 @app.delete("/api/agent/pending-order/{order_id}")
-async def cancel_pending_order(order_id: str):
+async def cancel_pending_order(request: Request, order_id: str, userId: Optional[str] = None):
     """Cancel a pending order before it executes (within 2-second window)."""
     entry = _pending_orders.pop(order_id, None)
     if not entry:
         return {"ok": False, "error": "Order not found or already executed"}
+    owner_user_id = entry.get("user_id")
+    if owner_user_id:
+        requester_user_id = await _require_request_user_id(request, userId)
+        if requester_user_id != owner_user_id:
+            _pending_orders[order_id] = entry
+            raise HTTPException(status_code=404, detail="Order not found or already executed")
     entry["task"].cancel()
     return {"ok": True, "cancelled": order_id}
 
@@ -3467,7 +3511,7 @@ class KillSwitchRequest(BaseModel):
 
 
 @app.post("/api/agent/killswitch")
-async def kill_switch(req: KillSwitchRequest):
+async def kill_switch(request: Request, req: KillSwitchRequest):
     """Emergency: close ALL open positions immediately and stop the agent.
 
     C6: Requires explicit confirmation to prevent accidental activation.
@@ -3479,7 +3523,11 @@ async def kill_switch(req: KillSwitchRequest):
     if req.ts and abs(_time_mod.time() - req.ts) > 10:
         return {"ok": False, "error": "Kill switch timestamp expired (>10s). Re-confirm from the UI."}
 
-    s = get_state(req.userId) if req.userId else _state
+    user_id = await _resolve_request_user_id(request, req.userId)
+    if req.userId and not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    s = get_state(user_id) if user_id else _state
     closed = []
     errors = []
 

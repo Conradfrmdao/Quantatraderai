@@ -2,8 +2,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 interface RiskConfig {
   max_position_pct?: string;
   max_leverage?: string;
@@ -112,7 +110,7 @@ export function RiskPanel({ risk }: { risk: RiskConfig | null }) {
 
   useEffect(() => {
     const load = () =>
-      fetch(`${API}/api/var`)
+      fetch("/api/agent/var", { credentials: "same-origin" })
         .then(r => r.json())
         .then((d: VaRData) => setVarData(d))
         .catch(() => {});

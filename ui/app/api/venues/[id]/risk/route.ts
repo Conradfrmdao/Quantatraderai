@@ -79,7 +79,11 @@ export async function PATCH(
   const { userId: clerkId } = await auth();
   fetch(`${PYTHON_API}/api/risk/refresh`, {
     method:  "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+      "x-user-id": clerkId ?? "",
+    },
     body:    JSON.stringify({ userId: clerkId, venueId: id, risk: data }),
   }).catch(() => {});
 

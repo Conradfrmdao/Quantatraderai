@@ -163,7 +163,11 @@ export async function POST(req: Request) {
     const t    = setTimeout(() => ctrl.abort(), 12_000);
     const res  = await fetch(`${PYTHON_API}/api/venues/test`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "x-user-id": clerkId,
+      },
       body: JSON.stringify({
         userId: clerkId,
         venue:  TYPE_TO_REGISTRY[venue.type] ?? "binance",

@@ -9,11 +9,22 @@ These tests prove that:
 import io
 import logging
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 _FAKE_BINANCE_KEY    = "FAKE_BINANCE_API_KEY_1234567890ABCD"
 _FAKE_BINANCE_SECRET = "FAKE_BINANCE_SECRET_XYZ9876543210ABC"
 _FAKE_ETH_KEY        = "0x" + "d" * 62
+
+
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
 
 
 # ── Encryption must make plaintext unrecoverable without the key ──────────────
@@ -95,7 +106,7 @@ async def test_venue_test_response_has_no_raw_key(mock_env, monkeypatch):
         mock_v = MockVenue()
         with patch("src.server.get_venue", return_value=mock_v):
             req = VenueTestRequest(userId="clerk-test", venue="binance", isPaper=True)
-            result = await test_venue(req)
+            result = await test_venue(_request_for("clerk-test"), req)
 
     result_str = str(result)
     assert _FAKE_BINANCE_KEY    not in result_str, "Raw API key in response!"
@@ -138,7 +149,7 @@ async def test_polymarket_error_hides_private_key(mock_env, monkeypatch):
         # Patch get_venue to raise a realistic error
         with patch("src.server.get_venue", side_effect=RuntimeError("Connection refused to Polymarket CLOB")):
             req = VenueTestRequest(userId="clerk-test", venue="polymarket", isPaper=True)
-            result = await test_venue(req)
+            result = await test_venue(_request_for("clerk-test"), req)
 
     result_str = str(result)
     assert _FAKE_ETH_KEY not in result_str, "Decrypted ETH private key leaked in error response!"

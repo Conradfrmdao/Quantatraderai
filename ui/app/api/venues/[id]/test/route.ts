@@ -32,7 +32,11 @@ export async function POST(
   try {
     const res = await fetch(`${PYTHON_API}/api/venues/test`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "x-user-id": user.clerkId,
+      },
       body: JSON.stringify({
         userId: user.clerkId,
         venue:  registry,

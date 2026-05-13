@@ -6,6 +6,7 @@ No real network calls — all venues mocked or stubbed.
 """
 import os
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -169,6 +170,16 @@ async def test_mock_venue_symbol_info_fields(mock_venue):
 _SUPABASE_READER = "src.services.supabase_reader.get_user_venues"
 
 
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
+
+
 @pytest.mark.asyncio
 async def test_preflight_rejects_binance_missing_key(mock_env):
     """The test_venue endpoint returns helpful errors for missing credentials."""
@@ -180,7 +191,7 @@ async def test_preflight_rejects_binance_missing_key(mock_env):
         "metaApiToken": "", "metaApiAccountId": "", "ccxtExchangeId": "",
     }])):
         req = VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True)
-        result = await test_venue(req)
+        result = await test_venue(_request_for("clerk-123"), req)
     assert result["ok"] is False
     assert "apiKey" in result["error"] or "requires" in result["error"] or "key" in result["error"].lower()
 
@@ -207,8 +218,10 @@ async def test_binance_connection_test_defaults_to_spot_market(mock_env):
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
         with patch("src.server._inject_venue_env") as inject_env:
             with patch("src.server.get_venue", return_value=MockVenue(starting_balance=321.0)) as get_venue_mock:
-                result = await test_venue(VenueTestRequest(
-                    userId="clerk-123", venue="binance", isPaper=True))
+                result = await test_venue(
+                    _request_for("clerk-123"),
+                    VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
+                )
 
     assert result["ok"] is True
     assert inject_env.call_args.args[0] == "binance"
@@ -237,8 +250,10 @@ async def test_binance_connection_test_uses_saved_market_mode(mock_env):
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
         with patch("src.server._inject_venue_env") as inject_env:
             with patch("src.server.get_venue", return_value=MockVenue(starting_balance=777.0)) as get_venue_mock:
-                result = await test_venue(VenueTestRequest(
-                    userId="clerk-123", venue="binance", isPaper=True))
+                result = await test_venue(
+                    _request_for("clerk-123"),
+                    VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
+                )
 
     assert result["ok"] is True
     assert inject_env.call_args.args[1] == "futures"
@@ -266,8 +281,10 @@ async def test_binance_connection_test_honors_explicit_futures_suffix(mock_env):
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
         with patch("src.server._inject_venue_env") as inject_env:
             with patch("src.server.get_venue", return_value=MockVenue(starting_balance=654.0)) as get_venue_mock:
-                result = await test_venue(VenueTestRequest(
-                    userId="clerk-123", venue="binance:futures", isPaper=True))
+                result = await test_venue(
+                    _request_for("clerk-123"),
+                    VenueTestRequest(userId="clerk-123", venue="binance:futures", isPaper=True),
+                )
 
     assert result["ok"] is True
     assert inject_env.call_args.args[0] == "binance"
@@ -284,7 +301,7 @@ async def test_preflight_rejects_oanda_missing_account_id(mock_env):
         "network": "", "metaApiToken": "", "metaApiAccountId": "", "ccxtExchangeId": "",
     }])):
         req = VenueTestRequest(userId="clerk-123", venue="oanda", isPaper=True)
-        result = await test_venue(req)
+        result = await test_venue(_request_for("clerk-123"), req)
     assert result["ok"] is False
     assert "Account ID" in result["error"]
 
@@ -298,7 +315,7 @@ async def test_preflight_rejects_polymarket_bad_key_format(mock_env):
         "network": "137", "metaApiToken": "", "metaApiAccountId": "", "ccxtExchangeId": "",
     }])):
         req = VenueTestRequest(userId="clerk-123", venue="polymarket", isPaper=True)
-        result = await test_venue(req)
+        result = await test_venue(_request_for("clerk-123"), req)
     assert result["ok"] is False
 
 
@@ -307,6 +324,6 @@ async def test_venue_not_found_returns_error(mock_env):
     from src.server import VenueTestRequest, test_venue
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[])):
         req = VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True)
-        result = await test_venue(req)
+        result = await test_venue(_request_for("clerk-123"), req)
     assert result["ok"] is False
     assert "configured" in result["error"]

@@ -19,7 +19,12 @@ const PYTHON_API     = process.env.PYTHON_API_URL ?? "http://localhost:8000";
 async function bustPythonPlanCache(clerkId: string) {
   try {
     await fetch(`${PYTHON_API}/api/plan/refresh`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "x-user-id": clerkId,
+      },
       body: JSON.stringify({ userId: clerkId }),
     });
   } catch (e) { console.warn("[stripe] plan cache bust failed:", e); }

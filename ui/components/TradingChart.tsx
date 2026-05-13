@@ -4,8 +4,6 @@ import { useEffect, useRef, useState } from "react";
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 type TF = (typeof TIMEFRAMES)[number];
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 interface Props {
   symbol?:    string;
   venueType?: string;
@@ -219,7 +217,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", liveP
 
     // ── A. Always try the backend first (has candle cache when agent runs) ──
     const loadFromBackend = async (): Promise<Bar[]> => {
-      const url = `${API}/api/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
+      const url = `/api/agent/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
       const res = await fetch(url);
       if (!res.ok) return [];
       const data = await res.json() as { candles?: Bar[] };

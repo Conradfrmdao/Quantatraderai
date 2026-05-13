@@ -29,7 +29,6 @@ import { ErrorBoundary }     from "@/components/ErrorBoundary";
 import { useVenues, VENUE_SYMBOLS, VENUE_REGISTRY_NAME, VENUE_LABEL } from "@/hooks/useVenues";
 import { useToast }            from "@/components/Toast";
 import { DarkSelect }          from "@/components/ui/dark-select";
-import { MarketPicker, MARKET_VENUE_TYPE } from "@/components/MarketPicker";
 import { MobileBottomNav }    from "@/components/MobileBottomNav";
 import {
   defaultMarketForVenueType,
@@ -43,8 +42,19 @@ const TradingChart = dynamic(
   { ssr: false, loading: () => <div style={{ height: 300, background: "rgba(255,255,255,0.02)", borderRadius: 8 }} /> },
 );
 
-const API    = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL  || "ws://localhost:8000";
+function buildWebSocketEndpoint(): string | null {
+  const explicit = (process.env.NEXT_PUBLIC_WS_URL ?? "").trim();
+  if (explicit) {
+    const normalized = explicit.replace(/\/+$/, "");
+    return normalized.endsWith("/ws") ? normalized : `${normalized}/ws`;
+  }
+
+  const apiUrl = (process.env.NEXT_PUBLIC_API_URL ?? "").trim();
+  if (!apiUrl) return null;
+
+  const normalized = apiUrl.replace(/\/+$/, "").replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://");
+  return normalized.endsWith("/ws") ? normalized : `${normalized}/ws`;
+}
 
 /**
  * SECURITY: usePolled clears state when sessionKey changes (user sign-out / switch),
@@ -128,7 +138,6 @@ export default function Dashboard() {
   const marketOptions = marketOptionsForVenueType(venueType);
   const canEditMarket = venueSupportsEditableMarket(venueType);
   const [symbol, setSymbol] = useState("BTCUSDT");
-  const [chartVenueType, setChartVenueType] = useState("BINANCE");
 
   // When the active venue changes (or loads for the first time), sync the default
   // symbol and chart venue type so a FOREX user sees EUR/USD not BTC/USDT.
@@ -136,7 +145,6 @@ export default function Dashboard() {
     if (!venuesLoading && activeVenue) {
       const defaultSym = VENUE_SYMBOLS[venueType]?.[0] ?? "BTCUSDT";
       setSymbol(defaultSym);
-      setChartVenueType(venueType);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeVenue?.id, venueType, venuesLoading]);
@@ -174,7 +182,8 @@ export default function Dashboard() {
     [session],
   );
 
-  const { connected, lastEvent } = useWebSocket(`${WS_URL}/ws`, getToken);
+  const wsEndpoint = buildWebSocketEndpoint();
+  const { connected, lastEvent } = useWebSocket(wsEndpoint, getToken);
   const { handleWsEvent, requestPermission } = usePushNotifications(true);
 
   // Request notification permission once on mount
@@ -484,7 +493,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {!connected && status.data?.status === "running" && (
+      {wsEndpoint && !connected && status.data?.status === "running" && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 999,
           background: "#ef4444", color: "#fff", textAlign: "center",
@@ -662,7 +671,10 @@ export default function Dashboard() {
 
         <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
           {/* WS dot */}
-          <span title={connected ? "Live feed connected" : "Disconnected"} style={{ display: "flex", alignItems: "center", flexShrink: 0, color: connected ? "#22c55e" : "rgba(255,255,255,0.3)" }}>
+          <span
+            title={connected ? "Live feed connected" : wsEndpoint ? "Reconnecting live feed" : "Polling fallback"}
+            style={{ display: "flex", alignItems: "center", flexShrink: 0, color: connected ? "#22c55e" : "rgba(255,255,255,0.3)" }}
+          >
             {connected ? <Wifi size={13} /> : <WifiOff size={13} />}
           </span>
 
@@ -933,15 +945,33 @@ export default function Dashboard() {
                   />
                 )}
 
-                {/* Market picker — all markets: Crypto / Forex / Stocks / Indices */}
-                <MarketPicker
-                  value={symbol}
-                  venueType={chartVenueType}
-                  onChange={(sym, vType) => { setSymbol(sym); setChartVenueType(vType); }}
-                />
+                {/* Venue-aware symbol picker — execution stays aligned with the connected venue */}
+                {venueSymbols.length > 0 ? (
+                  <DarkSelect
+                    value={symbol}
+                    onChange={setSymbol}
+                    options={venueSymbols.map((sym) => ({ value: sym, label: sym }))}
+                    style={{ minWidth: 180 }}
+                  />
+                ) : (
+                  <input
+                    value={symbol}
+                    onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+                    placeholder="Enter symbol"
+                    style={{
+                      minWidth: 180,
+                      padding: "9px 12px",
+                      borderRadius: 10,
+                      background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      color: "#fff",
+                      fontSize: 13,
+                    }}
+                  />
+                )}
               </div>
               <ErrorBoundary label="TradingChart">
-                <TradingChart symbol={symbol} venueType={chartVenueType} livePrice={livePrice} />
+                <TradingChart symbol={symbol} venueType={venueType} livePrice={livePrice} />
               </ErrorBoundary>
             </motion.section>
 

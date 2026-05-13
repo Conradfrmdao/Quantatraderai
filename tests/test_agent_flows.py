@@ -5,7 +5,18 @@ All LLM calls and DB calls are mocked. MockVenue simulates the exchange.
 """
 import asyncio
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
 
 
 # ── Plan gating ────────────────────────────────────────────────────────────────
@@ -71,7 +82,7 @@ def test_states_are_independent(mock_env):
 async def test_killswitch_requires_confirm():
     import time
     from src.server import kill_switch, KillSwitchRequest
-    result = await kill_switch(KillSwitchRequest(confirm=False, ts=time.time()))
+    result = await kill_switch(_request_for(), KillSwitchRequest(confirm=False, ts=time.time()))
     assert result["ok"] is False
     assert "confirm" in result["error"].lower()
 
@@ -81,7 +92,7 @@ async def test_killswitch_rejects_stale_timestamp():
     import time
     from src.server import kill_switch, KillSwitchRequest
     stale = time.time() - 30
-    result = await kill_switch(KillSwitchRequest(confirm=True, ts=stale))
+    result = await kill_switch(_request_for(), KillSwitchRequest(confirm=True, ts=stale))
     assert result["ok"] is False
     assert "expired" in result["error"].lower()
 
@@ -102,7 +113,7 @@ async def test_killswitch_closes_positions_on_paper(mock_env, mock_venue):
     req = KillSwitchRequest(confirm=True, ts=time.time(), userId="kill_test_user")
     with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
         with patch("src.server._persist_audit", new=AsyncMock()):
-            result = await kill_switch(req)
+            result = await kill_switch(_request_for("kill_test_user"), req)
 
     assert result["ok"] is True
     # Paper mode: doesn't call close_position on real venue
@@ -125,7 +136,7 @@ async def test_killswitch_closes_positions_on_live(mock_env, mock_venue):
     req = KillSwitchRequest(confirm=True, ts=time.time(), userId="kill_live_user")
     with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
         with patch("src.server._persist_audit", new=AsyncMock()):
-            result = await kill_switch(req)
+            result = await kill_switch(_request_for("kill_live_user"), req)
 
     assert result["ok"] is True
     assert mock_venue.calls.get("close_position", 0) >= 1

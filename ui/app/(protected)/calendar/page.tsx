@@ -6,8 +6,6 @@ import { ArrowLeft, Calendar } from "lucide-react";
 import { LogoWordmark } from "@/components/Logo";
 import { useIsMobile } from "@/hooks/useIsMobile";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 interface Event {
   name?: string;
   event?: string;
@@ -25,7 +23,7 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`${API}/api/calendar/all`)
+    fetch("/api/agent/calendar/all", { credentials: "same-origin" })
       .then(r => r.json())
       .then((d: { events?: Event[] }) => { setEvents(d.events ?? []); setLoading(false); })
       .catch(() => setLoading(false));

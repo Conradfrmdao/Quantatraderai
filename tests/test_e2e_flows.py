@@ -15,6 +15,7 @@ import json
 import time
 import uuid
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -39,6 +40,16 @@ def _venue_row(venue_type: str = "BINANCE", api_key: str = "k", api_secret: str 
         "metaApiAccountId": meta_acct,
         "ccxtExchangeId":   ccxt_ex,
     }
+
+
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -67,7 +78,7 @@ class TestE2EConnectBinanceAccount:
         with patch("src.services.supabase_reader.get_user_venues", new=AsyncMock(return_value=[venue_row])):
             with patch("src.server.get_venue", return_value=mock_v):
                 req = VenueTestRequest(userId="user_e2e_binance", venue="binance", isPaper=True)
-                result = await test_venue(req)
+                result = await test_venue(_request_for("user_e2e_binance"), req)
 
         # Test succeeded
         assert result["ok"] is True, f"Expected ok but got: {result}"
@@ -89,8 +100,10 @@ class TestE2EConnectBinanceAccount:
         with patch("src.services.supabase_reader.get_user_venues",
                    new=AsyncMock(return_value=[_venue_row("BINANCE", "bad-key", "bad-secret")])):
             with patch("src.server.get_venue", return_value=failing_venue):
-                result = await test_venue(VenueTestRequest(
-                    userId="user_bad_key", venue="binance", isPaper=True))
+                result = await test_venue(
+                    _request_for("user_bad_key"),
+                    VenueTestRequest(userId="user_bad_key", venue="binance", isPaper=True),
+                )
 
         assert result["ok"] is False
         assert isinstance(result["error"], str) and len(result["error"]) > 5
@@ -262,8 +275,10 @@ class TestE2EKillSwitch:
 
         with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
             with patch("src.server._persist_audit", new=AsyncMock()):
-                result = await kill_switch(KillSwitchRequest(
-                    confirm=True, ts=time.time(), userId=uid))
+                result = await kill_switch(
+                    _request_for(uid),
+                    KillSwitchRequest(confirm=True, ts=time.time(), userId=uid),
+                )
 
         assert result["ok"] is True
         assert mock_venue.calls.get("close_position", 0) == 3, \
@@ -288,8 +303,10 @@ class TestE2EKillSwitch:
 
         with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
             with patch("src.server._persist_audit", new=AsyncMock()):
-                result = await kill_switch(KillSwitchRequest(
-                    confirm=True, ts=time.time(), userId=uid))
+                result = await kill_switch(
+                    _request_for(uid),
+                    KillSwitchRequest(confirm=True, ts=time.time(), userId=uid),
+                )
 
         assert result["ok"] is True
         assert mock_venue.calls.get("close_position", 0) == 0, \
@@ -299,7 +316,7 @@ class TestE2EKillSwitch:
     async def test_e2e_kill_switch_requires_recent_timestamp(self, mock_env):
         from src.server import kill_switch, KillSwitchRequest
         stale = time.time() - 60
-        result = await kill_switch(KillSwitchRequest(confirm=True, ts=stale))
+        result = await kill_switch(_request_for(), KillSwitchRequest(confirm=True, ts=stale))
         assert result["ok"] is False
         assert "expired" in result["error"].lower()
 

@@ -7,7 +7,18 @@ Every failure must:
  - keep the app running
 """
 import pytest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _request_for(user_id: str | None = None):
+    import os
+    headers = {}
+    if os.getenv("PYTHON_INTERNAL_TOKEN"):
+        headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
+    if user_id:
+        headers["x-user-id"] = user_id
+    return SimpleNamespace(headers=headers)
 
 
 # ── Invalid / expired API keys ────────────────────────────────────────────────
@@ -27,7 +38,7 @@ async def test_invalid_api_key_returns_clear_error(mock_env):
         failing_venue = MockVenue(fail_on="get_balances")
         with patch("src.server.get_venue", return_value=failing_venue):
             req = VenueTestRequest(userId="test-user", venue="binance", isPaper=True)
-            result = await test_venue(req)
+            result = await test_venue(_request_for("test-user"), req)
 
     assert result["ok"] is False
     assert "error" in result
@@ -58,7 +69,7 @@ async def test_network_timeout_handled_gracefully(mock_env):
         with patch("src.server.get_venue", return_value=mock_v):
             req = VenueTestRequest(userId="test-user", venue="binance", isPaper=True)
             try:
-                result = await asyncio.wait_for(test_venue(req), timeout=3.0)
+                result = await asyncio.wait_for(test_venue(_request_for("test-user"), req), timeout=3.0)
                 # If test_venue catches its own timeout, result is an error dict
                 assert "error" in result or result["ok"] is False
             except asyncio.TimeoutError:
@@ -309,6 +320,6 @@ async def test_killswitch_with_no_positions_returns_ok(mock_env, mock_venue):
     req = KillSwitchRequest(confirm=True, ts=time.time(), userId="no_pos_user")
     with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock()):
         with patch("src.server._persist_audit", new=AsyncMock()):
-            result = await kill_switch(req)
+            result = await kill_switch(_request_for("no_pos_user"), req)
     assert result["ok"] is True
     assert result["closed"] == []

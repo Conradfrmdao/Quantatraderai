@@ -2,8 +2,6 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 export interface StatusData {
   status?:            string;
   provider?:          string;
@@ -154,7 +152,7 @@ function ForexSessionChip() {
 function CalendarChip() {
   const [label, setLabel] = useState("");
   useEffect(() => {
-    const load = () => fetch(`${API}/api/calendar/next`)
+    const load = () => fetch("/api/agent/calendar/next", { credentials: "same-origin" })
       .then(r => r.json())
       .then((d: { next_event?: string }) => setLabel(d.next_event ?? ""))
       .catch(() => {});
