@@ -1312,13 +1312,30 @@ async def _tick_for(s: "AgentState"):
                     "confidence":     cd.confidence,
                     "deadlock":       cd.deadlock,
                     "council":        [
-                        {"provider": op.provider, "action": op.action, "rationale": op.rationale[:120], "confidence": op.confidence}
+                        {
+                            "role": op.role,
+                            "provider": op.provider,
+                            "action": op.action,
+                            "rationale": op.rationale[:120],
+                            "confidence": op.confidence,
+                            "veto": op.veto,
+                        }
                         for op in cd.opinions
                     ],
                 })
                 council_opinions.append({
                     "asset": cd.asset,
-                    "opinions": [{"provider": op.provider, "action": op.action, "confidence": op.confidence, "rationale": op.rationale[:120]} for op in cd.opinions],
+                    "opinions": [
+                        {
+                            "role": op.role,
+                            "provider": op.provider,
+                            "action": op.action,
+                            "confidence": op.confidence,
+                            "rationale": op.rationale[:120],
+                            "veto": op.veto,
+                        }
+                        for op in cd.opinions
+                    ],
                     "vote": cd.action, "confidence": cd.confidence, "deadlock": cd.deadlock,
                 })
         else:
