@@ -11,12 +11,18 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from typing import Any
 
 logger = logging.getLogger("quantatraderai.intel.correlation")
 
 MAX_CORRELATION = 0.8   # above this, halve the allocation
 WINDOW          = 30    # bars for rolling correlation
+
+
+def _cache_key(symbol: str, timeframe: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9]", "", symbol.upper())
+    return f"{normalized}:{timeframe}"
 
 
 def _returns(closes: list[float]) -> list[float]:
@@ -47,7 +53,7 @@ def compute_correlation_matrix(
     # Extract close series per symbol
     series: dict[str, list[float]] = {}
     for sym in symbols:
-        key    = f"{sym.replace('/', '')}:{timeframe}"
+        key    = _cache_key(sym, timeframe)
         candles = candle_cache.get(key, [])
         if len(candles) >= WINDOW + 1:
             closes = [c["close"] for c in candles[-WINDOW - 1:]]

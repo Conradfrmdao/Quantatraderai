@@ -812,7 +812,7 @@ async def _stream_prices_binance(s: "AgentState", symbols: list[str], timeframe:
                                 "volume": float(kline["v"]),
                             }
                             s.price_cache[raw_sym] = price
-                            key   = f"{raw_sym}:{timeframe}"
+                            key   = _candle_cache_key(raw_sym, timeframe)
                             cache = s.candle_cache.setdefault(key, [])
                             if cache and cache[-1]["time"] == candle["time"]:
                                 cache[-1] = candle
@@ -1175,7 +1175,7 @@ async def _tick_for(s: "AgentState"):
         try:
             candles = await s.venue.get_candles(sym, s.timeframe, 100)
             raw     = [_candle_dict(c) for c in candles]
-            key     = f"{sym.replace('/', '')}:{s.timeframe}"
+            key     = _candle_cache_key(sym, s.timeframe)
             s.candle_cache[key] = raw
             inds   = compute_all(raw)
             px_key = sym.replace("/", "")
@@ -1373,7 +1373,7 @@ async def _tick_for(s: "AgentState"):
             from src.agent.nl_parser import evaluate_rule
             from src.indicators.local_indicators import compute_all, latest
             for sym in s.symbols:
-                key = f"{sym.replace('/','').replace('-','')}:{s.timeframe}"
+                key = _candle_cache_key(sym, s.timeframe)
                 bars = s.candle_cache.get(key, [])
                 if not bars: continue
                 inds  = compute_all(bars)
@@ -2260,15 +2260,16 @@ async def get_candles(
     Order of resolution:
       1. In-memory cache (if the agent is running and has fetched these bars)
       2. Live venue adapter (if agent is running and matches requested venue)
-      3. Binance public REST fallback (crypto symbols only)
+      3. User-bound saved venue adapter (works even when agent is idle)
+      4. Binance public REST fallback (crypto symbols only)
     """
     user_id = await _resolve_request_user_id(request, userId)
     state = get_state(user_id) if user_id else None
 
-    key    = f"{symbol}:{timeframe}"
+    key    = _candle_cache_key(symbol, timeframe)
     cached = state.candle_cache.get(key) if state else None
     if cached:
-        return {"candles": cached[-limit:]}
+        return {"candles": cached[-limit:], "source": "cache"}
 
     v = (venue or (state.venue_name if state else None) or "binance").lower()
 
@@ -2282,9 +2283,28 @@ async def get_candles(
                 for c in bars
             ]
             state.candle_cache[key] = candles
-            return {"candles": candles[-limit:]}
+            return {"candles": candles[-limit:], "source": "agent"}
         except Exception as e:
             logger.warning("Venue candle fetch failed, falling back to Binance: %s", e)
+
+    # If a user has a connected venue, fetch real candles from saved credentials
+    if user_id and v:
+        try:
+            bound = await _build_user_bound_venue(user_id, v)
+            if bound:
+                venue_obj, _match, _registry_name, _venue_market = bound
+                bars = await venue_obj.get_candles(symbol, timeframe, min(limit, 500))
+                candles = [
+                    {"time": c.ts, "open": c.open, "high": c.high,
+                     "low": c.low, "close": c.close, "volume": c.volume}
+                    for c in bars
+                ]
+                if candles:
+                    if state:
+                        state.candle_cache[key] = candles
+                    return {"candles": candles[-limit:], "source": "venue"}
+        except Exception as e:
+            logger.warning("Saved venue candle fetch failed", venue=v, symbol=symbol, error=str(e))
 
     # Fallback: Binance public REST for crypto symbols
     try:
@@ -2311,7 +2331,7 @@ async def get_candles(
         ]
         if state:
             state.candle_cache[key] = candles
-        return {"candles": candles[-limit:]}
+        return {"candles": candles[-limit:], "source": "public"}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Candle fetch failed: {e}")
 
@@ -2420,6 +2440,14 @@ def _infer_asset_class(venue_name: str, market: str) -> str:
     return _ASSET_CLASS.get(v, "crypto_spot")
 
 
+def _normalize_market_symbol(symbol: str | None) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(symbol or "").upper())
+
+
+def _candle_cache_key(symbol: str | None, timeframe: str | None) -> str:
+    return f"{_normalize_market_symbol(symbol)}:{timeframe or '1h'}"
+
+
 def _resolve_test_venue_target(requested_venue: str, stored_market: str | None = None) -> tuple[str, str, str]:
     """Resolve a venue test target into (match_key, registry_name, market).
 
@@ -2475,6 +2503,41 @@ def _inject_venue_env(venue_name: str, market: str, is_paper: bool,
         if api_key:  os.environ["POLYMARKET_ETH_PRIVATE_KEY"] = api_key
         os.environ["POLYMARKET_CHAIN_ID"] = network or "137"
         os.environ["POLYMARKET_IS_PAPER"] = "true" if is_paper else "false"
+
+
+async def _build_user_bound_venue(clerk_user_id: str, requested_venue: str) -> tuple[Venue, dict[str, Any], str, str] | None:
+    """Hydrate a venue adapter from the user's saved credentials."""
+    from src.services.supabase_reader import get_user_venues
+
+    v_key = (requested_venue or "").lower().strip().split(":")[0]
+    venues = await get_user_venues(clerk_user_id)
+    match = None
+    for v in venues:
+        name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
+        if name == v_key:
+            match = v
+            break
+    if not match:
+        return None
+
+    stored_market = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
+    venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, stored_market)
+    _inject_venue_env(
+        venue_match_key,
+        market=venue_market,
+        is_paper=bool(match.get("isPaper", True)),
+        api_key=match.get("apiKey") or "",
+        api_secret=match.get("apiSecret") or "",
+        api_passphrase=match.get("apiPassphrase") or "",
+        account_id=match.get("accountId") or "",
+        network=match.get("network") or "",
+        meta_token=match.get("metaApiToken") or "",
+        meta_account_id=match.get("metaApiAccountId") or "",
+        ccxt_exchange=match.get("ccxtExchangeId") or "",
+    )
+    venue = get_venue(venue_registry_name)
+    venue.is_paper = bool(match.get("isPaper", True))
+    return venue, match, venue_registry_name, venue_market
 
 
 # Asset-class inference per venue
@@ -3207,31 +3270,9 @@ async def get_price_live(
     if userId and venue:
         v_key = venue.lower()
         try:
-            from src.services.supabase_reader import get_user_venues
-            venues = await get_user_venues(userId)
-            match = None
-            for v in venues:
-                name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
-                if name == v_key:
-                    match = v
-                    break
-            if match:
-                stored_market = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
-                venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, stored_market)
-                _inject_venue_env(
-                    venue_match_key,
-                    market=venue_market,
-                    is_paper=bool(match.get("isPaper", True)),
-                    api_key=match.get("apiKey") or "",
-                    api_secret=match.get("apiSecret") or "",
-                    api_passphrase=match.get("apiPassphrase") or "",
-                    account_id=match.get("accountId") or "",
-                    network=match.get("network") or "",
-                    meta_token=match.get("metaApiToken") or "",
-                    meta_account_id=match.get("metaApiAccountId") or "",
-                    ccxt_exchange=match.get("ccxtExchangeId") or "",
-                )
-                v_obj = get_venue(venue_registry_name)
+            bound = await _build_user_bound_venue(userId, v_key)
+            if bound:
+                v_obj, _match, _venue_registry_name, _venue_market = bound
                 t = await v_obj.get_ticker(symbol)
                 if t and getattr(t, "last", None):
                     return {
@@ -3600,7 +3641,11 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
     })
     try:
         while True:
-            msg = await ws.receive_text()
+            try:
+                msg = await asyncio.wait_for(ws.receive_text(), timeout=12)
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "heartbeat", "ts": int(time.time())})
+                continue
             # Respond to client ping to keep the connection alive through proxies
             try:
                 data = json.loads(msg)

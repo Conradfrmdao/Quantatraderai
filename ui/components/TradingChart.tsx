@@ -50,6 +50,15 @@ function formatPrice(price: number, assetClass: string): string {
 }
 
 type Bar = { time: number; open: number; high: number; low: number; close: number };
+type CandleResponse = { candles?: Bar[]; source?: string };
+type PriceResponse = {
+  price?: number;
+  changePct?: number;
+  high?: number;
+  low?: number;
+  error?: string;
+  source?: string;
+};
 
 export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venueLabel, assetClass, livePrice }: Props) {
   const containerRef   = useRef<HTMLDivElement>(null);
@@ -72,6 +81,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
   const isCrypto = resolvedAssetClass === "crypto";
   const isForex  = resolvedAssetClass === "forex";
   const isStocks = resolvedAssetClass === "stocks";
+  const isBinanceVenue = venueType.toUpperCase() === "BINANCE";
 
   // ── 0. Push WebSocket live price to last bar instantly ──────────
   // When the parent passes livePrice (from the WS price_update event),
@@ -179,8 +189,10 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
 
     let cancelled = false;
     let pricePollId: ReturnType<typeof setInterval> | null = null;
+    let currentBars: Bar[] = [];
 
     const applyBars = (bars: Bar[]) => {
+      currentBars = bars;
       seriesRef.current?.setData(bars as any[]);
       chartRef.current?.timeScale().fitContent();
       if (bars.length) {
@@ -196,12 +208,12 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
     };
 
     // ── A. Always try the backend first (has candle cache when agent runs) ──
-    const loadFromBackend = async (): Promise<Bar[]> => {
+    const loadFromBackend = async (): Promise<CandleResponse> => {
       const url = `/api/agent/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
       const res = await fetch(url);
-      if (!res.ok) return [];
-      const data = await res.json() as { candles?: Bar[] };
-      return data.candles ?? [];
+      if (!res.ok) return { candles: [], source: "" };
+      const data = await res.json() as CandleResponse;
+      return { candles: data.candles ?? [], source: data.source ?? "" };
     };
 
     // ── B. Yahoo Finance via server-side proxy (avoids CORS) ──
@@ -232,11 +244,11 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
       }));
     };
 
-    const startBinanceLiveWS = () => {
+    const startBinanceLiveWS = (mode: "live" | "public" = "live") => {
       const sym = normaliseBinanceSymbol(symbol).toLowerCase();
       const ws  = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${tf}`);
       wsRef.current = ws;
-      ws.onopen    = () => { if (!cancelled) { setLive(true); setDataSource("live"); } };
+      ws.onopen    = () => { if (!cancelled) { setLive(true); setDataSource(mode); } };
       ws.onclose   = () => { if (!cancelled) setLive(false); };
       ws.onmessage = (e: MessageEvent) => {
         if (!seriesRef.current || cancelled) return;
@@ -252,29 +264,82 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
       };
     };
 
-    const startPoll = (interval = 30_000) => {
-      pollRef.current = setInterval(async () => {
+    const startVenuePolling = (historyInterval = 20_000) => {
+      const fastPricePoll = async () => {
         if (cancelled) return;
-        const bars = await loadFromBackend().catch(() => []);
-        if (bars.length) {
-          seriesRef.current?.setData(bars as any[]);
-          setPrice(bars[bars.length - 1].close);
-          setLive(true);
-          setDataSource("live");
+        try {
+          let d: PriceResponse | null = null;
+          try {
+            const live = await fetch(
+              `/api/price/live?symbol=${encodeURIComponent(symbol)}&venue=${venueType.toLowerCase()}`,
+              { cache: "no-store" }
+            );
+            if (live.ok) {
+              const payload = await live.json() as PriceResponse;
+              if (payload.price && !payload.error) d = payload;
+            }
+          } catch {}
+
+          if (!d) {
+            const r = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
+            if (!r.ok) return;
+            d = await r.json() as PriceResponse;
+          }
+          if (!d || !d.price || d.error) return;
+
+          setPrice(d.price);
+          if (d.changePct !== undefined && d.changePct !== null) setChange(d.changePct);
+          const realtimeFromVenue = d.source === "agent" || d.source === "venue";
+          setLive(realtimeFromVenue);
+          setDataSource(realtimeFromVenue ? "live" : "public");
+          if (seriesRef.current && lastBarTimeRef.current) {
+            seriesRef.current.update({
+              time:  lastBarTimeRef.current,
+              open:  currentBars[currentBars.length - 1]?.open ?? d.price,
+              high:  d.high  ?? Math.max(currentBars[currentBars.length - 1]?.high ?? d.price, d.price),
+              low:   d.low   ?? Math.min(currentBars[currentBars.length - 1]?.low  ?? d.price, d.price),
+              close: d.price,
+            } as any);
+          }
+        } catch {}
+      };
+
+      fastPricePoll();
+      pricePollId = setInterval(fastPricePoll, 3_000);
+
+      pollRef.current = setInterval(async () => {
+        if (cancelled) { if (pricePollId) clearInterval(pricePollId); return; }
+        const backend = await loadFromBackend().catch(() => ({ candles: [], source: "" }));
+        if (backend.candles?.length) {
+          seriesRef.current?.setData(backend.candles as any[]);
+          chartRef.current?.timeScale().fitContent();
+          currentBars = backend.candles;
+          setDataSource(backend.source === "cache" ? "cached" : backend.source === "public" ? "public" : "live");
+          setLive(backend.source === "agent" || backend.source === "venue");
+          return;
         }
-      }, interval);
+        if (!isCrypto) {
+          const freshBars = await loadFromYahoo().catch(() => []);
+          if (freshBars.length) {
+            seriesRef.current?.setData(freshBars as any[]);
+            currentBars = freshBars;
+          }
+        }
+      }, historyInterval);
     };
 
     const load = async () => {
       try {
         // Step 1: try backend cache first (fastest, most accurate when agent is live)
-        let bars = await loadFromBackend();
+        let backend = await loadFromBackend();
+        let bars = backend.candles ?? [];
         if (cancelled) return;
         if (bars.length) {
           applyBars(bars);
-          setDataSource("live");
-          if (isCrypto) startBinanceLiveWS();
-          else startPoll(10_000); // poll backend every 10s when agent is running
+          setDataSource(backend.source === "cache" ? "cached" : backend.source === "public" ? "public" : "live");
+          setLive(backend.source === "agent" || backend.source === "venue");
+          if (isCrypto && isBinanceVenue) startBinanceLiveWS("live");
+          else startVenuePolling(10_000);
           return;
         }
 
@@ -285,7 +350,8 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           if (bars.length) {
             applyBars(bars);
             setDataSource("public");
-            startBinanceLiveWS();
+            setLive(false);
+            startBinanceLiveWS("public");
             return;
           }
         }
@@ -298,81 +364,8 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           if (bars.length) {
             applyBars(bars);
             setDataSource("public");
-            setLive(true);
-
-            // ── Fast price tick: poll /api/price every 5s ──────────────
-            // This updates the price header in real-time (like a WebSocket would)
-            // without re-fetching the full bar history.
-            const fastPricePoll = async () => {
-              if (cancelled) return;
-              try {
-                // 1) Try user's connected venue (real-time, via Python backend)
-                let d: {
-                  price?: number; changePct?: number; high?: number; low?: number;
-                  error?: string; source?: string;
-                } | null = null;
-                try {
-                  const live = await fetch(
-                    `/api/price/live?symbol=${encodeURIComponent(symbol)}&venue=${venueType.toLowerCase()}`,
-                    { cache: "no-store" }
-                  );
-                  if (live.ok) {
-                    const lj = await live.json() as { price?: number; error?: string; source?: string };
-                    if (lj.price && !lj.error) d = lj;
-                  }
-                } catch {}
-
-                // 2) Fall back to Stooq/Yahoo public price
-                if (!d) {
-                  const r = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
-                  if (!r.ok) return;
-                  d = await r.json();
-                }
-                if (!d || !d.price || d.error) return;
-                {
-                  setPrice(d.price);
-                  if (d.changePct !== undefined) setChange(d.changePct);
-                  setLive(d.source === "agent" || d.source === "venue");
-                  if (d.source) setDataSource(d.source === "agent" || d.source === "venue" ? "live" : "public");
-                  // Update the last bar on the chart with the current price
-                  if (seriesRef.current && lastBarTimeRef.current) {
-                    const nowTs = Math.floor(Date.now() / 1000);
-                    seriesRef.current.update({
-                      time:  lastBarTimeRef.current,
-                      open:  bars[bars.length - 1]?.open ?? d.price,
-                      high:  d.high  ?? Math.max(bars[bars.length - 1]?.high ?? d.price, d.price),
-                      low:   d.low   ?? Math.min(bars[bars.length - 1]?.low  ?? d.price, d.price),
-                      close: d.price,
-                    } as any);
-                  }
-                }
-              } catch {}
-            };
-
-            fastPricePoll(); // immediate first call
-            pricePollId = setInterval(fastPricePoll, 3_000);
-
-            // ── Slow bar history refresh every 60s ─────────────────────
-            pollRef.current = setInterval(async () => {
-              if (cancelled) { if (pricePollId) clearInterval(pricePollId); return; }
-              // Try live backend first (if agent started since last poll)
-              const backendBars = await loadFromBackend().catch(() => []);
-              if (backendBars.length) {
-                seriesRef.current?.setData(backendBars as any[]);
-                chartRef.current?.timeScale().fitContent();
-                setDataSource("live");
-                if (pricePollId) clearInterval(pricePollId);
-                startPoll(10_000);
-                return;
-              }
-              // Refresh full Yahoo history
-              const freshBars = await loadFromYahoo().catch(() => []);
-              if (freshBars.length) {
-                seriesRef.current?.setData(freshBars as any[]);
-                bars.splice(0, bars.length, ...freshBars);
-              }
-            }, 20_000);
-
+            setLive(false);
+            startVenuePolling(20_000);
             return;
           }
         }
@@ -392,7 +385,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
       if (pollRef.current) clearInterval(pollRef.current);
       if (pricePollId) clearInterval(pricePollId);
     };
-  }, [ready, symbol, tf, venueType, isCrypto]);
+  }, [ready, symbol, tf, venueType, isCrypto, isBinanceVenue]);
 
   return (
     <div>
@@ -409,7 +402,7 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           )}
           {!loading && (
             <span style={{ fontSize: 10, color: live ? "#4ade80" : "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.08em", marginLeft: 6 }}>
-              {live ? "● live" : dataSource === "cached" ? "cached" : dataSource === "public" ? "public" : ""}
+              {live ? (dataSource === "public" ? "public live" : "● live") : dataSource === "cached" ? "cached" : dataSource === "public" ? "public" : ""}
             </span>
           )}
         </div>

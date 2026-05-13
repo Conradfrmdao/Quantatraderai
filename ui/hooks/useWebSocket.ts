@@ -38,12 +38,12 @@ export function useWebSocket(
 
   const startPing = (ws: WebSocket) => {
     stopPing();
-    // Send a ping every 20s to keep Caddy from closing the idle connection
+    // Send a ping frequently enough to survive stricter mobile/proxy idle timeouts.
     pingTimer.current = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         try { ws.send(JSON.stringify({ type: "ping" })); } catch {}
       }
-    }, 20_000);
+    }, 8_000);
   };
 
   const scheduleReconnect = useCallback((delay?: number) => {
@@ -91,6 +91,7 @@ export function useWebSocket(
       reconnectAttempt.current = 0;
       setConnected(true);
       setLastConnectedAt(Date.now());
+      setLastMessageAt(Date.now());
       startPing(ws);
     };
     ws.onclose = (ev) => {
@@ -109,9 +110,9 @@ export function useWebSocket(
       if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(e.data) as WsEvent;
-        // Ignore server pong — don't update lastEvent for heartbeat replies
-        if ((data as { type?: string }).type === "pong") return;
         if (!unmounted.current) setLastMessageAt(Date.now());
+        // Ignore heartbeat traffic for UI event processing while still marking the socket healthy.
+        if ((data as { type?: string }).type === "pong" || (data as { type?: string }).type === "heartbeat") return;
         if (!unmounted.current) setLastEvent(data);
       } catch {}
     };

@@ -189,6 +189,7 @@ export async function GET(req: Request) {
       ticker,
       symbol,
       currency:  result.meta?.currency,
+      source:    "yahoo",
     }, {
       headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=5" },
     });

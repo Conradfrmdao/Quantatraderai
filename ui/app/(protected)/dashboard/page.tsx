@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
@@ -196,6 +196,7 @@ export default function Dashboard() {
     setLivePrice(null);
     setKillConfirm(false);
     setAgentLoading(false);
+    processedWsEventRef.current = null;
   }, [sessionKey]);
 
   // Pass Clerk session token to WebSocket for JWT auth
@@ -207,6 +208,8 @@ export default function Dashboard() {
   const wsEndpoint = buildWebSocketEndpoint();
   const { connected, lastEvent, lastConnectedAt, lastMessageAt } = useWebSocket(wsEndpoint, getToken);
   const { handleWsEvent, requestPermission } = usePushNotifications(true);
+  const processedWsEventRef = useRef<typeof lastEvent>(null);
+  const normalizeMarketSymbol = (value: string) => value.toUpperCase().replace(/[/\-_]/g, "");
 
   // Request notification permission once on mount
   useEffect(() => { requestPermission(); }, [requestPermission]);
@@ -214,6 +217,8 @@ export default function Dashboard() {
   // handle WebSocket events
   useEffect(() => {
     if (!lastEvent) return;
+    if (processedWsEventRef.current === lastEvent) return;
+    processedWsEventRef.current = lastEvent;
     handleWsEvent(lastEvent as Parameters<typeof handleWsEvent>[0]);
     if (lastEvent.type === "init") {
       const ev = lastEvent as {
@@ -253,7 +258,7 @@ export default function Dashboard() {
     }
     if (lastEvent.type === "price_update") {
       const ev = lastEvent as { type: string; symbol: string; price: number };
-      if (ev.symbol?.toUpperCase() === symbol.toUpperCase()) setLivePrice(ev.price);
+      if (normalizeMarketSymbol(ev.symbol ?? "") === normalizeMarketSymbol(symbol)) setLivePrice(ev.price);
     }
     if (lastEvent.type === "account_update") {
       const ev = lastEvent as { type: string; data?: AccountData };
@@ -289,7 +294,22 @@ export default function Dashboard() {
       }));
       status.refresh();
     }
-  }, [account, activeCapability.assetClass, decisions, handleWsEvent, lastEvent, market, positions, status, symbol, timeframe, venueRegistryName]);
+  }, [
+    account.set,
+    activeCapability.assetClass,
+    decisions.refresh,
+    decisions.set,
+    handleWsEvent,
+    lastEvent,
+    market,
+    positions.refresh,
+    positions.set,
+    status.refresh,
+    status.set,
+    symbol,
+    timeframe,
+    venueRegistryName,
+  ]);
 
   const acc      = account.data;
   const pos      = positions.data?.positions ?? [];
@@ -308,7 +328,7 @@ export default function Dashboard() {
     account.lastSuccessAt ?? 0,
     positions.lastSuccessAt ?? 0,
   ) || null;
-  const realtimeHealthy = connected;
+  const realtimeHealthy = connected || Boolean(lastRealtimeAt && (Date.now() - lastRealtimeAt) < 25_000);
   const pollingHealthy = Boolean(lastHttpSyncAt && (Date.now() - lastHttpSyncAt) < 15_000);
   const realtimeMode = realtimeHealthy ? "realtime" : pollingHealthy ? "polling" : "offline";
   const agentStatePending = pollingEnabled && !statusResolved;
@@ -518,8 +538,7 @@ export default function Dashboard() {
   };
 
   // Normalise both sides: strip slashes and uppercase so "BTC/USDT", "BTCUSDT", "BTC" all match.
-  const _normSym = (s: string) => s.toUpperCase().replace(/[/\-_]/g, "");
-  const displayPrice = livePrice ?? pos.find((p) => _normSym(p.symbol) === _normSym(symbol))?.current_price;
+  const displayPrice = livePrice ?? pos.find((p) => normalizeMarketSymbol(p.symbol) === normalizeMarketSymbol(symbol))?.current_price;
 
   // M3: Backend connectivity check — banner shown if Python is unreachable
   // After the first poll completes, status.data should be populated. If it's still null

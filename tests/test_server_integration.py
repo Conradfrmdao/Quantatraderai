@@ -65,6 +65,41 @@ def test_get_state_fallback_for_none():
 
 
 @pytest.mark.asyncio
+async def test_broadcast_fans_out_to_all_clients_for_same_user_only():
+    import src.server as srv
+
+    class FakeWs:
+        def __init__(self):
+            self.events = []
+
+        async def send_json(self, event):
+            self.events.append(event)
+
+    user_ws_1 = FakeWs()
+    user_ws_2 = FakeWs()
+    other_ws = FakeWs()
+
+    srv._ws_clients.update({user_ws_1, user_ws_2, other_ws})
+    srv._ws_user_map[user_ws_1] = "clerk_shared_user"
+    srv._ws_user_map[user_ws_2] = "clerk_shared_user"
+    srv._ws_user_map[other_ws] = "clerk_other_user"
+
+    try:
+        await srv._broadcast({"type": "status_update", "status": "running"}, "clerk_shared_user")
+    finally:
+        srv._ws_clients.discard(user_ws_1)
+        srv._ws_clients.discard(user_ws_2)
+        srv._ws_clients.discard(other_ws)
+        srv._ws_user_map.pop(user_ws_1, None)
+        srv._ws_user_map.pop(user_ws_2, None)
+        srv._ws_user_map.pop(other_ws, None)
+
+    assert user_ws_1.events == [{"type": "status_update", "status": "running"}]
+    assert user_ws_2.events == [{"type": "status_update", "status": "running"}]
+    assert other_ws.events == []
+
+
+@pytest.mark.asyncio
 async def test_resolve_request_user_id_accepts_bearer_when_internal_token_mismatch(monkeypatch):
     import src.server as srv
 
@@ -323,6 +358,71 @@ async def test_get_positions_returns_connected_live_positions_when_idle():
     assert len(data["positions"]) == 1
     assert data["positions"][0]["symbol"] == "BTC/USDT"
     assert data["positions"][0]["current_price"] == 62500.0
+
+
+@pytest.mark.asyncio
+async def test_get_candles_uses_normalized_cache_key():
+    import src.server as srv
+
+    s = srv.get_state("clerk_cached_candles")
+    s.candle_cache["BTCUSDT:5m"] = [
+        {"time": 1, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+        {"time": 2, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+    ]
+
+    req = SimpleNamespace(headers={})
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_cached_candles")):
+        data = await srv.get_candles(
+            req,
+            symbol="BTC/USDT",
+            timeframe="5m",
+            limit=1,
+            venue="binance",
+            userId="ignored",
+        )
+
+    assert data["source"] == "cache"
+    assert data["candles"] == [
+        {"time": 2, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_candles_uses_saved_user_venue_when_idle():
+    import src.server as srv
+    from src.venues.models import Candle
+
+    class StubVenue:
+        async def get_candles(self, symbol, timeframe, lookback):
+            assert symbol == "BTC/USDT"
+            assert timeframe == "1h"
+            assert lookback == 2
+            return [
+                Candle(ts=1, open=10.0, high=12.0, low=9.0, close=11.0, volume=100.0),
+                Candle(ts=2, open=11.0, high=13.0, low=10.0, close=12.0, volume=120.0),
+            ]
+
+    req = SimpleNamespace(headers={})
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_saved_venue_candles")):
+        with patch(
+            "src.server._build_user_bound_venue",
+            AsyncMock(return_value=(StubVenue(), {"type": "BINANCE"}, "binance:spot", "spot")),
+        ):
+            data = await srv.get_candles(
+                req,
+                symbol="BTC/USDT",
+                timeframe="1h",
+                limit=2,
+                venue="binance",
+                userId="ignored",
+            )
+
+    assert data["source"] == "venue"
+    assert data["candles"] == [
+        {"time": 1, "open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0, "volume": 100.0},
+        {"time": 2, "open": 11.0, "high": 13.0, "low": 10.0, "close": 12.0, "volume": 120.0},
+    ]
+    assert srv.get_state("clerk_saved_venue_candles").candle_cache["BTCUSDT:1h"][-1]["close"] == 12.0
 
 
 def test_calculate_live_account_snapshot_does_not_double_count_spot_holdings():

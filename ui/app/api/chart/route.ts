@@ -143,7 +143,7 @@ export async function GET(req: Request) {
       bars.push({ time: timestamps[i], open: o, high: h, low: l, close: c });
     }
 
-    return Response.json({ bars, ticker, symbol });
+    return Response.json({ bars, ticker, symbol, source: "yahoo" });
   } catch (e) {
     console.error("[chart]", e);
     return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });
