@@ -8,6 +8,12 @@ import {
   ChevronRight, Info, X, Rocket,
 } from "lucide-react";
 import { LogoWordmark } from "@/components/Logo";
+import {
+  getVenueCapability,
+  type VenueCapability,
+  type VenueCatalog,
+  type VenueCatalogResponse,
+} from "@/lib/venue-capabilities";
 
 // ── Storage keys — namespaced per userId to prevent cross-user data leakage ─
 const _ukey = (base: string, uid?: string | null) => uid ? `${base}:${uid}` : base;
@@ -24,7 +30,7 @@ const BEGINNER_STEPS = [
   { id: 1, icon: User,       title: "Welcome — let's get you set up",  sub: "Takes about 2 minutes" },
   { id: 2, icon: Shield,     title: "Paper trading first",             sub: "No real money risk while you learn" },
   { id: 3, icon: Zap,        title: "Choose a plan",                   sub: "Start free — upgrade anytime" },
-  { id: 4, icon: TrendingUp, title: "Pick your exchange",              sub: "We'll walk you through connecting it" },
+  { id: 4, icon: TrendingUp, title: "Pick your venue",                 sub: "We'll walk you through connecting it" },
   { id: 5, icon: BarChart2,  title: "Your trading goal",               sub: "Personalises the AI for you" },
   { id: 6, icon: Check,      title: "You're ready",                    sub: "Let's go" },
 ];
@@ -32,7 +38,7 @@ const BEGINNER_STEPS = [
 // ── Steps for EXPERT (skip) mode ────────────────────────────────────────────
 const EXPERT_STEPS = [
   { id: 1, icon: User,       title: "Quick setup",   sub: "Just 2 fields" },
-  { id: 2, icon: TrendingUp, title: "Your exchange", sub: "Pick one to pre-fill settings" },
+  { id: 2, icon: TrendingUp, title: "Your venue",    sub: "Pick one to pre-fill settings" },
   { id: 3, icon: Check,      title: "Done",          sub: "Straight to your dashboard" },
 ];
 
@@ -115,12 +121,15 @@ export default function OnboardingPage() {
   const [lastName,   setLastName]   = useState("");
   const [goal,       setGoal]       = useState("");
   const [venueType,  setVenueType]  = useState("BINANCE");
+  const [venueCatalog, setVenueCatalog] = useState<VenueCatalog>({});
   const [planChoice, setPlanChoice] = useState<"FREE" | "STARTER" | "PRO">("FREE");
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState("");
 
   const STEPS = mode === "expert" ? EXPERT_STEPS : BEGINNER_STEPS;
   const totalSteps = STEPS.length;
+  const venueChoices = Object.values(venueCatalog);
+  const selectedVenueCapability = getVenueCapability(venueCatalog, venueType);
 
   // Auto-skip users who already completed onboarding
   useEffect(() => {
@@ -129,6 +138,24 @@ export default function OnboardingPage() {
       router.replace("/dashboard");
     }
   }, [isLoaded, user, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/venues/catalog", { credentials: "same-origin", cache: "no-store" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json() as Promise<VenueCatalogResponse<VenueCapability>>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        const catalog = data.catalog ?? {};
+        const choices = Object.values(catalog);
+        setVenueCatalog(catalog);
+        setVenueType((prev) => (catalog[prev] ? prev : (choices[0]?.type ?? prev)));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const next = () => { setError(""); setStep(s => Math.min(s + 1, totalSteps)); };
   const back = () => { setError(""); setStep(s => Math.max(s - 1, 1)); };
@@ -440,60 +467,98 @@ export default function OnboardingPage() {
                     {mode === "beginner" && (
                       <div style={{ marginBottom: 4 }}>
                         <p style={{ fontSize: 13, color: "rgba(255,255,255,0.5)", lineHeight: 1.6, marginBottom: 8 }}>
-                          An <strong style={{ color: "rgba(255,255,255,0.8)" }}>exchange</strong> is where
-                          cryptocurrency or stocks are bought and sold.
-                          QuantatraderAI connects to your exchange account using an{" "}
+                          A <strong style={{ color: "rgba(255,255,255,0.8)" }}>venue</strong> can be an exchange,
+                          broker, or trading account.
+                          QuantatraderAI connects to your venue using an{" "}
                           <Tip label="What is an API key?">
                             An API key is like a password that lets our AI read your balances and place
-                            trades. You create it in your exchange&apos;s settings. We recommend enabling
+                            trades. You create it in your venue&apos;s settings. We recommend enabling
                             &quot;Trade&quot; permission only — never &quot;Withdraw&quot;.
                           </Tip>
                           {" "}API key.
                         </p>
                       </div>
                     )}
-                    {[
-                      { id: "BINANCE",     label: "Binance",      sub: "Crypto futures + spot",  url: "https://www.binance.com/en/my/settings/api-management",   perms: 'Enable Spot & Margin Trading — DISABLE Withdrawals' },
-                      { id: "HYPERLIQUID", label: "Hyperliquid",  sub: "Crypto perpetuals",       url: "https://app.hyperliquid.xyz/settings/api",                 perms: 'API wallet only — never paste your main wallet key' },
-                      { id: "BYBIT",       label: "Bybit",        sub: "Crypto spot + perps",     url: "https://www.bybit.com/app/user/api-management",            perms: 'Trade permission — disable withdrawals + IP whitelist' },
-                      { id: "OANDA",       label: "OANDA",        sub: "Forex + CFDs",            url: "https://www.oanda.com/us-en/trading/accounts/",            perms: 'Personal access token from My Account → API Access' },
-                      { id: "METATRADER",  label: "MetaTrader 4/5", sub: "Forex / CFDs / Indices", url: "https://app.metaapi.cloud",                               perms: 'Sign up free at metaapi.cloud → Add MT account → copy Token + Account ID' },
-                      { id: "ALPACA",      label: "Alpaca",       sub: "US Stocks + Crypto",      url: "https://app.alpaca.markets/paper-trading/overview",        perms: 'Paper: paper.alpaca.markets — Live: app.alpaca.markets' },
-                    ].map(v => (
-                      <div key={v.id} style={{ marginBottom: 6 }}>
-                        <button onClick={() => setVenueType(v.id)}
+                    {venueChoices.length === 0 ? (
+                      <div style={{
+                        padding: "16px 14px",
+                        borderRadius: 10,
+                        background: "rgba(255,255,255,0.03)",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        color: "rgba(255,255,255,0.45)",
+                        fontSize: 12,
+                        textAlign: "center",
+                      }}>
+                        Loading supported venues…
+                      </div>
+                    ) : venueChoices.map((cap) => (
+                      <div key={cap.type} style={{ marginBottom: 6 }}>
+                        <button onClick={() => setVenueType(cap.type)}
                           style={{ padding: '10px 14px', borderRadius: 10, cursor: 'pointer',
                             textAlign: 'left', width: '100%',
-                            background: venueType === v.id ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.02)',
-                            border: `1px solid ${venueType === v.id ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.07)'}`,
+                            background: venueType === cap.type ? 'rgba(74,222,128,0.08)' : 'rgba(255,255,255,0.02)',
+                            border: `1px solid ${venueType === cap.type ? 'rgba(74,222,128,0.3)' : 'rgba(255,255,255,0.07)'}`,
                             display: 'flex', alignItems: 'center', gap: 10 }}>
-                          {venueType === v.id && <Check size={11} style={{ color: '#4ade80', flexShrink: 0 }} />}
-                          <div>
-                            <span style={{ fontSize: 13, fontWeight: venueType === v.id ? 700 : 400,
-                              color: venueType === v.id ? '#4ade80' : '#fff' }}>{v.label}</span>
-                            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', marginLeft: 8 }}>{v.sub}</span>
+                          {venueType === cap.type && <Check size={11} style={{ color: '#4ade80', flexShrink: 0 }} />}
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 13, fontWeight: venueType === cap.type ? 700 : 400,
+                                color: venueType === cap.type ? '#4ade80' : '#fff' }}>{cap.shortLabel}</span>
+                              <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)' }}>{cap.assetLabel}</span>
+                              <span style={{
+                                fontSize: 9, letterSpacing: "0.08em", textTransform: "uppercase",
+                                color: cap.marketDataMode === "stream" ? "#4ade80" : "rgba(255,255,255,0.4)",
+                              }}>
+                                {cap.marketDataMode === "stream" ? "Realtime" : "Polling"}
+                              </span>
+                            </div>
+                            <p style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", marginTop: 4, lineHeight: 1.5 }}>
+                              {cap.description}
+                            </p>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                              {cap.markets.map((market) => (
+                                <span key={market.value} style={{
+                                  fontSize: 10,
+                                  padding: "2px 7px",
+                                  borderRadius: 999,
+                                  background: "rgba(255,255,255,0.05)",
+                                  border: "1px solid rgba(255,255,255,0.08)",
+                                  color: "rgba(255,255,255,0.5)",
+                                }}>
+                                  {market.label}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                         </button>
-                        {venueType === v.id && (
+                        {venueType === cap.type && (
                           <div style={{ marginTop: 4, padding: '10px 14px',
                             background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.12)',
                             borderRadius: '0 0 10px 10px', borderTop: 'none' }}>
                             <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 8, lineHeight: 1.5 }}>
-                              <strong style={{ color: 'rgba(255,255,255,0.75)' }}>Required permission:</strong> {v.perms}
+                              <strong style={{ color: 'rgba(255,255,255,0.75)' }}>Required setup:</strong>{" "}
+                              {cap.setup?.permissionHint ?? "Connect the credentials required for this venue."}
                             </p>
-                            <a href={v.url} target='_blank' rel='noopener noreferrer'
-                              style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
-                                fontSize: 11, color: '#4ade80', textDecoration: 'none',
-                                background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)',
-                                padding: '5px 12px', borderRadius: 6, fontWeight: 600 }}>
-                              Open {v.label} API settings ↗
-                            </a>
+                            {cap.setup?.note && (
+                              <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.38)', marginBottom: 8, lineHeight: 1.5 }}>
+                                {cap.setup.note}
+                              </p>
+                            )}
+                            {cap.setup?.url && (
+                              <a href={cap.setup.url} target='_blank' rel='noopener noreferrer'
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4,
+                                  fontSize: 11, color: '#4ade80', textDecoration: 'none',
+                                  background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.25)',
+                                  padding: '5px 12px', borderRadius: 6, fontWeight: 600 }}>
+                                Open {cap.shortLabel} setup ↗
+                              </a>
+                            )}
                           </div>
                         )}
                       </div>
                     ))}
                     <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 4 }}>
-                      Click your exchange to see the exact permission needed and a direct link.
+                      Click a venue to see the exact setup guidance and direct link.
                     </p>
                   </div>
                 )}
@@ -535,8 +600,8 @@ export default function OnboardingPage() {
                     </p>
                     <p style={{ fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.7 }}>
                       {mode === "beginner"
-                        ? `Next: connect your ${venueType.charAt(0) + venueType.slice(1).toLowerCase()} API key in Settings. We'll show you exactly how.`
-                        : `Head straight to Settings and connect your ${venueType.charAt(0) + venueType.slice(1).toLowerCase()} API key.`}
+                        ? `Next: connect your ${selectedVenueCapability.shortLabel} credentials in Settings. We'll show you exactly how.`
+                        : `Head straight to Settings and connect your ${selectedVenueCapability.shortLabel} credentials.`}
                     </p>
                     {mode === "beginner" && (
                       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6, textAlign: "left" }}>

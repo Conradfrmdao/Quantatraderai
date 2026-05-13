@@ -24,6 +24,11 @@ export interface VenueCapability {
   label: string;
   shortLabel: string;
   description: string;
+  setup?: {
+    url?: string;
+    permissionHint?: string;
+    note?: string;
+  };
   assetClass: VenueAssetClass;
   assetLabel: string;
   supportsPaper: boolean;
@@ -107,6 +112,7 @@ export function fallbackVenueCapability(type: string | null | undefined): VenueC
     label: String(type || "BINANCE"),
     shortLabel: String(type || "BINANCE"),
     description: "Venue capability metadata unavailable.",
+    setup: {},
     assetClass,
     assetLabel: assetClass,
     supportsPaper: true,
