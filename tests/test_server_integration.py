@@ -82,6 +82,19 @@ async def test_resolve_request_user_id_accepts_bearer_when_internal_token_mismat
 
 
 @pytest.mark.asyncio
+async def test_resolve_request_user_id_rejects_header_spoof_without_internal_token(monkeypatch):
+    import src.server as srv
+
+    monkeypatch.delenv("PYTHON_INTERNAL_TOKEN", raising=False)
+    req = SimpleNamespace(headers={"x-user-id": "header-user"})
+
+    with patch("src.server._verify_clerk_token", AsyncMock(return_value=(False, None))):
+        resolved = await srv._resolve_request_user_id(req, "query-user")
+
+    assert resolved is None
+
+
+@pytest.mark.asyncio
 async def test_get_account_returns_connected_live_balance_when_idle():
     import src.server as srv
     from src.venues.models import Balance

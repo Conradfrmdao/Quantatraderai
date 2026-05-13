@@ -31,6 +31,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://mock:mock@localhost/mock")
     monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setenv("GROQ_API_KEY", "test-key-not-used")
+    monkeypatch.setenv("PYTHON_INTERNAL_TOKEN", "test-internal-token")
     monkeypatch.setenv("WS_AUTH_REQUIRED", "false")
 
 

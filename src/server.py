@@ -334,9 +334,9 @@ async def _resolve_request_user_id(request: Request, requested_user_id: str | No
         verified, token_user_id = await _verify_clerk_token(_extract_bearer_token(request))
         return token_user_id if verified else None
 
-    if header_user_id or requested_user_id:
-        return header_user_id or requested_user_id
-
+    # Never trust raw x-user-id / userId on direct HTTP requests when no
+    # internal proxy secret is configured. In that case only a verified Clerk
+    # bearer token may identify the caller.
     verified, token_user_id = await _verify_clerk_token(_extract_bearer_token(request))
     return token_user_id if verified else None
 
