@@ -43,6 +43,18 @@ const PROVIDER_COLOR: Record<string, string> = {
   ollama:    "#22C55E",
 };
 
+function humanizeRationale(rationale?: string) {
+  const text = String(rationale ?? "").trim();
+  if (!text) return "";
+  if (text.toLowerCase() === "tool loop cap") {
+    return "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside.";
+  }
+  if (text.toLowerCase() === "parse error") {
+    return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
+  }
+  return text;
+}
+
 /* ── Sub-components ────────────────────────────────────────────────── */
 function Tag({ label, value, color }: { label: string; value: string; color: string }) {
   return (
@@ -206,7 +218,7 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
                     <p style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55,
                       overflow: "hidden", display: "-webkit-box",
                       WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                      {d.rationale}
+                      {humanizeRationale(d.rationale)}
                     </p>
                   )}
 

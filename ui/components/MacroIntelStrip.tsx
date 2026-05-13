@@ -2,8 +2,6 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-
 interface MacroData {
   fear_greed?: { value: number; label: string; normalized: number; sentiment_bias: string };
   mtf?: Record<string, { overall_bias: string; alignment: number; strong_signal: boolean }>;
@@ -61,7 +59,7 @@ export function MacroIntelStrip({ symbols }: { symbols?: string[] }) {
 
   useEffect(() => {
     const load = () =>
-      fetch(`${API}/api/intel/summary`)
+      fetch("/api/agent/intel/summary", { credentials: "same-origin" })
         .then(r => r.json())
         .then((d: MacroData) => setData(d))
         .catch(() => {});

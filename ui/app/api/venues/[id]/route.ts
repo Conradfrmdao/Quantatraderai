@@ -14,6 +14,12 @@ import { prisma } from "@/lib/prisma";
 import { encrypt } from "@/lib/encryption";
 import { normalizeVenueMarket } from "@/lib/venue-market";
 
+function normalizePaperCapital(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 10_000;
+  return Math.min(10_000_000, Math.max(100, parsed));
+}
+
 async function resolveUserId(): Promise<string | null> {
   const { userId: clerkId } = await auth();
   if (!clerkId) return null;
@@ -24,6 +30,7 @@ async function resolveUserId(): Promise<string | null> {
 const PATCH_ALLOWED = new Set([
   "displayName", "apiKey", "apiSecret", "apiPassphrase",
   "accountId", "ccxtExchangeId", "network", "market",
+  "paperCapital",
   "metaApiToken", "metaApiAccountId",
   "isPaper", "isActive",
 ]);
@@ -49,6 +56,10 @@ export async function PATCH(
       data[k] = normalizeVenueMarket(owned.type, typeof v === "string" ? v : null);
       continue;
     }
+    if (k === "paperCapital") {
+      data[k] = normalizePaperCapital(v);
+      continue;
+    }
     if (ENCRYPT_FIELDS.has(k) && typeof v === "string" && v) {
       data[k] = encrypt(v);
     } else {
@@ -64,6 +75,7 @@ export async function PATCH(
   return NextResponse.json({
     id: v.id, displayName: v.displayName, type: v.type,
     accountId: v.accountId, ccxtExchangeId: v.ccxtExchangeId, network: v.network, market: v.market,
+    paperCapital: v.paperCapital,
     metaApiAccountId: v.metaApiAccountId, isPaper: v.isPaper, isActive: v.isActive,
     hasApiKey: Boolean(v.apiKey), hasApiSecret: Boolean(v.apiSecret),
     apiKey: v.apiKey ? "••••••••" : "", apiSecret: v.apiSecret ? "••••••••" : "",

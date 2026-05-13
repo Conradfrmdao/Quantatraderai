@@ -495,6 +495,35 @@ def _resolve_execution_quantity(
     return qty, allocation_usd
 
 
+async def _load_strategy_rules_for_user(clerk_user_id: str | None):
+    if not clerk_user_id:
+        return []
+
+    try:
+        from src.agent.nl_parser import StrategyRule
+        from src.services.supabase_reader import list_strategy_rules
+
+        rows = await list_strategy_rules(clerk_user_id, active_only=True)
+        rules = []
+        for row in rows:
+            rules.append(StrategyRule(
+                id=str(row.get("id") or ""),
+                raw_text=str(row.get("text") or row.get("condition") or ""),
+                symbol=row.get("symbol"),
+                action=str(row.get("action") or "buy"),
+                condition=str(row.get("condition") or row.get("text") or ""),
+                indicator=str(row.get("indicator") or "rsi"),
+                operator=str(row.get("operator") or "lt"),
+                threshold=float(row.get("threshold") or 0.0),
+                allocation_pct=float(row.get("allocationPct") or 3.0),
+                active=bool(row.get("isActive", True)),
+            ))
+        return rules
+    except Exception as e:
+        logger.warning("Strategy rule load failed for %s: %s", clerk_user_id, e)
+        return []
+
+
 async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -> tuple[dict, list[dict], bool] | None:
     if not clerk_user_id:
         return None
@@ -523,10 +552,18 @@ async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -
             return None
 
         is_paper = bool(match.get("isPaper", True))
+        s.is_paper = is_paper
         if is_paper:
-            paper_bal = s.paper_balance if hasattr(s, "paper_balance") else 10_000.0
-            account = _build_account_payload(paper_bal, paper_bal, len(s.paper_positions), paper_bal)
             positions = list(s.paper_positions)
+            configured_cap = max(100.0, float(match.get("paperCapital") or 10_000.0))
+            paper_bal = float(s.paper_balance) if positions else configured_cap
+            pnl_total = sum(float(p.get("unrealized_pnl", 0.0) or 0.0) for p in positions)
+            account = _build_account_payload(
+                paper_bal,
+                paper_bal + pnl_total,
+                len(positions),
+                s.initial_equity if positions and s.initial_equity is not None else configured_cap,
+            )
             s.connected_account_cache = account
             s.connected_positions_cache = positions
             s.connected_snapshot_at = now
@@ -1322,8 +1359,9 @@ async def _tick_for(s: "AgentState"):
     if _metrics.get("tick_duration"):
         _metrics["tick_duration"].observe(time.time() - _tick_start)
 
-    # ── Evaluate NL strategy rules (wired into tick loop) ──────────
-    if s.user_id and _strategy_rules.get(s.user_id):
+    # ── Evaluate NL strategy rules (loaded from DB, survives restarts) ───────
+    strategy_rules = await _load_strategy_rules_for_user(s.user_id)
+    if strategy_rules:
         try:
             from src.agent.nl_parser import evaluate_rule
             from src.indicators.local_indicators import compute_all, latest
@@ -1334,7 +1372,7 @@ async def _tick_for(s: "AgentState"):
                 inds  = compute_all(bars)
                 price = s.price_cache.get(sym.replace("/",""), 0)
                 equity = s.account.get("equity", 0)
-                for rule in _strategy_rules.get(s.user_id, []):
+                for rule in strategy_rules:
                     if rule.symbol and rule.symbol.upper() not in sym.upper(): continue
                     if evaluate_rule(rule, inds, price):
                         alloc = equity * (rule.allocation_pct / 100)
@@ -2757,39 +2795,57 @@ async def stop_agent(body: dict = {}):
     return {"ok": True}
 
 
-# ── Strategy rules (NL commands) ─────────────────────────────────────────────
-
-_strategy_rules: dict[str, list] = {}  # userId → list[StrategyRule]
-
-
 class StrategyRequest(BaseModel):
     text:   str
     userId: Optional[str] = None
 
 
 @app.post("/api/strategies")
-async def create_strategy(req: StrategyRequest):
+async def create_strategy(request: Request, req: StrategyRequest):
+    user_id = await _resolve_request_user_id(request, req.userId)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     from src.agent.nl_parser import parse_nl_rule
+    from src.services.supabase_reader import create_strategy_rule
+
     rule = await parse_nl_rule(req.text)
     if not rule:
         raise HTTPException(status_code=422, detail="Could not parse rule")
-    uid = req.userId or "anonymous"
-    _strategy_rules.setdefault(uid, []).append(rule)
+    saved = await create_strategy_rule(user_id, rule)
+    if not saved:
+        raise HTTPException(status_code=500, detail="Could not save rule")
     return {"ok": True, "rule": {"id": rule.id, "condition": rule.condition, "action": rule.action, "symbol": rule.symbol, "threshold": rule.threshold}}
 
 
 @app.get("/api/strategies")
-async def list_strategies(userId: Optional[str] = None):
-    uid   = userId or "anonymous"
-    rules = _strategy_rules.get(uid, [])
-    return {"rules": [{"id": r.id, "condition": r.condition, "action": r.action, "symbol": r.symbol, "active": r.active} for r in rules]}
+async def list_strategies(request: Request, userId: Optional[str] = None):
+    user_id = await _resolve_request_user_id(request, userId)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from src.services.supabase_reader import list_strategy_rules
+
+    rules = await list_strategy_rules(user_id, active_only=False)
+    return {"rules": [{
+        "id": r.get("id"),
+        "condition": r.get("condition") or r.get("text"),
+        "action": r.get("action"),
+        "symbol": r.get("symbol"),
+        "active": r.get("isActive", True),
+    } for r in rules]}
 
 
 @app.delete("/api/strategies/{rule_id}")
-async def delete_strategy(rule_id: str, userId: Optional[str] = None):
-    uid = userId or "anonymous"
-    _strategy_rules[uid] = [r for r in _strategy_rules.get(uid, []) if r.id != rule_id]
-    return {"ok": True}
+async def delete_strategy(rule_id: str, request: Request, userId: Optional[str] = None):
+    user_id = await _resolve_request_user_id(request, userId)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from src.services.supabase_reader import delete_strategy_rule
+
+    deleted = await delete_strategy_rule(user_id, rule_id)
+    return {"ok": deleted}
 
 
 class VenueTestRequest(BaseModel):
@@ -2978,21 +3034,25 @@ async def delete_rag_memory(memory_id: str, userId: Optional[str] = None):
 
 
 @app.get("/api/intel/summary")
-async def get_intel_summary():
+async def get_intel_summary(request: Request, userId: Optional[str] = None):
     """Aggregated macro intel for the dashboard MacroIntelStrip widget."""
+    userId = await _resolve_request_user_id(request, userId)
+    s = get_state(userId)
+
     result: dict = {}
     try:
         from src.intel.sentiment import get_fear_greed
         result["fear_greed"] = await get_fear_greed()
     except Exception:
         pass
-    if _state.symbols and _state.venue:
+
+    if s.symbols and s.venue:
         mtf_data: dict = {}
         news_data: dict = {}
-        for sym in _state.symbols[:4]:
+        for sym in s.symbols[:4]:
             try:
                 from src.intel.mtf_confluence import compute_mtf_confluence
-                mtf_data[sym] = await compute_mtf_confluence(_state.venue, sym)
+                mtf_data[sym] = await compute_mtf_confluence(s.venue, sym)
             except Exception:
                 pass
             try:
@@ -3000,11 +3060,13 @@ async def get_intel_summary():
                 news_data[sym] = await get_news_sentiment(sym)
             except Exception:
                 pass
-        if mtf_data:  result["mtf"]  = mtf_data
-        if news_data: result["news"] = news_data
+        if mtf_data:
+            result["mtf"] = mtf_data
+        if news_data:
+            result["news"] = news_data
         try:
             from src.intel.correlation import compute_correlation_matrix, format_matrix_summary
-            corr = compute_correlation_matrix(_state.candle_cache, _state.symbols, _state.timeframe)
+            corr = compute_correlation_matrix(s.candle_cache, s.symbols, s.timeframe)
             result["correlation"] = format_matrix_summary(corr)
         except Exception:
             pass

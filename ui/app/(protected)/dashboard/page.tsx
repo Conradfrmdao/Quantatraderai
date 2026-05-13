@@ -81,6 +81,18 @@ interface StatusData    { status: string; provider: string; model: string; venue
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface DecisionsData { decisions: { ts: string; trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean }[] }[] }
 
+function humanizeDecisionRationale(rationale?: string | null): string {
+  const text = String(rationale ?? "").trim();
+  if (!text) return "No rationale provided";
+  if (text.toLowerCase() === "tool loop cap") {
+    return "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside.";
+  }
+  if (text.toLowerCase() === "parse error") {
+    return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
+  }
+  return text;
+}
+
 export default function Dashboard() {
   // SECURITY: every piece of state is keyed off Clerk session ID.
   // When the user signs out / switches accounts, every cached datum is wiped.
@@ -136,6 +148,14 @@ export default function Dashboard() {
       setMarket(defaultMarketForVenueType("BINANCE"));
     }
   }, [activeVenue?.id, activeVenue?.market, venueType, venuesLoading]);
+
+  useEffect(() => {
+    if (!venuesLoading && activeVenue) {
+      setPaperCapital(Number(activeVenue.paperCapital ?? 10_000));
+    } else if (!venuesLoading) {
+      setPaperCapital(10_000);
+    }
+  }, [activeVenue?.id, activeVenue?.paperCapital, venuesLoading]);
 
   const isForexVenue = venueType === "OANDA" || venueType === "METATRADER";
 
@@ -202,6 +222,17 @@ export default function Dashboard() {
     }
   }, [account, decisions, handleWsEvent, lastEvent, positions, status, symbol, timeframe, venueType]);
 
+  const acc      = account.data;
+  const pos      = positions.data?.positions ?? [];
+  const totalPnL = pos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
+  const isUp     = (acc?.total_return_pct ?? 0) >= 0;
+  const statusValue = status.data?.status ?? "idle";
+  const agentActive = statusValue === "running" || statusValue === "paused" || statusValue === "stopping";
+  const running     = statusValue === "running";
+  const effectiveIsPaper = agentActive
+    ? (status.data?.is_paper ?? activeVenue?.isPaper ?? true)
+    : (activeVenue?.isPaper ?? true);
+
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
     account.refresh(); positions.refresh(); status.refresh(); decisions.refresh(); risk.refresh();
@@ -229,6 +260,39 @@ export default function Dashboard() {
         toast(err instanceof Error ? err.message : "Could not save market mode", "error");
       });
   }, [activeVenue, reloadVenues, toast, venueType]);
+
+  const handlePaperCapitalSave = useCallback((nextPaperCapital: number) => {
+    const normalized = Math.min(10_000_000, Math.max(100, Number.isFinite(nextPaperCapital) ? nextPaperCapital : 10_000));
+    setPaperCapital(normalized);
+    if (!activeVenue || normalized === activeVenue.paperCapital) return;
+
+    fetch(`/api/venues/${activeVenue.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paperCapital: normalized }),
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({})) as { error?: string };
+          throw new Error(data.error ?? "Could not save paper balance");
+        }
+        reloadVenues();
+        if (!agentActive && pos.length === 0) {
+          account.set((prev) => ({
+            balance: normalized,
+            equity: normalized,
+            initial_equity: normalized,
+            total_return_pct: 0,
+            open_positions: 0,
+            sharpe: prev?.sharpe ?? 0,
+          }));
+        }
+        if (!agentActive) account.refresh();
+      })
+      .catch((err: unknown) => {
+        toast(err instanceof Error ? err.message : "Could not save paper balance", "error");
+      });
+  }, [account, activeVenue, agentActive, pos.length, reloadVenues, toast]);
 
   // Actual start — called after the safety gate is confirmed
   const doStartAgent = useCallback(async () => {
@@ -285,8 +349,9 @@ export default function Dashboard() {
       paperCapital, status, strategyType, symbol, timeframe, toast, venueType]);
 
   const handleAgentToggle = useCallback(async () => {
-    const running = status.data?.status === "running";
-    if (running) {
+    const currentStatus = status.data?.status ?? "idle";
+    const agentActive = currentStatus === "running" || currentStatus === "paused" || currentStatus === "stopping";
+    if (agentActive) {
       // Stopping — no gate needed
       setAgentLoading(true);
       try {
@@ -362,12 +427,6 @@ export default function Dashboard() {
     NEWS_REACTOR:    { name: "News Reactor",      tagline: "Sentiment-driven, reacts to economic events" },
   };
 
-  const acc      = account.data;
-  const pos      = positions.data?.positions ?? [];
-  const totalPnL = pos.reduce((s, p) => s + (p.unrealized_pnl ?? 0), 0);
-  const isUp     = (acc?.total_return_pct ?? 0) >= 0;
-  const running  = status.data?.status === "running";
-
   // Normalise both sides: strip slashes and uppercase so "BTC/USDT", "BTCUSDT", "BTC" all match.
   const _normSym = (s: string) => s.toUpperCase().replace(/[/\-_]/g, "");
   const displayPrice = livePrice ?? pos.find((p) => _normSym(p.symbol) === _normSym(symbol))?.current_price;
@@ -436,8 +495,8 @@ export default function Dashboard() {
       )}
 
       {/* Mode banner — shows clearly whether agent is in paper or live mode */}
-      {running && (
-        activeVenue && !activeVenue.isPaper ? (
+      {agentActive && (
+        !effectiveIsPaper ? (
           /* LIVE mode — red urgent banner */
           <div style={{
             background: "linear-gradient(90deg, rgba(239,68,68,0.15), rgba(251,146,60,0.12))",
@@ -486,7 +545,7 @@ export default function Dashboard() {
 
       {/* ── Guard Settings Drawer ──────────────────────────────────── */}
       <AnimatePresence>
-        {showGuards && !running && (
+        {showGuards && !agentActive && (
           <motion.div
             initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }}
@@ -510,20 +569,51 @@ export default function Dashboard() {
               </div>
               {/* Paper capital — only relevant for paper mode */}
               {(activeVenue?.isPaper ?? true) && (
-                <div title="Simulated starting balance for paper trading">
+                <div title="Saved starting balance for paper trading">
                   <p style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", marginBottom: 4 }}>
-                    Paper Capital: ${paperCapital.toLocaleString()}
+                    Paper Balance (USD)
                   </p>
-                  <select value={paperCapital} onChange={e => setPaperCapital(Number(e.target.value))}
-                    style={{ background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.2)",
-                      borderRadius: 6, padding: "3px 8px", fontSize: 11, color: "#4ade80", cursor: "pointer" }}>
-                    <option value={1000}>$1,000</option>
-                    <option value={5000}>$5,000</option>
-                    <option value={10000}>$10,000</option>
-                    <option value={25000}>$25,000</option>
-                    <option value={50000}>$50,000</option>
-                    <option value={100000}>$100,000</option>
-                  </select>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="number"
+                      min={100}
+                      step={100}
+                      value={paperCapital}
+                      onChange={e => setPaperCapital(Number(e.target.value))}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") {
+                          handlePaperCapitalSave(paperCapital);
+                        }
+                      }}
+                      style={{
+                        width: 130,
+                        background: "rgba(74,222,128,0.06)",
+                        border: "1px solid rgba(74,222,128,0.2)",
+                        borderRadius: 6,
+                        padding: "5px 8px",
+                        fontSize: 11,
+                        color: "#4ade80",
+                        outline: "none",
+                      }}
+                    />
+                    <button
+                      onClick={() => handlePaperCapitalSave(paperCapital)}
+                      style={{
+                        background: "rgba(74,222,128,0.08)",
+                        border: "1px solid rgba(74,222,128,0.22)",
+                        borderRadius: 6,
+                        padding: "5px 9px",
+                        fontSize: 10,
+                        color: "#4ade80",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
+                  <p style={{ fontSize: 10, color: "rgba(255,255,255,0.28)", marginTop: 5, maxWidth: 220 }}>
+                    Used for idle paper balances and the next paper start.
+                  </p>
                 </div>
               )}
 
@@ -593,7 +683,7 @@ export default function Dashboard() {
           )}
 
           {/* Controls group — only when not mobile */}
-          {!isMobile && !running && (
+          {!isMobile && !agentActive && (
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               {/* Persona — compact */}
               <select value={strategyType} onChange={e => setStrategyType(e.target.value)}
@@ -643,26 +733,26 @@ export default function Dashboard() {
 
           {/* Start / Stop agent */}
           <button
-            onClick={!activeVenue && !running ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
+            onClick={!activeVenue && !agentActive ? () => toast("Connect a venue in Settings first.", "warning") : handleAgentToggle}
             disabled={agentLoading}
-            title={!activeVenue && !running ? "Connect a venue in Settings first" : undefined}
+            title={!activeVenue && !agentActive ? "Connect a venue in Settings first" : undefined}
             style={{
               display: "flex", alignItems: "center", gap: 5, flexShrink: 0,
-              background: running ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
-              border: `1px solid ${running ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
-              color: running ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
+              background: agentActive ? "rgba(239,68,68,0.15)" : !activeVenue ? "rgba(255,255,255,0.04)" : "rgba(34,197,94,0.15)",
+              border: `1px solid ${agentActive ? "rgba(239,68,68,0.4)" : !activeVenue ? "rgba(255,255,255,0.1)" : "rgba(34,197,94,0.4)"}`,
+              color: agentActive ? "#ef4444" : !activeVenue ? "var(--muted)" : "#22c55e",
               borderRadius: 8, padding: isMobile ? "7px" : "5px 12px",
               cursor: agentLoading ? "default" : "pointer",
               fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
               opacity: agentLoading ? 0.6 : 1, transition: "all 0.2s",
             }}
           >
-            {running ? <Square size={10} /> : <Play size={10} />}
-            {agentLoading ? "…" : running ? "Stop" : !activeVenue ? "No venue" : "Start"}
+            {agentActive ? <Square size={10} /> : <Play size={10} />}
+            {agentLoading ? "…" : agentActive ? "Stop" : !activeVenue ? "No venue" : "Start"}
           </button>
 
           {/* Kill switch — close ALL positions immediately */}
-          {running && (
+          {agentActive && (
             <button
               onClick={handleKillSwitch}
               disabled={agentLoading}
@@ -870,7 +960,7 @@ export default function Dashboard() {
                 <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.8)", letterSpacing: "0.02em" }}>Open Positions</span>
                 <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 10px", borderRadius: 20 }}>{pos.length}</span>
               </div>
-              <PositionsTable positions={pos} isPaper={positions.data?.is_paper ?? activeVenue?.isPaper} venueType={venueType} />
+              <PositionsTable positions={pos} isPaper={effectiveIsPaper} venueType={venueType} />
             </motion.section>
           </div>
 
@@ -893,7 +983,7 @@ export default function Dashboard() {
                 </span>
               </div>
               {/* Last AI Decision — prominent card */}
-              {running && decisions.data?.decisions?.[0] && (() => {
+              {agentActive && decisions.data?.decisions?.[0] && (() => {
                 const latest = decisions.data?.decisions?.[0];
                 const d = latest.trade_decisions?.[0];
                 if (!d) return null;
@@ -934,7 +1024,7 @@ export default function Dashboard() {
                         </div>
                         <p style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", lineHeight: 1.55 }}>
                           <strong style={{ color: "rgba(255,255,255,0.7)" }}>Why:</strong>{" "}
-                          {String(d.rationale ?? "No rationale provided").slice(0, 200)}
+                          {humanizeDecisionRationale(d.rationale).slice(0, 220)}
                         </p>
                         {(d.tp_price || d.sl_price) && !isHold && (
                           <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
@@ -960,7 +1050,7 @@ export default function Dashboard() {
                     </div>
                     <p style={{ fontSize: 9, color: "rgba(255,255,255,0.2)", marginTop: 6 }}>
                       {new Date(latest.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                      {" · AI reasoning based on RSI, MACD, EMA + macro sentiment"}
+                      {" · Latest agent decision snapshot"}
                     </p>
                   </div>
                 );

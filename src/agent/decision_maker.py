@@ -341,9 +341,12 @@ class TradingAgent:
                 return {"reasoning": "", "trade_decisions": []}
 
         # Main loop: up to 6 iterations to handle tool calls
+        tool_rounds = 0
+        force_no_tools = False
+        seen_tool_calls: set[tuple[str, str]] = set()
         for iteration in range(6):
             try:
-                response = _call_llm(messages)
+                response = _call_llm(messages, use_tools=not force_no_tools)
             except Exception as e:
                 logging.error("LLM provider error: %s", e)
                 with open(_LLM_LOG, "a", encoding="utf-8") as f:
@@ -363,6 +366,7 @@ class TradingAgent:
                 text_blocks_raw = [b for b in raw_resp.content if b.type == "text"]
 
             if tool_use_blocks and response.stop_reason == "tool_use":
+                repeated_tool_call = False
                 assistant_content = []
                 for block in raw_resp.content:
                     if block.type == "text":
@@ -383,6 +387,10 @@ class TradingAgent:
 
                 tool_results = []
                 for block in tool_use_blocks:
+                    signature = (block.name, json.dumps(block.input, sort_keys=True, default=str))
+                    if signature in seen_tool_calls:
+                        repeated_tool_call = True
+                    seen_tool_calls.add(signature)
                     result_str = _handle_tool_call(block.name, block.input)
                     tool_results.append({
                         "type": "tool_result",
@@ -390,6 +398,17 @@ class TradingAgent:
                         "content": result_str,
                     })
                 messages.append({"role": "user", "content": tool_results})
+                tool_rounds += 1
+                if repeated_tool_call or tool_rounds >= 3:
+                    force_no_tools = True
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You already have enough indicator context. "
+                            "Do not call any more tools. Return the final strict JSON now. "
+                            "If the setup is unclear, return hold with a concise market-based rationale."
+                        ),
+                    })
                 continue
 
             # No tool calls — use the provider's normalized text content
@@ -459,7 +478,7 @@ class TradingAgent:
 
         # Exhausted tool loop
         return {
-            "reasoning": "tool loop cap",
+            "reasoning": "Indicator tool limit reached",
             "trade_decisions": [{
                 "asset": a,
                 "action": "hold",
@@ -467,6 +486,6 @@ class TradingAgent:
                 "tp_price": None,
                 "sl_price": None,
                 "exit_plan": "",
-                "rationale": "tool loop cap"
+                "rationale": "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside."
             } for a in assets]
         }

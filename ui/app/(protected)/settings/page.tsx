@@ -31,6 +31,7 @@ interface Venue {
   ccxtExchangeId: string | null;
   network: string | null;
   market: string;
+  paperCapital: number;
   metaApiToken: string | null;
   metaApiAccountId: string | null;
   isPaper: boolean;
@@ -150,6 +151,7 @@ function VenueForm({ onSave, onCancel, initialType }: {
   const [form, setForm] = useState<Partial<Venue>>({
     type: safeInitial,
     market: defaultMarketForVenueType(safeInitial),
+    paperCapital: 10000,
     isPaper: true,
   });
   const set = (k: keyof Venue, v: unknown) => setForm(f => ({ ...f, [k]: v }));
@@ -305,6 +307,23 @@ function VenueForm({ onSave, onCancel, initialType }: {
         </div>
         <span style={{ fontSize: 13, color: "rgba(255,255,255,0.5)" }}>Paper trading mode {form.isPaper ? "(safe)" : "(live)"}</span>
       </label>
+
+      {form.isPaper && (
+        <FieldGroup label="Paper Balance (USD)">
+          <input
+            style={inputStyle}
+            type="number"
+            min={100}
+            step={100}
+            placeholder="10000"
+            value={typeof form.paperCapital === "number" ? form.paperCapital : 10000}
+            onChange={e => set("paperCapital", Number(e.target.value))}
+          />
+          <p style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginTop: 6 }}>
+            This becomes the saved starting balance for this paper venue.
+          </p>
+        </FieldGroup>
+      )}
 
       {/* Trust Signals */}
       <div style={{ marginTop: 6, marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -745,6 +764,11 @@ export default function SettingsPage() {
                           {v.network && <span style={{ marginRight: 10 }}>{v.network}</span>}
                           Key: {v.apiKey.slice(0, 8)}…
                         </div>
+                        {v.isPaper && (
+                          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.35)", marginTop: 4 }}>
+                            Paper balance: ${Number(v.paperCapital ?? 10000).toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                          </div>
+                        )}
                         <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
                           <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.06em",
                             padding: "2px 7px", borderRadius: 4, textTransform: "uppercase",

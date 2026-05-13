@@ -15,6 +15,12 @@ import { encrypt } from "@/lib/encryption";
 import { getPlanLimits, type Plan } from "@/lib/plan-limits";
 import { normalizeVenueMarket } from "@/lib/venue-market";
 
+function normalizePaperCapital(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return 10_000;
+  return Math.min(10_000_000, Math.max(100, parsed));
+}
+
 /** Mask a value for safe display: "abcd…wxyz" */
 function maskSecret(s: string | null | undefined): string {
   if (!s || s.length < 8) return s ? "••••" : "";
@@ -50,6 +56,7 @@ export async function GET() {
     ccxtExchangeId:   v.ccxtExchangeId,
     network:          v.network,
     market:           v.market,
+    paperCapital:     v.paperCapital,
     metaApiAccountId: v.metaApiAccountId,
     isPaper:          v.isPaper,
     isActive:         v.isActive,
@@ -96,6 +103,7 @@ export async function POST(req: Request) {
     ccxtExchangeId?: string;
     network?: string;
     market?: string;
+    paperCapital?: number;
     isPaper?: boolean;
     metaApiToken?: string;
     metaApiAccountId?: string;
@@ -119,6 +127,7 @@ export async function POST(req: Request) {
       ccxtExchangeId:   body.ccxtExchangeId   ?? null,
       network:          body.network          ?? null,
       market,
+      paperCapital:     normalizePaperCapital(body.paperCapital),
       metaApiToken:     body.metaApiToken     ? encrypt(body.metaApiToken) : null,
       metaApiAccountId: body.metaApiAccountId ?? null,
       isPaper:          body.isPaper          ?? true,
@@ -178,6 +187,7 @@ export async function POST(req: Request) {
     ccxtExchangeId:   venue.ccxtExchangeId,
     network:          venue.network,
     market:           venue.market,
+    paperCapital:     venue.paperCapital,
     metaApiAccountId: venue.metaApiAccountId,
     isPaper:          venue.isPaper,
     isActive:         venue.isActive,

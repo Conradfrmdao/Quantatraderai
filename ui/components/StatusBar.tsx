@@ -173,7 +173,9 @@ function CalendarChip() {
 
 // ── Main StatusBar ────────────────────────────────────────────────────────────
 export function StatusBar({ data }: { data: StatusData | null }) {
-  const running   = data?.status === "running";
+  const status    = data?.status ?? "idle";
+  const running   = status === "running";
+  const active    = status === "running" || status === "paused" || status === "stopping";
   const isForex   = data?.venue === "oanda" || data?.venue === "metatrader";
 
   const PERSONA_LABELS: Record<string, string> = {
@@ -199,9 +201,9 @@ export function StatusBar({ data }: { data: StatusData | null }) {
             animation: running ? "pulse-ring 1.4s ease-out infinite" : undefined }} />
           <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em",
             textTransform: "uppercase", color: running ? "#4ade80" : "var(--muted)" }}>
-            {running ? "Agent Active" : data?.status === "stopping" ? "Stopping…" : "Offline"}
+            {running ? "Agent Active" : status === "paused" ? "Paused" : status === "stopping" ? "Stopping…" : "Offline"}
           </span>
-          {data?.is_paper !== undefined && running && (
+          {data?.is_paper !== undefined && active && (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 6px", borderRadius: 4,
               background: data.is_paper ? "rgba(129,140,248,0.1)" : "rgba(239,68,68,0.12)",
               border: `1px solid ${data.is_paper ? "rgba(129,140,248,0.25)" : "rgba(239,68,68,0.3)"}`,
@@ -214,21 +216,21 @@ export function StatusBar({ data }: { data: StatusData | null }) {
 
         <div style={{ width: 1, height: 16, background: "var(--border)" }} />
 
-        {running && <Chip label="Venue"    value={data?.venue ?? "—"} />}
-        {running && <Chip label="Watching" value={data?.assets?.join(", ") ?? "—"} />}
-        {running && data?.strategy_type && (
+        {active && <Chip label="Venue"    value={data?.venue ?? "—"} />}
+        {active && <Chip label="Watching" value={data?.assets?.join(", ") ?? "—"} />}
+        {active && data?.strategy_type && (
           <Chip label="Persona" value={PERSONA_LABELS[data.strategy_type] ?? data.strategy_type} color="#fbbf24" />
         )}
-        {running && <Chip label="Ticks" value={data?.tick_count?.toString() ?? "0"} />}
-        {!running && (
+        {active && <Chip label="Ticks" value={data?.tick_count?.toString() ?? "0"} />}
+        {!active && (
           <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>
             Start the agent to begin trading
           </span>
         )}
-        {data?.uptime_seconds != null && running && (
+        {data?.uptime_seconds != null && active && (
           <Chip label="Uptime" value={fmtUptime(data.uptime_seconds)} />
         )}
-        {data?.daily_trade_count != null && running && (
+        {data?.daily_trade_count != null && active && (
           <Chip label="Trades today" value={String(data.daily_trade_count)} color="#4ade80" />
         )}
 
@@ -245,7 +247,7 @@ export function StatusBar({ data }: { data: StatusData | null }) {
 
       {/* ── Bottom row: next tick countdown + latest log (only when running) */}
       <AnimatePresence>
-        {running && (
+        {active && data && (
           <motion.div
             initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25 }}

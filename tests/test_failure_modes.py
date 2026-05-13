@@ -186,6 +186,81 @@ def test_agent_has_fallback_chain():
     assert len(agent._fallback_chain) >= 1, "Agent must have at least 1 provider"
 
 
+@pytest.mark.asyncio
+async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
+    from types import SimpleNamespace
+
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    class StubHyperliquid:
+        async def get_candles(self, asset: str, interval: str, lookback: int):
+            candles = []
+            for i in range(lookback):
+                close = 50_000 + i
+                candles.append({
+                    "time": 1_700_000_000 + i * 60,
+                    "open": close - 5,
+                    "high": close + 5,
+                    "low": close - 10,
+                    "close": float(close),
+                    "volume": 1000.0,
+                })
+            return candles
+
+    class RepeatingToolProvider:
+        name = "mock"
+        model = "mock-tool-model"
+        supports_tools = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            self.calls += 1
+            if tools is None:
+                return LLMResponse(
+                    content=(
+                        '{"reasoning":"Enough context gathered","trade_decisions":['
+                        '{"asset":"BTC/USDT","action":"hold","allocation_usd":0,'
+                        '"tp_price":null,"sl_price":null,"exit_plan":"",'
+                        '"rationale":"Waiting for confirmation"}]}'
+                    ),
+                    model=self.model,
+                    stop_reason="stop",
+                )
+
+            block = SimpleNamespace(
+                type="tool_use",
+                id=f"tool-{self.calls}",
+                name="fetch_indicator",
+                input={"indicator": "rsi", "asset": "BTC", "interval": "5m"},
+            )
+            raw = SimpleNamespace(content=[block])
+            return LLMResponse(
+                content="",
+                model=self.model,
+                stop_reason="tool_use",
+                raw=raw,
+            )
+
+    provider = RepeatingToolProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", True)
+
+    agent = TradingAgent(hyperliquid=StubHyperliquid(), venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = agent.decide_trade(["BTC/USDT"], "Current time: 2026-05-13T05:26:00Z")
+
+    assert result["reasoning"] == "Enough context gathered"
+    assert result["trade_decisions"][0]["action"] == "hold"
+    assert result["trade_decisions"][0]["rationale"] == "Waiting for confirmation"
+    assert provider.calls == 3
+
+
 # ── Duplicate webhook signal ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio

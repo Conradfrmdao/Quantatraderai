@@ -129,6 +129,47 @@ async def test_get_account_returns_connected_live_balance_when_idle():
 
 
 @pytest.mark.asyncio
+async def test_get_account_returns_configured_paper_balance_when_idle():
+    import src.server as srv
+
+    s = srv.get_state("clerk_paper_balance")
+    s.status = "idle"
+    s.account = {}
+    s.paper_balance = 10_000.0
+    s.paper_positions = []
+    s.initial_equity = None
+    s.connected_account_cache = None
+    s.connected_positions_cache = []
+    s.connected_snapshot_at = None
+
+    req = SimpleNamespace(headers={})
+    venue_row = [{
+        "type": "BINANCE",
+        "market": "spot",
+        "paperCapital": 25000.0,
+        "isPaper": True,
+        "apiKey": "key",
+        "apiSecret": "secret",
+        "apiPassphrase": "",
+        "accountId": "",
+        "network": "",
+        "metaApiToken": "",
+        "metaApiAccountId": "",
+        "ccxtExchangeId": "",
+        "isActive": True,
+    }]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_paper_balance")):
+        with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
+            data = await srv.get_account(req, userId="ignored")
+
+    assert data["balance"] == 25000.0
+    assert data["equity"] == 25000.0
+    assert data["initial_equity"] == 25000.0
+    assert data["open_positions"] == 0
+
+
+@pytest.mark.asyncio
 async def test_get_account_returns_connected_spot_equity_when_idle():
     import src.server as srv
     from src.venues.models import Balance, Position
@@ -184,6 +225,35 @@ async def test_get_account_returns_connected_spot_equity_when_idle():
     assert data["balance"] == 1500.0
     assert data["equity"] == 4750.0
     assert data["open_positions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_list_strategies_reads_persisted_rules():
+    import src.server as srv
+
+    req = SimpleNamespace(headers={})
+    rows = [{
+        "id": "rule_1",
+        "text": "buy BTC when RSI < 30",
+        "condition": "RSI below 30",
+        "action": "buy",
+        "symbol": "BTC",
+        "isActive": True,
+    }]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_strategy_user")):
+        with patch("src.services.supabase_reader.list_strategy_rules", AsyncMock(return_value=rows)):
+            data = await srv.list_strategies(req, userId="ignored")
+
+    assert data == {
+        "rules": [{
+            "id": "rule_1",
+            "condition": "RSI below 30",
+            "action": "buy",
+            "symbol": "BTC",
+            "active": True,
+        }]
+    }
 
 
 @pytest.mark.asyncio
