@@ -174,6 +174,7 @@ class TradingAgent:
         """Dispatch decision request through the governed AI boundary."""
         is_forex = self.venue_context == "forex"
         enable_tools = CONFIG.get("enable_tool_calling", True)
+        can_use_indicator_tools = bool(enable_tools and self.hyperliquid is not None and not is_forex)
         assets_str = json.dumps(list(assets))
 
         if is_forex:
@@ -185,7 +186,7 @@ class TradingAgent:
                 "- Use the fetch_indicator tool to sharpen your thesis. Parameters: indicator (ema/sma/rsi/macd/bbands/atr/adx/obv/vwap/stoch_rsi/all), asset (e.g. \"BTC\", \"OIL\", \"GOLD\"), interval (\"5m\"/\"4h\"), optional period.\n"
                 "- Indicators are computed from Hyperliquid candle data — works for all perp markets.\n"
                 "- Summarize tool findings in reasoning; never paste raw tool output into final JSON.\n\n"
-                if enable_tools else
+                if can_use_indicator_tools else
                 "Tool usage\n"
                 "- No external tools available. Base analysis on provided market data.\n\n"
             )
@@ -215,6 +216,14 @@ class TradingAgent:
 
         if self.system_prompt_addendum:
             system_prompt = self.system_prompt_addendum + "\n\n" + system_prompt
+
+        if (ai_context.mode if ai_context else "paper") == "paper":
+            system_prompt += (
+                "\nPaper mode directive\n"
+                "- Paper trading is used to validate execution flow and strategy behavior.\n"
+                "- If market data is ready and a coherent setup exists, prefer a small, risk-defined starter trade over an overly cautious HOLD.\n"
+                "- Do not force trades when data is stale, contradictory, or structurally weak.\n"
+            )
 
         messages: list[dict[str, Any]] = [{"role": "user", "content": context}]
 
@@ -264,7 +273,7 @@ class TradingAgent:
                     stream=base_ctx.stream,
                 )
                 try:
-                    tool_list = tools if (use_tools and enable_tools and prov.supports_tools) else None
+                    tool_list = tools if (use_tools and can_use_indicator_tools and prov.supports_tools) else None
                     response = await governed_complete(
                         provider=prov,
                         system=system_prompt,

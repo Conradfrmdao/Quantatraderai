@@ -205,6 +205,12 @@ async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
     from src.agent.decision_maker import TradingAgent
     from src.agent.providers.base import LLMResponse
 
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
     class StubHyperliquid:
         async def get_candles(self, asset: str, interval: str, lookback: int):
             candles = []
@@ -264,12 +270,64 @@ async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
     agent._fallback_chain = [provider]
     agent._sanitize_provider = provider
 
-    result = agent.decide_trade(["BTC/USDT"], "Current time: 2026-05-13T05:26:00Z")
+    result = await agent.decide_trade_async(["BTC/USDT"], "Current time: 2026-05-13T05:26:00Z")
 
     assert result["reasoning"] == "Enough context gathered"
     assert result["trade_decisions"][0]["action"] == "hold"
     assert result["trade_decisions"][0]["rationale"] == "Waiting for confirmation"
     assert provider.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_disables_indicator_tools_when_no_hyperliquid_client(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class ToolCapableProvider:
+        name = "mock"
+        model = "mock-no-tools-runtime"
+        supports_tools = True
+
+        def __init__(self):
+            self.calls = 0
+            self.last_tools = object()
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            self.calls += 1
+            self.last_tools = tools
+            return LLMResponse(
+                content=(
+                    '{"reasoning":"Setup is constructive","trade_decisions":['
+                    '{"asset":"BTC/USDT","action":"buy","allocation_usd":125,'
+                    '"order_type":"market","limit_price":null,"tp_price":64000,'
+                    '"sl_price":61000,"exit_plan":"Exit on structure failure",'
+                    '"rationale":"Momentum and structure are aligned."}]}'
+                ),
+                model=self.model,
+                stop_reason="stop",
+            )
+
+    provider = ToolCapableProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", True)
+
+    agent = TradingAgent(hyperliquid=None, venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], '{"market_data":[{"asset":"BTC/USDT","data_ready":true}]}')
+
+    assert provider.calls == 1
+    assert provider.last_tools is None
+    assert result["trade_decisions"][0]["action"] == "buy"
+    assert result["trade_decisions"][0]["allocation_usd"] == 125
 
 
 # ── Duplicate webhook signal ──────────────────────────────────────────────────
