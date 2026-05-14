@@ -1588,7 +1588,6 @@ async def _tick_for(s: "AgentState"):
     if strategy_rules:
         try:
             from src.agent.nl_parser import evaluate_rule
-            from src.indicators.local_indicators import compute_all, latest
             for sym in s.symbols:
                 key = _candle_cache_key(sym, s.timeframe)
                 bars = s.candle_cache.get(key, [])

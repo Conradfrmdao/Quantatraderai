@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -388,6 +389,97 @@ async def test_list_strategies_reads_persisted_rules():
             "active": True,
         }]
     }
+
+
+@pytest.mark.asyncio
+async def test_tick_for_builds_market_data_without_compute_all_scope_error():
+    import src.server as srv
+    from src.venues.models import Balance, Candle
+
+    class StubVenue:
+        async def get_balances(self):
+            return [Balance(currency="USDT", total=10_000.0, available=10_000.0)]
+
+        async def get_positions(self):
+            return []
+
+        async def get_candles(self, symbol, timeframe, lookback):
+            now = int(time.time())
+            interval = 300
+            current_bucket = (now // interval) * interval
+            candles: list[Candle] = []
+            base = 60_000.0
+            start = current_bucket - ((lookback - 1) * interval)
+            for idx in range(lookback):
+                ts = start + (idx * interval)
+                px = base + idx
+                candles.append(
+                    Candle(
+                        ts=ts,
+                        open=px - 5,
+                        high=px + 10,
+                        low=px - 10,
+                        close=px,
+                        volume=100 + idx,
+                    )
+                )
+            return candles
+
+    class StubAgent:
+        provider = SimpleNamespace(name="groq", model="llama-3.3-70b-versatile")
+
+        async def decide_trade_async(self, symbols, context, ai_context=None, stream_handler=None):
+            return {
+                "trace_id": "trace_tick_scope",
+                "provider": "test",
+                "model": "stub",
+                "trade_decisions": [{
+                    "asset": symbols[0],
+                    "action": "hold",
+                    "allocation_usd": 0.0,
+                    "rationale": "No high-confidence setup after the latest live market scan.",
+                    "confidence": 0.42,
+                }],
+            }
+
+    s = srv.get_state("clerk_tick_scope_guard")
+    s.status = "running"
+    s.user_id = "clerk_tick_scope_guard"
+    s.symbols = ["BTC/USDT"]
+    s.timeframe = "5m"
+    s.is_paper = True
+    s.venue_name = "binance"
+    s.venue = StubVenue()
+    s.ai_agent = StubAgent()
+    s.risk_mgr = MagicMock()
+    s.risk_mgr.get_risk_summary.return_value = {}
+    s.logs.clear()
+    s.decisions.clear()
+    s.candle_cache.clear()
+    s.price_cache.clear()
+    s.paper_balance = 10_000.0
+    s.paper_positions = []
+    s.tick_count = 0
+    s.initial_equity = None
+
+    with patch("src.server._broadcast", AsyncMock()):
+        with patch("src.server._persist_equity", AsyncMock()):
+            with patch("src.server._persist_ai_decisions_for_state", AsyncMock()):
+                with patch("src.server._load_strategy_rules_for_user", AsyncMock(return_value=[])):
+                    with patch("src.server._persist_audit", AsyncMock()):
+                        with patch("src.server._get_user_plan", AsyncMock(return_value="FREE")):
+                            with patch("src.intel.economic_calendar.should_pause", AsyncMock(return_value=(False, ""))):
+                                with patch("src.intel.economic_calendar.next_event_summary", AsyncMock(return_value=None)):
+                                    with patch("src.intel.sentiment.get_fear_greed", AsyncMock(return_value={"value": 50, "classification": "Neutral"})):
+                                        with patch.object(srv._notifier, "emit", AsyncMock()):
+                                            await srv._tick_for(s)
+
+    key = srv._candle_cache_key("BTC/USDT", "5m")
+    assert key in s.candle_cache
+    assert s.decisions
+    assert s.decisions[0]["trade_decisions"][0]["rationale"] == "No high-confidence setup after the latest live market scan."
+    assert not any("cannot access local variable 'compute_all'" in entry["msg"] for entry in s.logs)
+    assert not any("Market data could not be loaded for BTC/USDT on this tick." in entry["msg"] for entry in s.logs)
 
 
 @pytest.mark.asyncio
