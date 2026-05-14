@@ -564,7 +564,7 @@ class TradingAgent:
                 }
 
         return {
-            "reasoning": "Indicator tool limit reached",
+            "reasoning": "The model could not complete a safe analysis on this tick",
             "trace_id": final_ctx.trace_id,
             "provider": final_ctx.provider,
             "model": final_ctx.model,
@@ -575,6 +575,6 @@ class TradingAgent:
                 "tp_price": None,
                 "sl_price": None,
                 "exit_plan": "",
-                "rationale": "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside."
+                "rationale": "The model could not complete a safe analysis on this tick, so no trade was executed."
             } for a in assets]
         }

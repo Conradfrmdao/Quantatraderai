@@ -66,10 +66,11 @@ const ROLE_LABEL: Record<string, string> = {
 function humanizeRationale(rationale?: string) {
   const text = String(rationale ?? "").trim();
   if (!text) return "";
-  if (text.toLowerCase() === "tool loop cap") {
-    return "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside.";
+  const lower = text.toLowerCase();
+  if (lower === "tool loop cap" || lower.includes("indicator analysis exceeded the tool limit")) {
+    return "The model could not complete a safe analysis on this tick, so no trade was executed.";
   }
-  if (text.toLowerCase() === "parse error") {
+  if (lower === "parse error") {
     return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
   }
   return text;

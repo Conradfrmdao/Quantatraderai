@@ -15,6 +15,8 @@ interface MobileBottomNavProps {
   onStart:       () => void;
   onStop:        () => void;
   onKillswitch?: () => void;
+  killConfirm?:  boolean;
+  isPaperMode?:  boolean;
   strategyType:  string;
   timeframe:     string;
   market:        string;
@@ -43,6 +45,7 @@ const MORE_LINKS = [
 
 export function MobileBottomNav({
   running, agentLoading, onStart, onStop, onKillswitch,
+  killConfirm = false, isPaperMode = true,
   strategyType, timeframe, market, marketOptions,
   onStrategy, onTimeframe, onMarket,
   showGuards, onToggleGuards,
@@ -184,28 +187,64 @@ export function MobileBottomNav({
           onClick={() => { setOpen(false); running ? onStop() : onStart(); }}
           disabled={agentLoading}
           style={{
-            width: "100%", padding: "15px 0", borderRadius: 13, fontSize: 15, fontWeight: 700,
+            width: "100%", padding: "14px 14px", borderRadius: 16, fontSize: 15, fontWeight: 700,
             cursor: agentLoading ? "default" : "pointer", border: "1px solid",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            background: running ? "rgba(239,68,68,0.12)" : "rgba(74,222,128,0.12)",
-            borderColor: running ? "rgba(239,68,68,0.35)" : "rgba(74,222,128,0.35)",
-            color: running ? "#ef4444" : "#4ade80",
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+            background: running
+              ? "linear-gradient(135deg, rgba(127,29,29,0.92), rgba(239,68,68,0.18))"
+              : isPaperMode
+                ? "linear-gradient(135deg, rgba(8,43,31,0.96), rgba(74,222,128,0.2))"
+                : "linear-gradient(135deg, rgba(69,10,10,0.96), rgba(248,113,113,0.18))",
+            borderColor: running ? "rgba(248,113,113,0.42)" : isPaperMode ? "rgba(74,222,128,0.4)" : "rgba(248,113,113,0.38)",
+            color: running ? "#fecaca" : isPaperMode ? "#dcfce7" : "#fee2e2",
             marginBottom: onKillswitch && running ? 8 : 0,
+            boxShadow: running
+              ? "0 18px 36px rgba(127,29,29,0.22)"
+              : isPaperMode
+                ? "0 18px 36px rgba(21,128,61,0.16)"
+                : "0 18px 36px rgba(153,27,27,0.18)",
           }}
         >
-          {agentLoading ? "…" : running
-            ? <><Square size={15} /> Stop Agent</>
-            : <><Play size={15} /> Start Agent</>}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 3, textAlign: "left" }}>
+            <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: running ? "rgba(254,202,202,0.72)" : isPaperMode ? "rgba(220,252,231,0.7)" : "rgba(254,226,226,0.72)" }}>
+              {running ? "Agent Active" : isPaperMode ? "Paper Mode" : "Live Mode"}
+            </span>
+            <span style={{ fontSize: 15, fontWeight: 800, letterSpacing: "-0.01em", color: running ? "#fff1f2" : "#ffffff" }}>
+              {agentLoading ? "Working..." : running ? "Stop Agent" : isPaperMode ? "Launch Paper Agent" : "Launch Live Agent"}
+            </span>
+            <span style={{ fontSize: 11, color: running ? "rgba(254,226,226,0.6)" : "rgba(255,255,255,0.55)" }}>
+              {running ? "Stop the current run safely" : isPaperMode ? "Risk-free simulated execution" : "Real orders on the connected venue"}
+            </span>
+          </div>
+          <span style={{
+            width: 42,
+            height: 42,
+            borderRadius: 14,
+            border: "1px solid rgba(255,255,255,0.14)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: running ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.06)",
+            flexShrink: 0,
+          }}>
+            {running ? <Square size={16} /> : <Play size={16} />}
+          </span>
         </button>
 
         {onKillswitch && running && (
-          <button onClick={() => { setOpen(false); onKillswitch(); }} style={{
-            width: "100%", padding: "11px 0", borderRadius: 10, fontSize: 12, fontWeight: 600,
+          <button onClick={() => {
+            onKillswitch();
+            if (killConfirm) setOpen(false);
+          }} style={{
+            width: "100%", padding: "12px 14px", borderRadius: 12, fontSize: 12, fontWeight: 700,
             cursor: "pointer", border: "1px solid rgba(239,68,68,0.25)",
-            background: "rgba(239,68,68,0.06)", color: "#ef4444",
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            background: killConfirm ? "rgba(239,68,68,0.18)" : "rgba(239,68,68,0.06)",
+            borderColor: killConfirm ? "rgba(248,113,113,0.55)" : "rgba(239,68,68,0.25)",
+            color: killConfirm ? "#fecaca" : "#ef4444",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
           }}>
-            <Zap size={13} /> Emergency — Close All Positions
+            <Zap size={13} />
+            {killConfirm ? "Tap again to close ALL positions" : "Emergency — Close All Positions"}
           </button>
         )}
 

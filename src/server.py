@@ -2436,19 +2436,59 @@ async def refresh_risk(request: Request, req: RiskRefreshRequest):
     return {"ok": True, "applied": new_cfg}
 
 
+def _parse_decision_timestamp(entry: dict) -> datetime | None:
+    raw_ts = entry.get("ts")
+    if not raw_ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw_ts))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _filter_decisions_for_active_run(entries: list[dict], run_started_at: datetime | None, limit: int) -> list[dict]:
+    if not run_started_at:
+        return list(entries)[:limit]
+    run_start = run_started_at.astimezone(timezone.utc)
+    filtered: list[dict] = []
+    for entry in entries:
+        parsed = _parse_decision_timestamp(entry)
+        if parsed and parsed >= run_start:
+            filtered.append(entry)
+    return filtered[:limit]
+
+
+async def _load_session_scoped_decisions(user_id: str | None, state: AgentState, limit: int) -> list[dict]:
+    in_memory = list(state.decisions)[:limit]
+    if not user_id:
+        return in_memory
+
+    active_run = state.status in ("running", "paused", "stopping")
+    if active_run and in_memory:
+        return in_memory
+
+    try:
+        from src.services.supabase_reader import list_ai_decisions
+        persisted = await list_ai_decisions(user_id, limit=limit)
+    except Exception as e:
+        logger.warning("Falling back to in-memory decisions for %s: %s", user_id, e)
+        return in_memory
+
+    if active_run:
+        filtered = _filter_decisions_for_active_run(persisted, state.start_time, limit)
+        return filtered if filtered else in_memory
+
+    return persisted if persisted else in_memory
+
+
 @app.get("/api/decisions")
 async def get_decisions(request: Request, limit: int = 20, userId: Optional[str] = None):
     userId = await _resolve_request_user_id(request, userId)
-    if not userId:
-        return {"decisions": list(get_state(userId).decisions)[:limit]}
-    try:
-        from src.services.supabase_reader import list_ai_decisions
-        decisions = await list_ai_decisions(userId, limit=limit)
-        if decisions:
-            return {"decisions": decisions}
-    except Exception as e:
-        logger.warning("Falling back to in-memory decisions for %s: %s", userId, e)
-    return {"decisions": list(get_state(userId).decisions)[:limit]}
+    state = get_state(userId)
+    return {"decisions": await _load_session_scoped_decisions(userId, state, limit)}
 
 
 @app.get("/api/trust/metrics")
@@ -4298,15 +4338,7 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
 
     # Resolve which state to send based on the user's session
     s = get_state(ws_user_id) if ws_user_id else _state
-    db_decisions = list(s.decisions)[:20]
-    if ws_user_id:
-        try:
-            from src.services.supabase_reader import list_ai_decisions
-            fetched = await list_ai_decisions(ws_user_id, limit=20)
-            if fetched:
-                db_decisions = fetched
-        except Exception as e:
-            logger.debug("ws init decisions fallback: %s", e)
+    db_decisions = await _load_session_scoped_decisions(ws_user_id, s, 20)
     await ws.send_json({
         "type":      "init",
         "status":    s.status,

@@ -164,10 +164,11 @@ function roleLabel(role?: string): string {
 function humanizeDecisionRationale(rationale?: string | null): string {
   const text = String(rationale ?? "").trim();
   if (!text) return "No rationale provided";
-  if (text.toLowerCase() === "tool loop cap") {
-    return "Indicator analysis exceeded the tool limit on this tick, so the agent stood aside.";
+  const lower = text.toLowerCase();
+  if (lower === "tool loop cap" || lower.includes("indicator analysis exceeded the tool limit")) {
+    return "The model could not complete a safe analysis on this tick, so no trade was executed.";
   }
-  if (text.toLowerCase() === "parse error") {
+  if (lower === "parse error") {
     return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
   }
   return text;
@@ -191,6 +192,7 @@ export default function Dashboard() {
   const [killConfirm, setKillConfirm]     = useState(false);
   const [liveEvent, setLiveEvent]         = useState<LivePriceEventData | null>(null);
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, DecisionDraftData>>({});
+  const [decisionsExpanded, setDecisionsExpanded] = useState(true);
   const [strategyType, setStrategyType]     = useState<string>("MOMENTUM_HUNTER");
   const [timeframe, setTimeframe]           = useState<string>("5m");
   const [market, setMarket]                 = useState<string>("spot");
@@ -666,6 +668,10 @@ export default function Dashboard() {
   }, [sessionKey]);
 
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    setDecisionsExpanded(!isMobile);
+  }, [isMobile]);
 
   const PERSONA_DISPLAY: Record<string, { name: string; tagline: string }> = {
     MOMENTUM_HUNTER: { name: "Momentum Hunter", tagline: "Ride the wave — catch strong trends early" },
@@ -1291,6 +1297,25 @@ export default function Dashboard() {
                 <span style={{ marginLeft: "auto", fontSize: 10, color: connected ? "#22c55e" : "var(--muted)" }}>
                   {connected ? "● live" : "polling"}
                 </span>
+                <button
+                  onClick={() => setDecisionsExpanded((current) => !current)}
+                  style={{
+                    marginLeft: 10,
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: "rgba(255,255,255,0.04)",
+                    color: "rgba(255,255,255,0.62)",
+                    padding: "5px 10px",
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  {decisionsExpanded ? "Minimize" : "Expand"}
+                </button>
               </div>
               {/* Last AI Decision — prominent card */}
               {agentActive && decisions.data?.decisions?.[0] && (() => {
@@ -1396,14 +1421,45 @@ export default function Dashboard() {
                   </div>
                 );
               })()}
-              <div style={{ marginBottom: 12 }}>
-                <AITradeExplanationPanel
-                  decision={latestTradeDecision}
-                  venue={venueRegistryName}
-                  mode={effectiveIsPaper ? "paper" : "live"}
-                />
-              </div>
-              <DecisionsFeed decisions={decisions.data?.decisions ?? []} drafts={Object.values(decisionDrafts)} />
+              {agentActive && !decisions.data?.decisions?.length && Object.keys(decisionDrafts).length === 0 && (
+                <div style={{
+                  marginBottom: 12,
+                  borderRadius: 12,
+                  border: "1px solid rgba(255,255,255,0.07)",
+                  background: "rgba(255,255,255,0.02)",
+                  padding: "12px 14px",
+                }}>
+                  <p style={{ fontSize: 12, color: "rgba(255,255,255,0.58)", lineHeight: 1.55 }}>
+                    Waiting for the first decision from this run. Old snapshots are hidden while the new session warms up.
+                  </p>
+                </div>
+              )}
+              <AnimatePresence initial={false}>
+                {decisionsExpanded && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    transition={{ duration: 0.24 }}
+                    style={{ overflow: "hidden" }}
+                  >
+                    <div style={{ marginBottom: 12 }}>
+                      <AITradeExplanationPanel
+                        decision={latestTradeDecision}
+                        venue={venueRegistryName}
+                        mode={effectiveIsPaper ? "paper" : "live"}
+                      />
+                    </div>
+                    <div style={{
+                      maxHeight: isMobile ? 320 : 420,
+                      overflowY: "auto",
+                      paddingRight: 2,
+                    }}>
+                      <DecisionsFeed decisions={decisions.data?.decisions ?? []} drafts={Object.values(decisionDrafts)} />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </motion.section>
 
             {/* Decision Timeline */}
@@ -1462,6 +1518,8 @@ export default function Dashboard() {
           }}
           onStop={handleAgentToggle}
           onKillswitch={handleKillSwitch}
+          killConfirm={killConfirm}
+          isPaperMode={effectiveIsPaper}
           strategyType={strategyType}
           timeframe={timeframe}
           market={market}

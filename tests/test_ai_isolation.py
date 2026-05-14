@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from datetime import datetime, timezone
 
 
 @pytest.fixture(autouse=True)
@@ -74,3 +75,24 @@ async def test_websocket_broadcast_only_reaches_correct_user_for_ai_events():
 
     assert user_ws.events == [{"type": "ai_decision_delta", "trace_id": "trace-1", "partial": "thinking"}]
     assert other_ws.events == []
+
+
+@pytest.mark.asyncio
+async def test_active_run_filters_out_old_persisted_decisions(monkeypatch):
+    import src.server as srv
+
+    async def fake_list_ai_decisions(clerk_user_id: str, limit: int = 20):
+        return [
+            {"trace_id": "old-trace", "ts": "2026-05-13T10:13:44+00:00", "trade_decisions": [{"asset": "BTC/USDT", "action": "hold", "rationale": "old"}]},
+            {"trace_id": "new-trace", "ts": "2026-05-14T10:16:00+00:00", "trade_decisions": [{"asset": "BTC/USDT", "action": "buy", "rationale": "new"}]},
+        ]
+
+    monkeypatch.setattr("src.services.supabase_reader.list_ai_decisions", fake_list_ai_decisions)
+
+    state = srv.AgentState()
+    state.status = "running"
+    state.start_time = datetime(2026, 5, 14, 10, 15, tzinfo=timezone.utc)
+
+    filtered = await srv._load_session_scoped_decisions("user-a", state, 20)
+
+    assert [entry["trace_id"] for entry in filtered] == ["new-trace"]
