@@ -12,6 +12,8 @@ from pathlib import Path
 
 from src.config_loader import CONFIG
 from src.venues.crypto.spot_portfolio import base_currency_from_symbol
+from src.venues.forex.market_hours import is_forex_market_open
+from src.venues.forex.pips import price_distance_pips
 
 
 class _ConfigProxy:
@@ -22,6 +24,7 @@ class _ConfigProxy:
         "max_position_pct", "max_loss_per_position_pct", "max_leverage",
         "max_total_exposure_pct", "daily_loss_circuit_breaker_pct",
         "mandatory_sl_pct", "max_concurrent_positions", "min_balance_reserve_pct",
+        "max_spread_pips", "min_stop_distance_pips", "max_margin_ratio",
     }
 
     def __init__(self, rm: "RiskManager"):
@@ -129,6 +132,11 @@ class RiskManager:
         self.min_balance_reserve_pct = _pick(
             "min_balance_reserve_pct", "min_balance_reserve_pct", float, 30
         )
+        self.max_spread_pips = _pick("max_spread_pips", "max_spread_pips", float, 4.0)
+        self.min_stop_distance_pips = _pick(
+            "min_stop_distance_pips", "min_stop_distance_pips", float, 5.0
+        )
+        self.max_margin_ratio = _pick("max_margin_ratio", "max_margin_ratio", float, 0.5)
 
         # Daily tracking
         self.daily_high_value = None
@@ -242,6 +250,38 @@ class RiskManager:
             )
         return True, ""
 
+    def check_asset_class_guards(self, trade: dict, balance: float) -> tuple[bool, str]:
+        if self.asset_class == "forex":
+            if not is_forex_market_open():
+                return False, "Forex market is closed. Agent paused trading for safety."
+            spread = float(trade.get("spread_pips") or 0)
+            if spread > self.max_spread_pips:
+                return False, (
+                    f"Forex spread is {spread:.1f} pips, above the {self.max_spread_pips:.1f} pip limit. "
+                    "No trade executed."
+                )
+            symbol = str(trade.get("asset") or trade.get("symbol") or "")
+            current_price = float(trade.get("current_price") or 0)
+            sl_price = trade.get("sl_price")
+            if symbol and current_price > 0 and sl_price:
+                distance = price_distance_pips(symbol, current_price, float(sl_price))
+                if distance < self.min_stop_distance_pips:
+                    return False, (
+                        f"Stop loss is only {distance:.1f} pips away; minimum is "
+                        f"{self.min_stop_distance_pips:.1f} pips."
+                    )
+            margin_ratio = float(trade.get("margin_ratio") or 0)
+            if margin_ratio and margin_ratio > self.max_margin_ratio:
+                return False, (
+                    f"Requested margin use {margin_ratio:.0%} exceeds limit "
+                    f"{self.max_margin_ratio:.0%}."
+                )
+        elif self.asset_class == "crypto_perp":
+            funding = trade.get("funding_rate")
+            if funding is not None and abs(float(funding)) > 0.01:
+                return False, "Funding rate is unusually high. Agent paused trading for safety."
+        return True, ""
+
     def check_balance_reserve(self, balance: float, initial_balance: float) -> tuple[bool, str]:
         if initial_balance <= 0:
             return True, ""
@@ -350,6 +390,10 @@ class RiskManager:
         is_buy = action == "buy"
         is_spot_sell = self.asset_class == "crypto_spot" and action == "sell"
 
+        ok, reason = self.check_asset_class_guards(trade, balance)
+        if not ok:
+            return False, reason, trade
+
         if is_spot_sell:
             current_price = float(trade.get("current_price", 0))
             holding_value = self._spot_holding_value(
@@ -424,6 +468,9 @@ class RiskManager:
             "mandatory_sl_pct": self.mandatory_sl_pct,
             "max_concurrent_positions": self.max_concurrent_positions,
             "min_balance_reserve_pct": self.min_balance_reserve_pct,
+            "max_spread_pips": self.max_spread_pips,
+            "min_stop_distance_pips": self.min_stop_distance_pips,
+            "max_margin_ratio": self.max_margin_ratio,
             "circuit_breaker_active": self.circuit_breaker_active,
             "portfolio_leverage_check": True,
         }

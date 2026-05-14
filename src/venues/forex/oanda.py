@@ -18,6 +18,8 @@ import requests
 
 from src.config_loader import CONFIG
 from src.venues.base import Venue
+from src.venues.forex.pips import spread_pips
+from src.venues.forex.symbols import normalize_oanda_symbol
 from src.venues.models import (
     Balance,
     Candle,
@@ -44,15 +46,22 @@ class OandaVenue(Venue):
     name = "oanda"
     asset_class = "forex"
 
-    def __init__(self):
-        self.token      = os.environ.get("OANDA_API_TOKEN")  or CONFIG.get("oanda_api_token")  or ""
-        self.account_id = os.environ.get("OANDA_ACCOUNT_ID") or CONFIG.get("oanda_account_id") or ""
-        env = (os.environ.get("OANDA_ENV") or CONFIG.get("oanda_env") or "practice").lower()
+    def __init__(
+        self,
+        token: str | None = None,
+        account_id: str | None = None,
+        environment: str | None = None,
+        is_paper: bool | None = None,
+    ):
+        self.token      = token      or os.environ.get("OANDA_API_TOKEN")  or CONFIG.get("oanda_api_token")  or ""
+        self.account_id = account_id or os.environ.get("OANDA_ACCOUNT_ID") or CONFIG.get("oanda_account_id") or ""
+        env = (environment or os.environ.get("OANDA_ENV") or CONFIG.get("oanda_env") or "practice").lower()
         if env == "live":
             self.base_url = "https://api-fxtrade.oanda.com"
         else:
             self.base_url = "https://api-fxpractice.oanda.com"
-        self.is_paper = False
+        self.environment = env
+        self.is_paper = bool(is_paper) if is_paper is not None else False
         if not self.token or not self.account_id:
             logging.warning(
                 "OANDA credentials missing — set OANDA_API_TOKEN and OANDA_ACCOUNT_ID."
@@ -132,6 +141,7 @@ class OandaVenue(Venue):
         return out
 
     async def get_ticker(self, symbol: str) -> Ticker:
+        symbol = normalize_oanda_symbol(symbol)
         data = await self._get(
             f"/v3/accounts/{self.account_id}/pricing",
             params={"instruments": symbol},
@@ -142,9 +152,16 @@ class OandaVenue(Venue):
         p = prices[0]
         bid = float((p.get("bids") or [{}])[0].get("price") or 0)
         ask = float((p.get("asks") or [{}])[0].get("price") or 0)
-        return Ticker(symbol=symbol, last=(bid + ask) / 2 if bid and ask else bid or ask, bid=bid, ask=ask)
+        return Ticker(
+            symbol=symbol,
+            last=(bid + ask) / 2 if bid and ask else bid or ask,
+            bid=bid,
+            ask=ask,
+            extra={"spread_pips": spread_pips(symbol, bid, ask), "environment": self.environment},
+        )
 
     async def get_candles(self, symbol: str, timeframe: str, lookback: int) -> list[Candle]:
+        symbol = normalize_oanda_symbol(symbol)
         gran = _GRANULARITY.get(timeframe, "M5")
         data = await self._get(
             f"/v3/instruments/{symbol}/candles",
@@ -170,6 +187,7 @@ class OandaVenue(Venue):
         return out
 
     async def get_symbol_info(self, symbol: str) -> SymbolMeta:
+        symbol = normalize_oanda_symbol(symbol)
         data = await self._get(
             f"/v3/accounts/{self.account_id}/instruments",
             params={"instruments": symbol},
@@ -203,6 +221,7 @@ class OandaVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        symbol = normalize_oanda_symbol(symbol)
         if getattr(self, "is_paper", False):
             import uuid as _uuid
             return Order(
@@ -266,6 +285,7 @@ class OandaVenue(Venue):
             return False
 
     async def close_position(self, symbol: str, quantity: float | None = None) -> Order | None:
+        symbol = normalize_oanda_symbol(symbol)
         positions = await self.get_positions()
         pos = next((p for p in positions if p.symbol == symbol), None)
         if not pos:

@@ -1,8 +1,15 @@
 "use client";
 import { motion, AnimatePresence } from "framer-motion";
+import {
+  flattenDecisionsNewestFirst,
+  humanizeDecisionRationale,
+  type CouncilOpinionSummary,
+  type DecisionSummary,
+  type TradeDecisionSummary,
+} from "@/lib/decision-feed";
 
 /* ── Types ─────────────────────────────────────────────────────────── */
-interface CouncilOpinion {
+interface CouncilOpinion extends CouncilOpinionSummary {
   role?:       string;
   provider:   string;
   action:     string;
@@ -11,7 +18,7 @@ interface CouncilOpinion {
   veto?:      boolean;
 }
 
-interface TradeDecision {
+interface TradeDecision extends TradeDecisionSummary {
   asset:         string;
   action:        string;
   rationale?:    string;
@@ -24,7 +31,7 @@ interface TradeDecision {
   council?:      CouncilOpinion[];
 }
 
-interface Decision {
+interface Decision extends DecisionSummary {
   ts?:             string;
   trace_id?:       string;
   reasoning_summary?: string;
@@ -62,19 +69,6 @@ const ROLE_LABEL: Record<string, string> = {
   portfolio_allocator: "Allocator",
   committee_chair: "Chair",
 };
-
-function humanizeRationale(rationale?: string) {
-  const text = String(rationale ?? "").trim();
-  if (!text) return "";
-  const lower = text.toLowerCase();
-  if (lower === "tool loop cap" || lower.includes("indicator analysis exceeded the tool limit")) {
-    return "The model could not complete a safe analysis on this tick, so no trade was executed.";
-  }
-  if (lower === "parse error") {
-    return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
-  }
-  return text;
-}
 
 /* ── Sub-components ────────────────────────────────────────────────── */
 function Tag({ label, value, color }: { label: string; value: string; color: string }) {
@@ -151,23 +145,7 @@ function CouncilRow({ opinion }: { opinion: CouncilOpinion }) {
 
 /* ── Main component ────────────────────────────────────────────────── */
 export function DecisionsFeed({ decisions, drafts = [] }: { decisions: Decision[]; drafts?: DecisionDraft[] }) {
-  const flat = decisions
-    .flatMap((d) =>
-      (d.trade_decisions ?? []).map((td) => {
-        // Merge council opinions from the parent entry if not on the trade decision itself
-        const councilEntry = d.council?.find(c => c.asset?.toUpperCase() === td.asset?.toUpperCase());
-        return {
-          ts:      d.ts,
-          trace_id: d.trace_id,
-          ...td,
-          council: td.council ?? councilEntry?.opinions,
-          deadlock: td.deadlock ?? councilEntry?.deadlock,
-          confidence: td.confidence ?? councilEntry?.confidence,
-        };
-      })
-    )
-    .reverse()
-    .slice(0, 12);
+  const flat = flattenDecisionsNewestFirst(decisions, 12);
 
   if (!flat.length) {
     return (
@@ -288,7 +266,7 @@ export function DecisionsFeed({ decisions, drafts = [] }: { decisions: Decision[
                     <p style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.55,
                       overflow: "hidden", display: "-webkit-box",
                       WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                      {humanizeRationale(d.rationale)}
+                      {humanizeDecisionRationale(d.rationale)}
                     </p>
                   )}
 

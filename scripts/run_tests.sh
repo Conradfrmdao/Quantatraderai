@@ -53,6 +53,13 @@ run_suite "Python: Risk Manager"       "$VENV_PYTHON -m pytest tests/test_risk_m
 run_suite "Python: Indicators"         "$VENV_PYTHON -m pytest tests/test_indicators.py -q"
 run_suite "Python: Symbol Map"         "$VENV_PYTHON -m pytest tests/test_symbol_map.py -q"
 run_suite "Python: Venue Flows"        "$VENV_PYTHON -m pytest tests/test_venue_flows.py -q"
+run_suite "Python: Forex Utilities"    "$VENV_PYTHON -m pytest tests/test_forex_utils.py -q"
+run_suite "Python: OANDA Forex"        "$VENV_PYTHON -m pytest tests/test_forex_oanda.py -q"
+run_suite "Python: MetaTrader Forex"   "$VENV_PYTHON -m pytest tests/test_forex_metatrader.py -q"
+run_suite "Python: Binance Crypto"     "$VENV_PYTHON -m pytest tests/test_crypto_binance.py -q"
+run_suite "Python: CCXT Crypto"        "$VENV_PYTHON -m pytest tests/test_crypto_ccxt.py -q"
+run_suite "Python: Hyperliquid Crypto" "$VENV_PYTHON -m pytest tests/test_crypto_hyperliquid.py -q"
+run_suite "Python: Market Freshness"   "$VENV_PYTHON -m pytest tests/test_market_data_freshness.py -q"
 run_suite "Python: Agent Flows"        "$VENV_PYTHON -m pytest tests/test_agent_flows.py -q"
 run_suite "Python: Adapter Contracts"  "$VENV_PYTHON -m pytest tests/test_adapter_contracts.py -q"
 run_suite "Python: Security"           "$VENV_PYTHON -m pytest tests/test_security.py -q"
@@ -105,6 +112,8 @@ fi
 if [ -n "$VITEST_BIN" ]; then
   run_suite "TypeScript: Plan Limits" "$VITEST_BIN run lib/__tests__/plan-limits.test.ts"
   run_suite "TypeScript: Rate Limit"  "$VITEST_BIN run lib/__tests__/rate-limit.test.ts"
+  run_suite "TypeScript: Decision Feed" "$VITEST_BIN run lib/__tests__/decision-feed.test.ts"
+  run_suite "TypeScript: Start Confirm" "$VITEST_BIN run lib/__tests__/start-confirm.test.ts"
 else
   echo -e "${YELLOW}⚠ Vitest not installed — skipping TypeScript tests${RESET}"
   RESULTS+=("SKIP: TypeScript tests (vitest not installed)")

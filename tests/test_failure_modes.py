@@ -36,7 +36,7 @@ async def test_invalid_api_key_returns_clear_error(mock_env):
         "metaApiToken": "", "metaApiAccountId": "", "ccxtExchangeId": "",
     }])):
         failing_venue = MockVenue(fail_on="get_balances")
-        with patch("src.server.get_venue", return_value=failing_venue):
+        with patch("src.server.build_venue_from_runtime", return_value=failing_venue):
             req = VenueTestRequest(userId="test-user", venue="binance", isPaper=True)
             result = await test_venue(_request_for("test-user"), req)
 
@@ -66,7 +66,7 @@ async def test_network_timeout_handled_gracefully(mock_env):
         mock_v = MockVenue()
         mock_v.get_balances = slow_get_balances
 
-        with patch("src.server.get_venue", return_value=mock_v):
+        with patch("src.server.build_venue_from_runtime", return_value=mock_v):
             req = VenueTestRequest(userId="test-user", venue="binance", isPaper=True)
             try:
                 result = await asyncio.wait_for(test_venue(_request_for("test-user"), req), timeout=3.0)
@@ -276,6 +276,63 @@ async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
     assert result["trade_decisions"][0]["action"] == "hold"
     assert result["trade_decisions"][0]["rationale"] == "Waiting for confirmation"
     assert provider.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_agent_records_reason_code_after_invalid_no_tool_final(monkeypatch):
+    from types import SimpleNamespace
+
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class StubHyperliquid:
+        async def get_candles(self, asset: str, interval: str, lookback: int):
+            return [
+                {"time": 1_700_000_000 + i * 60, "open": 1, "high": 2, "low": 0.5, "close": 1, "volume": 1}
+                for i in range(lookback)
+            ]
+
+    class BrokenFinalProvider:
+        name = "mock"
+        model = "mock-broken-final"
+        supports_tools = True
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            if tools is None:
+                return LLMResponse(content="", model=self.model, stop_reason="stop")
+            block = SimpleNamespace(
+                type="tool_use",
+                id="tool-1",
+                name="fetch_indicator",
+                input={"indicator": "rsi", "asset": "BTC", "interval": "5m"},
+            )
+            return LLMResponse(
+                content="",
+                model=self.model,
+                stop_reason="tool_use",
+                raw=SimpleNamespace(content=[block]),
+            )
+
+    provider = BrokenFinalProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", True)
+
+    agent = TradingAgent(hyperliquid=StubHyperliquid(), venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], "Current time: 2026-05-14T11:00:00Z")
+
+    assert result["trade_decisions"][0]["action"] == "hold"
+    assert result["trade_decisions"][0]["reason_code"] == "ai_final_response_empty"
+    assert "no trade was executed" in result["trade_decisions"][0]["rationale"]
 
 
 @pytest.mark.asyncio

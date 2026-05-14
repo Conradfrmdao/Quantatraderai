@@ -101,10 +101,10 @@ async def test_venue_test_response_has_no_raw_key(mock_env, monkeypatch):
         "apiPassphrase": "", "accountId": "", "network": "",
         "metaApiToken": "", "metaApiAccountId": "", "ccxtExchangeId": "",
     }])):
-        # Patch get_venue to return a mock that returns a balance
+        # Patch per-user runtime venue construction to return a mock balance.
         from tests.conftest import MockVenue
         mock_v = MockVenue()
-        with patch("src.server.get_venue", return_value=mock_v):
+        with patch("src.server.build_venue_from_runtime", return_value=mock_v):
             req = VenueTestRequest(userId="clerk-test", venue="binance", isPaper=True)
             result = await test_venue(_request_for("clerk-test"), req)
 
@@ -146,8 +146,8 @@ async def test_polymarket_error_hides_private_key(mock_env, monkeypatch):
         "network": "137", "metaApiToken": "", "metaApiAccountId": "",
         "ccxtExchangeId": "",
     }])):
-        # Patch get_venue to raise a realistic error
-        with patch("src.server.get_venue", side_effect=RuntimeError("Connection refused to Polymarket CLOB")):
+        # Patch runtime venue construction to raise a realistic error
+        with patch("src.server.build_venue_from_runtime", side_effect=RuntimeError("Connection refused to Polymarket CLOB")):
             req = VenueTestRequest(userId="clerk-test", venue="polymarket", isPaper=True)
             result = await test_venue(_request_for("clerk-test"), req)
 

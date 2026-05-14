@@ -204,7 +204,7 @@ async def test_get_account_returns_connected_live_balance_when_idle():
 
     with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_balance")):
         with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
-            with patch("src.server.get_venue", return_value=StubVenue()):
+            with patch("src.server.build_venue_from_runtime", return_value=StubVenue()):
                 data = await srv.get_account(req, userId="ignored")
 
     assert data["balance"] == 4000.0
@@ -300,7 +300,8 @@ def test_apply_market_data_guards_blocks_trade_when_data_is_not_ready():
     assert guarded[0]["allocation_usd"] == 0.0
     assert guarded[0]["tp_price"] is None
     assert guarded[0]["sl_price"] is None
-    assert guarded[0]["rationale"] == "Market data is stale for BTC/USDT — latest candle is 97s old."
+    assert guarded[0]["rationale"] == "Market data is stale. Agent paused trading for safety."
+    assert guarded[0]["reason_code"] == "market_data_stale"
     assert guarded[0]["data_status"] == "stale"
 
 
@@ -354,7 +355,7 @@ async def test_get_account_returns_connected_spot_equity_when_idle():
 
     with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_spot_equity")):
         with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
-            with patch("src.server.get_venue", return_value=StubVenue()):
+            with patch("src.server.build_venue_from_runtime", return_value=StubVenue()):
                 data = await srv.get_account(req, userId="ignored")
 
     assert data["balance"] == 1500.0
@@ -529,7 +530,7 @@ async def test_get_positions_returns_connected_live_positions_when_idle():
 
     with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_live_positions")):
         with patch("src.services.supabase_reader.get_user_venues", AsyncMock(return_value=venue_row)):
-            with patch("src.server.get_venue", return_value=StubVenue()):
+            with patch("src.server.build_venue_from_runtime", return_value=StubVenue()):
                 data = await srv.get_positions(req, userId="ignored")
 
     assert data["is_paper"] is False

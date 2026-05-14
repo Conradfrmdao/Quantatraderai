@@ -3,8 +3,9 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield, AlertTriangle, TrendingUp, Target, Brain,
-  ChevronRight, X, Check,
+  ChevronRight, X, Check, Play, Zap,
 } from "lucide-react";
+import { getStartConfirmActionState } from "@/lib/start-confirm";
 
 export interface StartConfig {
   strategyType:     string;
@@ -58,6 +59,8 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
 
   const personaColor = PERSONA_COLOR[config.strategyType] ?? "#4ade80";
   const isLive = !config.isPaper;
+  const actionState = getStartConfirmActionState(isLive, acked);
+  const ActionIcon = isLive ? Zap : Play;
 
   function tryConfirm() {
     if (!acked) {
@@ -96,6 +99,8 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
             padding:      "24px 24px 20px",
             width:        "100%",
             maxWidth:     440,
+            maxHeight:    "calc(100dvh - 32px)",
+            overflowY:    "auto",
             boxShadow:    "0 24px 60px rgba(0,0,0,0.7)",
           }}
         >
@@ -241,30 +246,57 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
           </AnimatePresence>
 
           {/* ── Action buttons ──────────────────────────────────────────── */}
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={onCancel}
-              style={{ flex: 1, padding: "11px 0", borderRadius: 10, cursor: "pointer",
+              style={{ flex: "1 1 104px", minWidth: 96, padding: "11px 12px", borderRadius: 10, cursor: "pointer",
                 background: "transparent", border: "1px solid rgba(255,255,255,0.1)",
                 color: "rgba(255,255,255,0.5)", fontSize: 13, fontWeight: 500 }}>
               Cancel
             </button>
             <button onClick={tryConfirm}
               style={{
-                flex: 2, padding: "11px 0", borderRadius: 10, cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                background: acked
-                  ? (isLive ? "rgba(239,68,68,0.2)" : "rgba(74,222,128,0.15)")
-                  : "rgba(255,255,255,0.04)",
-                border: `1px solid ${acked
-                  ? (isLive ? "rgba(239,68,68,0.4)" : "rgba(74,222,128,0.35)")
-                  : "rgba(255,255,255,0.08)"}`,
-                color: acked
-                  ? (isLive ? "#ef4444" : "#4ade80")
-                  : "rgba(255,255,255,0.25)",
-                fontSize: 13, fontWeight: 700,
+                flex: "2 1 210px",
+                minWidth: 0,
+                padding: "10px 12px",
+                borderRadius: 14,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 10,
+                background: actionState.background,
+                border: actionState.border,
+                boxShadow: actionState.boxShadow,
+                color: actionState.textColor,
+                fontSize: 13,
+                fontWeight: 800,
                 transition: "all 0.2s",
               }}>
-              {isLive ? "⚡ Start Live Agent" : "▶ Start Paper Agent"}
+              <span style={{
+                width: 30,
+                height: 30,
+                borderRadius: 10,
+                background: acked ? "rgba(0,0,0,0.12)" : "rgba(255,255,255,0.04)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+              }}>
+                <ActionIcon size={15} fill={acked && !isLive ? "#050505" : "none"} style={{ color: actionState.iconColor }} />
+              </span>
+              <span style={{ minWidth: 0, textAlign: "left", lineHeight: 1.15 }}>
+                <span style={{ display: "block", whiteSpace: "normal" }}>{actionState.label}</span>
+                <span style={{
+                  display: "block",
+                  fontSize: 10,
+                  fontWeight: 700,
+                  marginTop: 2,
+                  opacity: acked ? 0.65 : 0.75,
+                  whiteSpace: "normal",
+                }}>
+                  {actionState.subcopy}
+                </span>
+              </span>
             </button>
           </div>
 

@@ -216,17 +216,17 @@ async def test_binance_connection_test_defaults_to_spot_market(mock_env):
     }
 
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
-        with patch("src.server._inject_venue_env") as inject_env:
-            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=321.0)) as get_venue_mock:
-                result = await test_venue(
-                    _request_for("clerk-123"),
-                    VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
-                )
+        with patch("src.server.build_venue_from_runtime", return_value=MockVenue(starting_balance=321.0)) as build_mock:
+            result = await test_venue(
+                _request_for("clerk-123"),
+                VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
+            )
 
     assert result["ok"] is True
-    assert inject_env.call_args.args[0] == "binance"
-    assert inject_env.call_args.args[1] == "spot"
-    get_venue_mock.assert_called_once_with("binance:spot")
+    runtime_config = build_mock.call_args.args[0]
+    assert runtime_config.venue_name == "binance"
+    assert runtime_config.registry_name == "binance:spot"
+    assert runtime_config.market == "spot"
 
 
 @pytest.mark.asyncio
@@ -248,16 +248,16 @@ async def test_binance_connection_test_uses_saved_market_mode(mock_env):
     }
 
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
-        with patch("src.server._inject_venue_env") as inject_env:
-            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=777.0)) as get_venue_mock:
-                result = await test_venue(
-                    _request_for("clerk-123"),
-                    VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
-                )
+        with patch("src.server.build_venue_from_runtime", return_value=MockVenue(starting_balance=777.0)) as build_mock:
+            result = await test_venue(
+                _request_for("clerk-123"),
+                VenueTestRequest(userId="clerk-123", venue="binance", isPaper=True),
+            )
 
     assert result["ok"] is True
-    assert inject_env.call_args.args[1] == "futures"
-    get_venue_mock.assert_called_once_with("binance:futures")
+    runtime_config = build_mock.call_args.args[0]
+    assert runtime_config.market == "futures"
+    assert runtime_config.registry_name == "binance:futures"
 
 
 @pytest.mark.asyncio
@@ -279,17 +279,17 @@ async def test_binance_connection_test_honors_explicit_futures_suffix(mock_env):
     }
 
     with patch(_SUPABASE_READER, new=AsyncMock(return_value=[venue_row])):
-        with patch("src.server._inject_venue_env") as inject_env:
-            with patch("src.server.get_venue", return_value=MockVenue(starting_balance=654.0)) as get_venue_mock:
-                result = await test_venue(
-                    _request_for("clerk-123"),
-                    VenueTestRequest(userId="clerk-123", venue="binance:futures", isPaper=True),
-                )
+        with patch("src.server.build_venue_from_runtime", return_value=MockVenue(starting_balance=654.0)) as build_mock:
+            result = await test_venue(
+                _request_for("clerk-123"),
+                VenueTestRequest(userId="clerk-123", venue="binance:futures", isPaper=True),
+            )
 
     assert result["ok"] is True
-    assert inject_env.call_args.args[0] == "binance"
-    assert inject_env.call_args.args[1] == "futures"
-    get_venue_mock.assert_called_once_with("binance:futures")
+    runtime_config = build_mock.call_args.args[0]
+    assert runtime_config.venue_name == "binance"
+    assert runtime_config.market == "futures"
+    assert runtime_config.registry_name == "binance:futures"
 
 
 @pytest.mark.asyncio

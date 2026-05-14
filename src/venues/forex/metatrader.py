@@ -21,6 +21,8 @@ import os
 from datetime import datetime, timezone
 
 from src.venues.base import Venue
+from src.venues.forex.position_sizing import units_to_lots
+from src.venues.forex.symbols import normalize_metatrader_symbol
 from src.venues.models import (
     AssetClass, Balance, Candle, Order, Position, SymbolMeta, Ticker,
 )
@@ -113,6 +115,7 @@ class MetaTraderVenue(Venue):
     # ── Ticker ────────────────────────────────────────────────────────────────
 
     async def get_ticker(self, symbol: str) -> Ticker:
+        symbol = normalize_metatrader_symbol(symbol)
         conn  = await self._get_conn()
         price = await conn.get_symbol_price(symbol)
         return Ticker(
@@ -125,6 +128,7 @@ class MetaTraderVenue(Venue):
     # ── Candles ───────────────────────────────────────────────────────────────
 
     async def get_candles(self, symbol: str, timeframe: str, lookback: int) -> list[Candle]:
+        symbol = normalize_metatrader_symbol(symbol)
         conn      = await self._get_conn()
         mt_tf     = _TF_MAP.get(timeframe, "1H")
         raw_bars  = await conn.get_historical_candles(symbol, mt_tf, None, lookback)
@@ -148,6 +152,7 @@ class MetaTraderVenue(Venue):
     # ── Symbol info ───────────────────────────────────────────────────────────
 
     async def get_symbol_info(self, symbol: str) -> SymbolMeta:
+        symbol = normalize_metatrader_symbol(symbol)
         conn = await self._get_conn()
         spec = await conn.get_symbol_specification(symbol)
         return SymbolMeta(
@@ -169,8 +174,7 @@ class MetaTraderVenue(Venue):
         Standard lot = 100,000 units.  MetaAPI volume parameter is in lots.
         Minimum tradeable volume is 0.01 lots (micro-lot).
         """
-        lots = round(units / lot_size, 2)
-        return max(0.01, lots)
+        return units_to_lots(units, lot_size=lot_size)
 
     async def place_order(
         self,
@@ -183,6 +187,7 @@ class MetaTraderVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        symbol = normalize_metatrader_symbol(symbol)
         # quantity arrives as alloc_usd / price (base-currency units).
         # MetaAPI expects lots; convert here so callers stay venue-agnostic.
         lots = self._to_lots(quantity)
@@ -227,6 +232,7 @@ class MetaTraderVenue(Venue):
             return False
 
     async def close_position(self, symbol: str, quantity: float | None = None) -> Order | None:
+        symbol = normalize_metatrader_symbol(symbol)
         if self._is_paper:
             return None
         conn = await self._get_conn()

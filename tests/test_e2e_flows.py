@@ -43,13 +43,21 @@ def _venue_row(venue_type: str = "BINANCE", api_key: str = "k", api_secret: str 
 
 
 def _request_for(user_id: str | None = None):
+    import hmac
+    import hashlib
     import os
     headers = {}
     if os.getenv("PYTHON_INTERNAL_TOKEN"):
         headers["x-internal-token"] = os.getenv("PYTHON_INTERNAL_TOKEN", "")
     if user_id:
         headers["x-user-id"] = user_id
-    return SimpleNamespace(headers=headers)
+    body_bytes = b"{}"
+    secret = os.getenv("TRADINGVIEW_WEBHOOK_SECRET")
+    if secret:
+        headers["X-Signature"] = hmac.new(secret.encode(), body_bytes, hashlib.sha256).hexdigest()
+    async def body():
+        return body_bytes
+    return SimpleNamespace(headers=headers, body=body)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -76,7 +84,7 @@ class TestE2EConnectBinanceAccount:
         mock_v = MockVenue(starting_balance=12_500.0)
 
         with patch("src.services.supabase_reader.get_user_venues", new=AsyncMock(return_value=[venue_row])):
-            with patch("src.server.get_venue", return_value=mock_v):
+            with patch("src.server.build_venue_from_runtime", return_value=mock_v):
                 req = VenueTestRequest(userId="user_e2e_binance", venue="binance", isPaper=True)
                 result = await test_venue(_request_for("user_e2e_binance"), req)
 
@@ -99,7 +107,7 @@ class TestE2EConnectBinanceAccount:
 
         with patch("src.services.supabase_reader.get_user_venues",
                    new=AsyncMock(return_value=[_venue_row("BINANCE", "bad-key", "bad-secret")])):
-            with patch("src.server.get_venue", return_value=failing_venue):
+            with patch("src.server.build_venue_from_runtime", return_value=failing_venue):
                 result = await test_venue(
                     _request_for("user_bad_key"),
                     VenueTestRequest(userId="user_bad_key", venue="binance", isPaper=True),
@@ -328,9 +336,10 @@ class TestE2EKillSwitch:
 class TestE2ETradingViewWebhook:
 
     @pytest.mark.asyncio
-    async def test_e2e_webhook_routes_to_correct_user(self, mock_env, mock_venue):
+    async def test_e2e_webhook_routes_to_correct_user(self, mock_env, mock_venue, monkeypatch):
         """Webhook with user_id routes to that user's agent state."""
         from src.server import execute_signal, SignalRequest, get_state
+        monkeypatch.setenv("TRADINGVIEW_WEBHOOK_SECRET", "test-tv-secret")
 
         uid = f"tv_user_{uuid.uuid4().hex[:6]}"
         s   = get_state(uid)
@@ -357,7 +366,7 @@ class TestE2ETradingViewWebhook:
             with patch("src.server._notifier", new=AsyncMock(emit=AsyncMock())):
                 with patch("src.server._persist_trade", new=AsyncMock()):
                     with patch("src.server._persist_audit", new=AsyncMock()):
-                        result = await execute_signal(req)
+                        result = await execute_signal(_request_for(uid), req)
 
         # Must return a dict — either success or a risk-block
         assert isinstance(result, dict)
@@ -379,13 +388,14 @@ class TestE2ETradingViewWebhook:
 
         with patch("src.server.get_state", return_value=idle):
             with pytest.raises(Exception):  # HTTPException(409)
-                await execute_signal(req)
+                await execute_signal(_request_for("no_agent_user"), req)
 
     @pytest.mark.asyncio
-    async def test_e2e_duplicate_webhook_second_is_handled(self, mock_env, mock_venue):
+    async def test_e2e_duplicate_webhook_second_is_handled(self, mock_env, mock_venue, monkeypatch):
         """Same signal sent twice — system must not execute two identical trades."""
         from src.server import execute_signal, SignalRequest, get_state
         from src.risk_manager import RiskManager
+        monkeypatch.setenv("TRADINGVIEW_WEBHOOK_SECRET", "test-tv-secret")
 
         uid = f"dup_user_{uuid.uuid4().hex[:6]}"
         s   = get_state(uid)
@@ -417,8 +427,8 @@ class TestE2ETradingViewWebhook:
             with patch("src.server._notifier", new=AsyncMock(emit=AsyncMock())):
                 with patch("src.server._persist_trade", new=AsyncMock()):
                     with patch("src.server._persist_audit", new=AsyncMock()):
-                        await execute_signal(req)
-                        await execute_signal(req)  # second identical signal
+                        await execute_signal(_request_for(uid), req)
+                        await execute_signal(_request_for(uid), req)  # second identical signal
 
         # Both may go through (no idempotency yet — documented gap)
         # But neither should crash, and order count must be <= 2

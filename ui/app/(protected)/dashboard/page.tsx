@@ -171,6 +171,12 @@ function humanizeDecisionRationale(rationale?: string | null): string {
   if (lower === "parse error") {
     return "The model response could not be parsed cleanly, so no trade was placed on this tick.";
   }
+  if (lower === "ai_final_response_invalid") {
+    return "The final AI response was not valid trading JSON, so no trade was executed.";
+  }
+  if (lower === "ai_final_response_empty") {
+    return "The final AI response was empty after tool analysis, so no trade was executed.";
+  }
   return text;
 }
 
@@ -1291,31 +1297,33 @@ export default function Dashboard() {
             </motion.section>
 
             <motion.section className="card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.42 }} style={{ padding: "22px 24px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 14, lineHeight: 1 }}>⚡</span>
                 <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.8)" }}>AI Decisions</span>
-                <span style={{ marginLeft: "auto", fontSize: 10, color: connected ? "#22c55e" : "var(--muted)" }}>
-                  {connected ? "● live" : "polling"}
-                </span>
-                <button
-                  onClick={() => setDecisionsExpanded((current) => !current)}
-                  style={{
-                    marginLeft: 10,
-                    borderRadius: 999,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(255,255,255,0.04)",
-                    color: "rgba(255,255,255,0.62)",
-                    padding: "5px 10px",
-                    fontSize: 10,
-                    fontWeight: 700,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    cursor: "pointer",
-                    flexShrink: 0,
-                  }}
-                >
-                  {decisionsExpanded ? "Minimize" : "Expand"}
-                </button>
+                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <span style={{ fontSize: 10, color: connected ? "#22c55e" : "var(--muted)", whiteSpace: "nowrap" }}>
+                    {connected ? "● live" : "polling"}
+                  </span>
+                  <button
+                    onClick={() => setDecisionsExpanded((current) => !current)}
+                    style={{
+                      borderRadius: 999,
+                      border: "1px solid rgba(255,255,255,0.08)",
+                      background: "rgba(255,255,255,0.04)",
+                      color: "rgba(255,255,255,0.62)",
+                      padding: "5px 10px",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {decisionsExpanded ? "Minimize" : "Expand"}
+                  </button>
+                </div>
               </div>
               {/* Last AI Decision — prominent card */}
               {agentActive && decisions.data?.decisions?.[0] && (() => {

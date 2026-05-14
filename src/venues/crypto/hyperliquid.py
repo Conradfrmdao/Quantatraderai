@@ -26,8 +26,9 @@ class HyperliquidVenue(Venue):
     name = "hyperliquid"
     asset_class = "crypto_perp"
 
-    def __init__(self, api: HyperliquidAPI | None = None):
+    def __init__(self, api: HyperliquidAPI | None = None, is_paper: bool | None = None):
         self.api = api or HyperliquidAPI()
+        self.is_paper = bool(is_paper) if is_paper is not None else False
 
     async def get_balances(self) -> list[Balance]:
         state = await self.api.get_user_state()
@@ -103,6 +104,20 @@ class HyperliquidVenue(Venue):
         take_profit: float | None = None,
         leverage: float | None = None,
     ) -> Order:
+        if getattr(self, "is_paper", False):
+            import uuid
+            return Order(
+                order_id=str(uuid.uuid4()),
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                quantity=quantity,
+                price=price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                status="filled",
+                filled_quantity=quantity,
+            )
         is_buy = side == "buy"
         if order_type == "market":
             result = (

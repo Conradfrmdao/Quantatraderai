@@ -48,7 +48,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -72,6 +72,7 @@ from src.venues.base import Venue
 from src.venues.crypto.spot_portfolio import PREFERRED_SPOT_QUOTES
 from src.venues.crypto.spot_portfolio import base_currency_from_symbol
 from src.venues.registry import get_venue
+from src.venues.runtime import VenueRuntimeConfig, build_venue_from_runtime
 from src.indicators.local_indicators import compute_all, latest
 from src.utils.prompt_utils import round_or_none
 from src.alerts.notifier import build_notifier, TradingEvent
@@ -569,22 +570,13 @@ async def _load_connected_snapshot(s: "AgentState", clerk_user_id: str | None) -
             s.connected_snapshot_at = now
             return account, positions, True
 
-        stored_market = str(match.get("market") or _default_market_for_venue_type(venue_type)).lower()
-        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(venue_key, stored_market)
-        _inject_venue_env(
-            venue_match_key,
-            venue_market,
+        runtime_config, _venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+            user_id=clerk_user_id,
+            match=match,
+            requested_venue=venue_key,
             is_paper=False,
-            api_key=match.get("apiKey") or "",
-            api_secret=match.get("apiSecret") or "",
-            api_passphrase=match.get("apiPassphrase") or "",
-            account_id=match.get("accountId") or "",
-            network=match.get("network") or "",
-            meta_token=match.get("metaApiToken") or "",
-            meta_account_id=match.get("metaApiAccountId") or "",
-            ccxt_exchange=match.get("ccxtExchangeId") or "",
         )
-        venue = get_venue(venue_registry_name)
+        venue = build_venue_from_runtime(runtime_config)
         venue.is_paper = False
         balances = await venue.get_balances()
         positions_raw = await venue.get_positions()
@@ -1253,6 +1245,7 @@ async def _tick_for(s: "AgentState"):
             return
 
     # ── For FOREX, refresh price cache via REST ticker (no Binance stream) ─
+    ticker_context: dict[str, dict[str, float]] = {}
     if _is_forex:
         for sym in s.symbols:
             try:
@@ -1261,6 +1254,11 @@ async def _tick_for(s: "AgentState"):
                        if (ticker.bid and ticker.ask) else ticker.last)
                 if mid and mid > 0:
                     s.price_cache[sym.replace("/", "")] = mid
+                ticker_context[sym] = {
+                    "bid": float(ticker.bid or 0),
+                    "ask": float(ticker.ask or 0),
+                    "spread_pips": float((getattr(ticker, "extra", {}) or {}).get("spread_pips") or 0),
+                }
             except Exception as _te:
                 s.log(f"Ticker poll error {sym}: {_te}")
 
@@ -1293,6 +1291,9 @@ async def _tick_for(s: "AgentState"):
             market_sections.append({
                 "asset":         sym,
                 "current_price": round(s.price_cache.get(px_key, 0), 5 if _is_forex else 4),
+                "bid":           ticker_context.get(sym, {}).get("bid") if _is_forex else None,
+                "ask":           ticker_context.get(sym, {}).get("ask") if _is_forex else None,
+                "spread_pips":   ticker_context.get(sym, {}).get("spread_pips") if _is_forex else None,
                 "rsi14":         rsi_val,
                 "ema20":         ema_val,
                 "macd":          macd_val,
@@ -1626,6 +1627,8 @@ async def _tick_for(s: "AgentState"):
                 if _beta > 0 and alloc > _beta:
                     alloc = _beta; dec["allocation_usd"] = alloc
                 dec["current_price"] = s.price_cache.get(sym.replace("/", ""), 0)
+                if _is_forex and sym in ticker_context:
+                    dec.update(ticker_context[sym])
                 ok, reason, dec = s.risk_mgr.validate_trade(dec, acc_state_paper, s.initial_equity or 0)
                 if not ok:
                     s.log(f"[PAPER] BLOCKED {sym}: {reason}")
@@ -1761,6 +1764,8 @@ async def _tick_for(s: "AgentState"):
             pass
 
         dec["current_price"] = s.price_cache.get(sym.replace("/", ""), 0)
+        if _is_forex and sym in ticker_context:
+            dec.update(ticker_context[sym])
 
         # G24: Slippage prediction — adjust take-profit upward to account for fill cost
         try:
@@ -2897,14 +2902,28 @@ def _apply_market_data_guards(decisions: list[dict] | None, data_status_map: dic
             out["allocation_usd"] = 0.0
             out["tp_price"] = None
             out["sl_price"] = None
+            out["reason_code"] = (
+                "market_data_stale"
+                if data_status.get("status") == "stale"
+                else "market_data_not_ready"
+            )
+            if data_status.get("status") == "stale":
+                out["rationale"] = "Market data is stale. Agent paused trading for safety."
             action = "hold"
 
         if data_status and not data_status.get("ready"):
-            out["rationale"] = str(
-                data_status.get("fallback_rationale")
-                or out.get("rationale")
-                or "Market data is not ready for this tick."
-            )
+            if data_status.get("status") == "stale" and out.get("reason_code") == "market_data_stale":
+                out["rationale"] = "Market data is stale. Agent paused trading for safety."
+            else:
+                out["rationale"] = str(
+                    data_status.get("fallback_rationale")
+                    or out.get("rationale")
+                    or "Market data is not ready for this tick."
+                )
+                out.setdefault(
+                    "reason_code",
+                    "market_data_stale" if data_status.get("status") == "stale" else "market_data_not_ready",
+                )
         elif action == "hold":
             out["rationale"] = _normalize_hold_rationale(out.get("rationale"), data_status)
 
@@ -2931,6 +2950,74 @@ def _resolve_test_venue_target(requested_venue: str, stored_market: str | None =
         return "binance", f"binance:{market}", market
 
     return requested, requested, market
+
+
+def _runtime_config_from_saved_venue(
+    *,
+    user_id: str | None,
+    match: dict[str, Any],
+    requested_venue: str,
+    is_paper: bool | None = None,
+) -> tuple[VenueRuntimeConfig, str, str]:
+    """Build a per-user venue runtime config from a saved DB venue row."""
+    venue_type = str(match.get("type") or "")
+    venue_key = _VENUE_TYPE_TO_NAME.get(venue_type, requested_venue).lower()
+    stored_market = str(match.get("market") or _default_market_for_venue_type(venue_type)).lower()
+    venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(
+        requested_venue or venue_key,
+        stored_market,
+    )
+    runtime = VenueRuntimeConfig(
+        user_id=user_id,
+        venue_id=str(match.get("id") or "") or None,
+        venue_name=venue_match_key,
+        registry_name=venue_registry_name,
+        market=venue_market,
+        is_paper=bool(match.get("isPaper", True)) if is_paper is None else bool(is_paper),
+        network=str(match.get("network") or ""),
+        api_key=str(match.get("apiKey") or ""),
+        api_secret=str(match.get("apiSecret") or ""),
+        api_passphrase=str(match.get("apiPassphrase") or ""),
+        account_id=str(match.get("accountId") or ""),
+        meta_api_token=str(match.get("metaApiToken") or ""),
+        meta_api_account_id=str(match.get("metaApiAccountId") or ""),
+        ccxt_exchange_id=str(match.get("ccxtExchangeId") or ""),
+    )
+    return runtime, venue_registry_name, venue_market
+
+
+def _runtime_config_from_inputs(
+    *,
+    user_id: str | None,
+    venue_name: str,
+    registry_name: str,
+    market: str,
+    is_paper: bool,
+    api_key: str | None = None,
+    api_secret: str | None = None,
+    api_passphrase: str = "",
+    account_id: str = "",
+    network: str = "",
+    meta_token: str = "",
+    meta_account_id: str = "",
+    ccxt_exchange: str = "",
+) -> VenueRuntimeConfig:
+    return VenueRuntimeConfig(
+        user_id=user_id,
+        venue_id=None,
+        venue_name=venue_name,
+        registry_name=registry_name,
+        market=market,
+        is_paper=is_paper,
+        network=network,
+        api_key=api_key or "",
+        api_secret=api_secret or "",
+        api_passphrase=api_passphrase,
+        account_id=account_id,
+        meta_api_token=meta_token,
+        meta_api_account_id=meta_account_id,
+        ccxt_exchange_id=ccxt_exchange,
+    )
 
 # Per-venue env-var injection so adapters find their credentials
 def _inject_venue_env(venue_name: str, market: str, is_paper: bool,
@@ -2964,6 +3051,7 @@ def _inject_venue_env(venue_name: str, market: str, is_paper: bool,
     elif v in ("bybit", "okx", "kraken", "coinbase", "ccxt"):
         if api_key:        os.environ["CCXT_API_KEY"]    = api_key
         if api_secret:     os.environ["CCXT_API_SECRET"] = api_secret
+        if api_passphrase: os.environ["CCXT_API_PASSPHRASE"] = api_passphrase
         if ccxt_exchange:  os.environ["CCXT_EXCHANGE"]   = ccxt_exchange
         os.environ["CCXT_MARKET"] = market or "spot"
         os.environ["CCXT_SANDBOX"] = "true" if is_paper else "false"
@@ -2988,23 +3076,13 @@ async def _build_user_bound_venue(clerk_user_id: str, requested_venue: str) -> t
     if not match:
         return None
 
-    stored_market = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
-    venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, stored_market)
-    _inject_venue_env(
-        venue_match_key,
-        market=venue_market,
-        is_paper=bool(match.get("isPaper", True)),
-        api_key=match.get("apiKey") or "",
-        api_secret=match.get("apiSecret") or "",
-        api_passphrase=match.get("apiPassphrase") or "",
-        account_id=match.get("accountId") or "",
-        network=match.get("network") or "",
-        meta_token=match.get("metaApiToken") or "",
-        meta_account_id=match.get("metaApiAccountId") or "",
-        ccxt_exchange=match.get("ccxtExchangeId") or "",
+    runtime_config, venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+        user_id=clerk_user_id,
+        match=match,
+        requested_venue=v_key,
     )
-    venue = get_venue(venue_registry_name)
-    venue.is_paper = bool(match.get("isPaper", True))
+    venue = build_venue_from_runtime(runtime_config)
+    venue.is_paper = runtime_config.is_paper
     return venue, match, venue_registry_name, venue_market
 
 
@@ -3096,6 +3174,7 @@ async def _do_start(
     meta_account_id = ""
     ccxt_exchange  = ""
     saved_market   = _default_market_for_backend_name(v_key)
+    matched_saved_venue: dict[str, Any] | None = None
 
     if user_id:
         try:
@@ -3108,6 +3187,7 @@ async def _do_start(
                 if name == v_key:
                     match = v; break
             if match:
+                matched_saved_venue = match
                 api_key        = api_key        or match.get("apiKey")
                 api_secret     = api_secret     or match.get("apiSecret")
                 api_passphrase = match.get("apiPassphrase") or ""
@@ -3130,11 +3210,6 @@ async def _do_start(
     elif not api_key and v_key == "hyperliquid":
         api_key = CONFIG.get("hyperliquid_private_key") or ""
 
-    _inject_venue_env(
-        v_key, market, is_paper, api_key or "", api_secret or "",
-        api_passphrase, account_id, network, meta_token, meta_account_id, ccxt_exchange,
-    )
-
     # Resolve per-user state — never mutate the global _state for a specific user.
     final_state = get_state(user_id) if user_id else _state
 
@@ -3142,10 +3217,32 @@ async def _do_start(
     # fails, final_state is completely unchanged (atomic swap on success only).
     try:
         asset_class = _infer_asset_class(v_key, market)
-        if v_key == "binance":
-            _new_venue  = get_venue(f"binance:{market}")
+        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, market)
+        if matched_saved_venue:
+            runtime_config, venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+                user_id=user_id,
+                match=matched_saved_venue,
+                requested_venue=venue_registry_name,
+                is_paper=is_paper,
+            )
         else:
-            _new_venue  = get_venue(venue_name)
+            runtime_config = _runtime_config_from_inputs(
+                user_id=user_id,
+                venue_name=venue_match_key,
+                registry_name=venue_registry_name,
+                market=venue_market,
+                is_paper=is_paper,
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+                account_id=account_id,
+                network=network,
+                meta_token=meta_token,
+                meta_account_id=meta_account_id,
+                ccxt_exchange=ccxt_exchange,
+            )
+        _new_venue = build_venue_from_runtime(runtime_config)
+        market = venue_market
         # Propagate paper-mode flag to venue so adapters can short-circuit live API calls
         _new_venue.is_paper = is_paper
         _new_risk  = RiskManager(venue=v_key, asset_class=asset_class)
@@ -3658,16 +3755,13 @@ async def test_venue(request: Request, req: VenueTestRequest):
             if not (api_key.startswith("0x") and len(api_key) >= 64):
                 return {"ok": False, "error": "Polymarket private key must be 0x-prefixed and 32 bytes long."}
 
-        # Inject env vars for this test only
-        _inject_venue_env(
-            venue_match_key, venue_market, req.isPaper,
-            api_key, api_sec, passph, acct_id,
-            match.get("network") or "",
-            meta_tok, meta_acct,
-            match.get("ccxtExchangeId") or "",
+        runtime_config, venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+            user_id=user_id,
+            match=match,
+            requested_venue=req.venue,
+            is_paper=req.isPaper,
         )
-
-        venue = get_venue(venue_registry_name)
+        venue = build_venue_from_runtime(runtime_config)
         balances = await venue.get_balances()
 
         # Phase 4: Withdrawal-permission warning for Binance / CCXT venues.

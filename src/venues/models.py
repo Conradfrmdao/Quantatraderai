@@ -30,6 +30,7 @@ class Ticker:
     last: float
     bid: float | None = None
     ask: float | None = None
+    extra: dict = field(default_factory=dict)
 
 
 @dataclass

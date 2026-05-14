@@ -56,7 +56,13 @@ class BinanceVenue(Venue):
     margin semantics are used.
     """
 
-    def __init__(self, market: str | None = None):
+    def __init__(
+        self,
+        market: str | None = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        is_paper: bool | None = None,
+    ):
         try:
             import ccxt  # type: ignore
         except ImportError as e:
@@ -64,8 +70,8 @@ class BinanceVenue(Venue):
                 "ccxt is required for BinanceVenue. Run `poetry install`."
             ) from e
 
-        # Read live from os.environ so _inject_venue_env changes are picked up.
-        # CONFIG is a static snapshot from startup; os.environ reflects injected creds.
+        # Authenticated user venues pass credentials directly. os.environ remains
+        # only a local/dev fallback for unauthenticated scripts.
         market = (market or os.environ.get("BINANCE_MARKET") or CONFIG.get("binance_market") or "futures").lower()
         self._market = market
 
@@ -73,8 +79,8 @@ class BinanceVenue(Venue):
             """Strip non-ASCII characters from API keys to prevent latin-1 encode errors."""
             return s.encode("ascii", errors="ignore").decode("ascii").strip()
 
-        _raw_key = os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or ""
-        _raw_sec = os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or ""
+        _raw_key = api_key if api_key is not None else (os.environ.get("BINANCE_API_KEY") or CONFIG.get("binance_api_key") or "")
+        _raw_sec = api_secret if api_secret is not None else (os.environ.get("BINANCE_API_SECRET") or CONFIG.get("binance_api_secret") or "")
         _clean_key = _ascii(_raw_key)
         _clean_sec = _ascii(_raw_sec)
 
@@ -84,11 +90,10 @@ class BinanceVenue(Venue):
             "enableRateLimit": True,
         }
 
-        # Diagnostic — log key shape without revealing value
+        # Diagnostic — log only lengths, never key fragments.
         logging.info(
-            "Binance API key: len=%d first3=%s last3=%s | secret: len=%d",
-            len(_clean_key), _clean_key[:3] if _clean_key else "???",
-            _clean_key[-3:] if _clean_key else "???", len(_clean_sec),
+            "Binance credentials configured: api_key_len=%d secret_len=%d market=%s",
+            len(_clean_key), len(_clean_sec), market,
         )
         if len(_clean_key) < 10:
             logging.warning("Binance API key looks too short (len=%d) — may be missing or corrupt", len(_clean_key))
@@ -96,7 +101,7 @@ class BinanceVenue(Venue):
             logging.warning("Binance API secret looks too short (len=%d) — may be missing or corrupt", len(_clean_sec))
 
         sandbox_raw = os.environ.get("BINANCE_SANDBOX") or str(CONFIG.get("binance_sandbox", "true"))
-        sandbox = sandbox_raw.lower() in {"1", "true", "yes"}
+        sandbox = bool(is_paper) if is_paper is not None else sandbox_raw.lower() in {"1", "true", "yes"}
 
         if market == "futures":
             self.client = ccxt.binanceusdm(cfg)  # USD-M perpetuals

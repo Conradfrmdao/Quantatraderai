@@ -43,7 +43,15 @@ class CcxtVenue(Venue):
     name = "ccxt"
     asset_class = "crypto_spot"  # overridden in __init__ based on CCXT_MARKET env
 
-    def __init__(self, exchange_name: str | None = None):
+    def __init__(
+        self,
+        exchange_name: str | None = None,
+        api_key: str | None = None,
+        api_secret: str | None = None,
+        api_passphrase: str | None = None,
+        market: str | None = None,
+        is_paper: bool | None = None,
+    ):
         try:
             import ccxt  # type: ignore
         except ImportError as e:
@@ -59,7 +67,7 @@ class CcxtVenue(Venue):
         def _ascii(s: str) -> str:
             return s.encode("ascii", errors="ignore").decode("ascii").strip()
 
-        market_pref = (os.environ.get("CCXT_MARKET") or CONFIG.get("ccxt_market") or "spot").lower()
+        market_pref = (market or os.environ.get("CCXT_MARKET") or CONFIG.get("ccxt_market") or "spot").lower()
         options: dict[str, str] = {}
         if market_pref in ("futures", "perpetual", "perp", "swap"):
             # Best-effort default across the major derivatives exchanges we expose.
@@ -69,13 +77,14 @@ class CcxtVenue(Venue):
 
         exchange_cls = getattr(ccxt, exchange_id)
         self.client = exchange_cls({
-            "apiKey": _ascii(os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or ""),
-            "secret": _ascii(os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or ""),
+            "apiKey": _ascii(api_key if api_key is not None else (os.environ.get("CCXT_API_KEY") or CONFIG.get("ccxt_api_key") or "")),
+            "secret": _ascii(api_secret if api_secret is not None else (os.environ.get("CCXT_API_SECRET") or CONFIG.get("ccxt_api_secret") or "")),
+            "password": _ascii(api_passphrase if api_passphrase is not None else (os.environ.get("CCXT_API_PASSPHRASE") or CONFIG.get("ccxt_api_passphrase") or "")),
             "enableRateLimit": True,
             "options": options,
         })
         sandbox_val = os.environ.get("CCXT_SANDBOX") or str(CONFIG.get("ccxt_sandbox", "true"))
-        sandbox = sandbox_val.lower() in {"1", "true", "yes"}
+        sandbox = bool(is_paper) if is_paper is not None else sandbox_val.lower() in {"1", "true", "yes"}
         if sandbox and hasattr(self.client, "set_sandbox_mode"):
             try:
                 self.client.set_sandbox_mode(True)
@@ -92,7 +101,7 @@ class CcxtVenue(Venue):
         else:
             self.asset_class = "crypto_spot"
         self._market_pref = market_pref
-        self.is_paper = False
+        self.is_paper = bool(is_paper) if is_paper is not None else False
         self._spot_balances_cache: list[Balance] = []
         self._spot_balances_at: float = 0.0
         self._spot_cost_basis: dict[str, dict[str, float]] = {}

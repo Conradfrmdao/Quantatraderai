@@ -39,7 +39,14 @@ class HyperliquidAPI:
     the trading agent.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        private_key: str | None = None,
+        mnemonic: str | None = None,
+        network: str | None = None,
+        base_url: str | None = None,
+        vault_address: str | None = None,
+    ):
         """Initialize wallet credentials and instantiate exchange clients.
 
         Raises:
@@ -48,25 +55,27 @@ class HyperliquidAPI:
         """
         self._meta_cache = None
         self._hip3_meta_cache = {}  # {dex_name: meta_response}
-        if "hyperliquid_private_key" in CONFIG and CONFIG["hyperliquid_private_key"]:
-            self.wallet = Account.from_key(CONFIG["hyperliquid_private_key"])
-        elif "mnemonic" in CONFIG and CONFIG["mnemonic"]:
+        configured_private_key = private_key or CONFIG.get("hyperliquid_private_key")
+        configured_mnemonic = mnemonic or CONFIG.get("mnemonic")
+        if configured_private_key:
+            self.wallet = Account.from_key(configured_private_key)
+        elif configured_mnemonic:
             Account.enable_unaudited_hdwallet_features()
-            self.wallet = Account.from_mnemonic(CONFIG["mnemonic"])
+            self.wallet = Account.from_mnemonic(configured_mnemonic)
         else:
             raise ValueError("Either HYPERLIQUID_PRIVATE_KEY/LIGHTER_PRIVATE_KEY or MNEMONIC must be provided")
         # Choose base URL: allow override via env-config; fallback to network selection
-        network = (CONFIG.get("hyperliquid_network") or "mainnet").lower()
-        base_url = CONFIG.get("hyperliquid_base_url")
-        if not base_url:
-            if network == "testnet":
-                base_url = getattr(constants, "TESTNET_API_URL", constants.MAINNET_API_URL)
+        network_name = (network or CONFIG.get("hyperliquid_network") or "mainnet").lower()
+        resolved_base_url = base_url or CONFIG.get("hyperliquid_base_url")
+        if not resolved_base_url:
+            if network_name == "testnet":
+                resolved_base_url = getattr(constants, "TESTNET_API_URL", constants.MAINNET_API_URL)
             else:
-                base_url = constants.MAINNET_API_URL
-        self.base_url = base_url
+                resolved_base_url = constants.MAINNET_API_URL
+        self.base_url = resolved_base_url
         # Account address: the main wallet that holds funds.
         # The agent wallet (private key) is just the authorized signer.
-        self.account_address = CONFIG.get("hyperliquid_vault_address")
+        self.account_address = vault_address or CONFIG.get("hyperliquid_vault_address")
         # The address to query for state — main account if set, otherwise the signer
         self.query_address = self.account_address or self.wallet.address
         self._build_clients()

@@ -419,6 +419,31 @@ class TradingAgent:
         seen_tool_calls: set[tuple[str, str]] = set()
         final_ctx = base_ctx
 
+        def _safe_hold_payload(
+            *,
+            reason: str,
+            rationale: str,
+            reason_code: str,
+            model: str | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "reasoning": reason,
+                "reason_code": reason_code,
+                "trace_id": final_ctx.trace_id,
+                "provider": final_ctx.provider,
+                "model": model or final_ctx.model,
+                "trade_decisions": [{
+                    "asset": a,
+                    "action": "hold",
+                    "allocation_usd": 0.0,
+                    "tp_price": None,
+                    "sl_price": None,
+                    "exit_plan": "",
+                    "rationale": rationale,
+                    "reason_code": reason_code,
+                } for a in assets],
+            }
+
         for _iteration in range(6):
             try:
                 response, final_ctx = await _call_llm(messages, use_tools=not force_no_tools)
@@ -427,6 +452,7 @@ class TradingAgent:
                     raise
                 return {
                     "reasoning": e.definition.user_message,
+                    "reason_code": e.metadata.get("reason_code") or e.code.value,
                     "trace_id": e.trace_id,
                     "provider": final_ctx.provider,
                     "model": final_ctx.model,
@@ -438,6 +464,7 @@ class TradingAgent:
                         "sl_price": None,
                         "exit_plan": "",
                         "rationale": e.definition.user_message,
+                        "reason_code": e.metadata.get("reason_code") or e.code.value,
                     } for a in assets],
                 }
             except Exception as e:
@@ -492,6 +519,13 @@ class TradingAgent:
 
             if not raw_text.strip():
                 logging.error("Empty response from LLM provider")
+                if force_no_tools:
+                    return _safe_hold_payload(
+                        reason="The final AI response was empty",
+                        rationale="The final AI response was empty after tool analysis, so no trade was executed.",
+                        reason_code="ai_final_response_empty",
+                        model=response.model or final_ctx.model,
+                    )
                 break
 
             cleaned = raw_text.strip()
@@ -524,6 +558,7 @@ class TradingAgent:
                             normalized.append(item)
                     return {
                         "reasoning": reasoning_text,
+                        "reason_code": parsed.get("reason_code"),
                         "trade_decisions": normalized,
                         "trace_id": final_ctx.trace_id,
                         "provider": final_ctx.provider,
@@ -549,6 +584,7 @@ class TradingAgent:
                     return sanitized
                 return {
                     "reasoning": "Parse error",
+                    "reason_code": "ai_output_invalid",
                     "trace_id": final_ctx.trace_id,
                     "provider": final_ctx.provider,
                     "model": response.model or final_ctx.model,
@@ -560,21 +596,15 @@ class TradingAgent:
                         "sl_price": None,
                         "exit_plan": "",
                         "rationale": "The AI response could not be validated safely, so no trade was executed.",
+                        "reason_code": "ai_output_invalid",
                     } for a in assets],
                 }
 
-        return {
-            "reasoning": "The model could not complete a safe analysis on this tick",
-            "trace_id": final_ctx.trace_id,
-            "provider": final_ctx.provider,
-            "model": final_ctx.model,
-            "trade_decisions": [{
-                "asset": a,
-                "action": "hold",
-                "allocation_usd": 0.0,
-                "tp_price": None,
-                "sl_price": None,
-                "exit_plan": "",
-                "rationale": "The model could not complete a safe analysis on this tick, so no trade was executed."
-            } for a in assets]
-        }
+        return _safe_hold_payload(
+            reason="The model could not complete a safe final analysis on this tick",
+            rationale=(
+                "The model reached the tool-analysis safety limit and did not return valid final trading JSON, "
+                "so no trade was executed."
+            ),
+            reason_code="ai_final_response_invalid",
+        )

@@ -32,6 +32,15 @@ jobs:
       - name: Python AI governance tests
         run: poetry run pytest tests/test_ai_governance.py tests/test_ai_streaming.py tests/test_ai_isolation.py tests/test_ai_observability.py tests/test_server_integration.py tests/test_council.py -q
 
+      - name: Python forex trust gate
+        run: poetry run pytest tests/test_forex_oanda.py tests/test_forex_metatrader.py tests/test_forex_utils.py -q
+
+      - name: Python crypto trust gate
+        run: poetry run pytest tests/test_crypto_binance.py tests/test_crypto_ccxt.py tests/test_crypto_hyperliquid.py -q
+
+      - name: Python market-data and failure gate
+        run: poetry run pytest tests/test_market_data_freshness.py tests/test_failure_modes.py tests/test_venue_flows.py -q
+
       - name: Python release load gate
         run: poetry run pytest tests/test_load.py -q
 
