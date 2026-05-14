@@ -112,7 +112,7 @@ async def evaluate_multi_leg_rules(
             import os, asyncpg
             db_url = os.getenv("DATABASE_URL", "")
             if db_url:
-                conn = await asyncpg.connect(db_url, timeout=5)
+                conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
                 try:
                     rows = await conn.fetch(
                         'SELECT id, text FROM "StrategyRule" WHERE "userId"=$1 AND "isActive"=true',

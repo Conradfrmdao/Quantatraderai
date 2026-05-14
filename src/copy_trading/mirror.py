@@ -26,7 +26,7 @@ async def get_followers(leader_user_id: str) -> list[dict[str, Any]]:
     if not db_url:
         return []
     try:
-        conn = await asyncpg.connect(db_url, timeout=5)
+        conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
         try:
             rows = await conn.fetch(
                 """

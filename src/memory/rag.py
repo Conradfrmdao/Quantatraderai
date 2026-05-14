@@ -76,7 +76,7 @@ async def store_decision(
         vector  = await _embed(text)
         vec_str = "[" + ",".join(f"{v:.6f}" for v in vector) + "]"
         import asyncpg, uuid
-        conn = await asyncpg.connect(db_url, timeout=8)
+        conn = await asyncpg.connect(db_url, timeout=8, statement_cache_size=0)
         try:
             row_id = str(uuid.uuid4())
             await conn.execute(
@@ -109,7 +109,7 @@ async def retrieve_similar(
         vector  = await _embed(context_summary)
         vec_str = "[" + ",".join(f"{v:.6f}" for v in vector) + "]"
         import asyncpg
-        conn = await asyncpg.connect(db_url, timeout=8)
+        conn = await asyncpg.connect(db_url, timeout=8, statement_cache_size=0)
         try:
             where = '"userId"=$1'
             args: list = [user_id, vec_str, top_k]
@@ -146,7 +146,7 @@ async def update_quality(decision_id: str, pnl: float, initial_alloc: float) -> 
     delta     = pnl_pct * 0.1              # gentle update ±10% of PnL %
     try:
         import asyncpg
-        conn = await asyncpg.connect(os.getenv("DATABASE_URL"), timeout=8)
+        conn = await asyncpg.connect(os.getenv("DATABASE_URL"), timeout=8, statement_cache_size=0)
         try:
             await conn.execute(
                 'UPDATE "DecisionEmbedding" SET "qualityScore"=GREATEST(0.0, LEAST(1.0, "qualityScore" + $2)) WHERE "id"=$1',

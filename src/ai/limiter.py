@@ -128,7 +128,13 @@ class PostgresCounterStore(CounterStore):
         if self._pool is None:
             import asyncpg
 
-            self._pool = await asyncpg.create_pool(self.url, min_size=1, max_size=5, timeout=5)
+            self._pool = await asyncpg.create_pool(
+                self.url,
+                min_size=1,
+                max_size=5,
+                timeout=5,
+                statement_cache_size=0,
+            )
         return self._pool
 
     async def incr(self, key: str, amount: int, ttl_s: int) -> int:

@@ -50,7 +50,7 @@ async def get_adaptive_position_pct(
         if not db_url:
             return default_pct
 
-        conn = await asyncpg.connect(db_url, timeout=5)
+        conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
         try:
             rows = await conn.fetch(
                 """

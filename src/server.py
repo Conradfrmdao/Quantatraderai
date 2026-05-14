@@ -109,7 +109,7 @@ async def _get_user_plan(clerk_user_id: str | None) -> str:
         return cached[0]
     try:
         import asyncpg
-        conn = await asyncpg.connect(os.getenv("DATABASE_URL", ""), timeout=5)
+        conn = await asyncpg.connect(os.getenv("DATABASE_URL", ""), timeout=5, statement_cache_size=0)
         try:
             row = await conn.fetchrow('SELECT plan FROM "User" WHERE "clerkId" = $1', clerk_user_id)
             plan = str(row["plan"]) if row else "FREE"
@@ -163,6 +163,7 @@ async def _get_pool():
                 min_size=2, max_size=10,
                 command_timeout=8,
                 max_inactive_connection_lifetime=300,
+                statement_cache_size=0,
             )
             logger.info("asyncpg pool initialised (min=2 max=10)")
             return _db_pool
@@ -3729,7 +3730,7 @@ async def get_rag_memories(request: Request, userId: Optional[str] = None, limit
         return {"memories": []}
     try:
         import asyncpg
-        conn = await asyncpg.connect(db_url, timeout=5)
+        conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
         try:
             rows = await conn.fetch(
                 'SELECT de."id",de."asset",de."action",de."rationale",de."qualityScore",de."createdAt" '
@@ -3753,7 +3754,7 @@ async def delete_rag_memory(request: Request, memory_id: str, userId: Optional[s
         raise HTTPException(status_code=400, detail="Database not configured")
     try:
         import asyncpg
-        conn = await asyncpg.connect(db_url, timeout=5)
+        conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
         try:
             await conn.execute(
                 'DELETE FROM "DecisionEmbedding" de USING "User" u '
@@ -3843,7 +3844,7 @@ async def get_var(request: Request, simulations: int = 10000, userId: Optional[s
             import asyncpg
             db_url = os.getenv("DATABASE_URL", "")
             if db_url:
-                conn = await asyncpg.connect(db_url, timeout=5)
+                conn = await asyncpg.connect(db_url, timeout=5, statement_cache_size=0)
                 try:
                     rows = await conn.fetch(
                         'SELECT ep.equity FROM "EquityPoint" ep '

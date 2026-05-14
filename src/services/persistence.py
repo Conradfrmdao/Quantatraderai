@@ -24,7 +24,7 @@ async def _connect():
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         return None
-    return await asyncpg.connect(db_url, timeout=_DB_TIMEOUT)
+    return await asyncpg.connect(db_url, timeout=_DB_TIMEOUT, statement_cache_size=0)
 
 
 async def _user_id_for_clerk(conn, clerk_user_id: str) -> str | None:
