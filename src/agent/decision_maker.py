@@ -16,7 +16,11 @@ import logging
 import os
 import pathlib
 from datetime import datetime
+from typing import Any
 
+from src.ai.errors import AIError, AIErrorCode
+from src.ai.governance import AIRequestContext, governed_complete, new_trace_id
+from src.ai.redaction import redact_text
 from src.agent.providers.factory import get_provider
 from src.config_loader import CONFIG
 from src.indicators.local_indicators import compute_all, last_n, latest
@@ -24,6 +28,7 @@ from src.indicators.local_indicators import compute_all, last_n, latest
 _LOG_DIR = pathlib.Path(os.environ.get("LOG_DIR", str(pathlib.Path(__file__).parent.parent.parent / "logs")))
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _LLM_LOG = str(_LOG_DIR / "llm_requests.log")
+_DEBUG_PROMPTS = os.getenv("AI_PROMPT_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 
 
 class TradingAgent:
@@ -82,9 +87,17 @@ class TradingAgent:
             [p.name for p in self._fallback_chain[1:]],
         )
 
-    def decide_trade(self, assets, context):
-        """Decide for multiple assets in one call."""
-        return self._decide(context, assets=assets)
+    def decide_trade(self, assets, context, ai_context: AIRequestContext | None = None, stream_handler=None):
+        """Sync wrapper for tests/CLI paths that are not already async."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.decide_trade_async(assets, context, ai_context=ai_context, stream_handler=stream_handler))
+        raise RuntimeError("decide_trade() cannot be called from an active event loop. Use await decide_trade_async(...).")
+
+    async def decide_trade_async(self, assets, context, ai_context: AIRequestContext | None = None, stream_handler=None):
+        """Decide for multiple assets in one governed async call."""
+        return await self._decide_async(context, assets=assets, ai_context=ai_context, stream_handler=stream_handler)
 
     # ── Venue-specific system prompts ─────────────────────────────────────────
 
@@ -157,15 +170,15 @@ class TradingAgent:
         "- Do not emit Markdown or extra properties.\n"
     )
 
-    def _decide(self, context, assets):
-        """Dispatch decision request to LLM and enforce output contract."""
+    async def _decide_async(self, context, assets, ai_context: AIRequestContext | None = None, stream_handler=None):
+        """Dispatch decision request through the governed AI boundary."""
         is_forex = self.venue_context == "forex"
         enable_tools = CONFIG.get("enable_tool_calling", True)
         assets_str = json.dumps(list(assets))
 
         if is_forex:
             system_prompt = self._FOREX_SYSTEM_PROMPT.replace("{assets}", assets_str)
-            tools: list = []  # fetch_indicator is Hyperliquid-only; not valid for FOREX
+            tools: list[dict[str, Any]] = []
         else:
             _tool_section = (
                 "Tool usage\n"
@@ -203,52 +216,92 @@ class TradingAgent:
         if self.system_prompt_addendum:
             system_prompt = self.system_prompt_addendum + "\n\n" + system_prompt
 
-        messages = [{"role": "user", "content": context}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": context}]
 
-        def _log_request(model, messages_to_log):
+        base_ctx = ai_context or AIRequestContext(
+            user_id="",
+            trace_id=new_trace_id(),
+            plan="FREE",
+            action="agent_decision",
+            provider=self.provider.name,
+            model=self.provider.model,
+            mode="paper",
+            venue=self.venue_context,
+            symbol=",".join(assets),
+        )
+        if not base_ctx.trace_id:
+            base_ctx.trace_id = new_trace_id()
+
+        def _log_request(model_name: str, messages_to_log: list[dict[str, Any]]) -> None:
+            if not _DEBUG_PROMPTS:
+                return
             with open(_LLM_LOG, "a", encoding="utf-8") as f:
                 f.write(f"\n\n=== {datetime.now()} ===\n")
-                f.write(f"Model: {model}\n")
+                f.write(f"Model: {model_name}\n")
                 f.write(f"Messages count: {len(messages_to_log)}\n")
-                # Log last message content (truncated)
                 last = messages_to_log[-1]
-                content_str = str(last.get("content", ""))[:500]
+                content_str = redact_text(str(last.get('content', "")))[:500]
                 f.write(f"Last message role: {last.get('role')}\n")
                 f.write(f"Last message content (truncated): {content_str}\n")
 
-        def _call_llm(msgs, use_tools=True):
-            """Call the LLM with automatic failover through the provider chain."""
-            last_err = None
+        async def _call_llm(msgs: list[dict[str, Any]], use_tools: bool = True):
+            last_err: Exception | None = None
             for attempt, prov in enumerate(self._fallback_chain):
+                _log_request(prov.model, msgs)
+                call_ctx = AIRequestContext(
+                    user_id=base_ctx.user_id,
+                    trace_id=base_ctx.trace_id,
+                    plan=base_ctx.plan,
+                    action="agent_decision",
+                    provider=prov.name,
+                    model=prov.model,
+                    mode=base_ctx.mode,
+                    venue=base_ctx.venue,
+                    symbol=base_ctx.symbol,
+                    persona=base_ctx.persona,
+                    agent_run_id=base_ctx.agent_run_id,
+                    endpoint=base_ctx.endpoint or "/api/agent/start",
+                    stream=base_ctx.stream,
+                )
                 try:
-                    _log_request(prov.model, msgs)
                     tool_list = tools if (use_tools and enable_tools and prov.supports_tools) else None
-                    response = prov.complete(
+                    response = await governed_complete(
+                        provider=prov,
                         system=system_prompt,
                         messages=msgs,
                         max_tokens=self.max_tokens,
+                        context=call_ctx,
                         tools=tool_list,
+                        stream_handler=stream_handler,
                     )
                     if attempt > 0:
-                        logging.warning(
-                            "LLM failover succeeded on attempt %d via %s", attempt + 1, prov.name
-                        )
-                    with open(_LLM_LOG, "a", encoding="utf-8") as f:
-                        f.write(f"Provider: {prov.name} | stop_reason: {response.stop_reason}\n")
-                        f.write(f"Usage: input={response.input_tokens}, output={response.output_tokens}\n")
-                    return response
-                except Exception as e:
-                    last_err = e
+                        logging.warning("LLM failover succeeded on attempt %d via %s", attempt + 1, prov.name)
+                    return response, call_ctx
+                except AIError as exc:
+                    last_err = exc
+                    if exc.code not in {AIErrorCode.AI_PROVIDER_FAILED, AIErrorCode.AI_PROVIDER_UNAVAILABLE}:
+                        raise
+                    logging.warning(
+                        "LLM provider %s failed safely (attempt %d/%d): %s",
+                        prov.name,
+                        attempt + 1,
+                        len(self._fallback_chain),
+                        exc.code.value,
+                    )
+                except Exception as exc:
+                    last_err = exc
                     logging.warning(
                         "LLM provider %s failed (attempt %d/%d): %s — trying next",
-                        prov.name, attempt + 1, len(self._fallback_chain), e,
+                        prov.name,
+                        attempt + 1,
+                        len(self._fallback_chain),
+                        exc,
                     )
-            raise RuntimeError(
-                f"All LLM providers exhausted. Last error: {last_err}"
-            )
+            if isinstance(last_err, AIError):
+                raise last_err
+            raise RuntimeError(f"All LLM providers exhausted. Last error: {last_err}")
 
         def _handle_tool_call(tool_name, tool_input):
-            """Execute a tool call and return the result string."""
             if tool_name != "fetch_indicator":
                 return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
@@ -257,7 +310,6 @@ class TradingAgent:
                 interval = tool_input["interval"]
                 indicator = tool_input["indicator"]
 
-                # Fetch candles from Hyperliquid
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     import concurrent.futures
@@ -272,9 +324,7 @@ class TradingAgent:
                 all_indicators = compute_all(candles)
 
                 if indicator == "all":
-                    result = {k: {"latest": latest(v) if isinstance(v, list) else v,
-                                  "series": last_n(v, 10) if isinstance(v, list) else v}
-                              for k, v in all_indicators.items()}
+                    result = {k: {"latest": latest(v) if isinstance(v, list) else v, "series": last_n(v, 10) if isinstance(v, list) else v} for k, v in all_indicators.items()}
                 elif indicator == "macd":
                     result = {
                         "macd": {"latest": latest(all_indicators.get("macd", [])), "series": last_n(all_indicators.get("macd", []), 10)},
@@ -307,18 +357,32 @@ class TradingAgent:
                     key_map = {"adx": "adx", "obv": "obv", "vwap": "vwap", "stoch_rsi": "stoch_rsi"}
                     mapped = key_map.get(indicator, indicator)
                     series = all_indicators.get(mapped, [])
-                    result = {"latest": latest(series) if isinstance(series, list) else series,
-                              "series": last_n(series, 10) if isinstance(series, list) else series}
+                    result = {"latest": latest(series) if isinstance(series, list) else series, "series": last_n(series, 10) if isinstance(series, list) else series}
 
                 return json.dumps(result, default=str)
             except Exception as ex:
                 logging.error("Tool call error: %s", ex)
                 return json.dumps({"error": str(ex)})
 
-        def _sanitize_output(raw_content: str, assets_list):
-            """Use a cheap model to normalize malformed JSON output."""
+        async def _sanitize_output(raw_content: str, assets_list):
+            sanitize_ctx = AIRequestContext(
+                user_id=base_ctx.user_id,
+                trace_id=base_ctx.trace_id,
+                plan=base_ctx.plan,
+                action="sanitize_output",
+                provider=self._sanitize_provider.name,
+                model=self._sanitize_provider.model,
+                mode=base_ctx.mode,
+                venue=base_ctx.venue,
+                symbol=base_ctx.symbol,
+                persona=base_ctx.persona,
+                agent_run_id=base_ctx.agent_run_id,
+                endpoint=base_ctx.endpoint or "/api/agent/start",
+                stream=False,
+            )
             try:
-                sanitize_resp = self._sanitize_provider.complete(
+                sanitize_resp = await governed_complete(
+                    provider=self._sanitize_provider,
                     system=(
                         "You are a strict JSON normalizer. Return ONLY a JSON object with two keys: "
                         "\"reasoning\" (string) and \"trade_decisions\" (array). "
@@ -331,6 +395,7 @@ class TradingAgent:
                     ),
                     messages=[{"role": "user", "content": raw_content}],
                     max_tokens=2048,
+                    context=sanitize_ctx,
                 )
                 parsed = json.loads(sanitize_resp.content)
                 if isinstance(parsed, dict) and "trade_decisions" in parsed:
@@ -340,28 +405,41 @@ class TradingAgent:
                 logging.error("Sanitize failed: %s", se)
                 return {"reasoning": "", "trade_decisions": []}
 
-        # Main loop: up to 6 iterations to handle tool calls
         tool_rounds = 0
         force_no_tools = False
         seen_tool_calls: set[tuple[str, str]] = set()
-        for iteration in range(6):
+        final_ctx = base_ctx
+
+        for _iteration in range(6):
             try:
-                response = _call_llm(messages, use_tools=not force_no_tools)
+                response, final_ctx = await _call_llm(messages, use_tools=not force_no_tools)
+            except AIError as e:
+                if base_ctx.action == "backtest_commentary":
+                    raise
+                return {
+                    "reasoning": e.definition.user_message,
+                    "trace_id": e.trace_id,
+                    "provider": final_ctx.provider,
+                    "model": final_ctx.model,
+                    "trade_decisions": [{
+                        "asset": a,
+                        "action": "hold",
+                        "allocation_usd": 0.0,
+                        "tp_price": None,
+                        "sl_price": None,
+                        "exit_plan": "",
+                        "rationale": e.definition.user_message,
+                    } for a in assets],
+                }
             except Exception as e:
                 logging.error("LLM provider error: %s", e)
-                with open(_LLM_LOG, "a", encoding="utf-8") as f:
-                    f.write(f"API Error: {e}\n")
                 break
 
-            # Tool-use path: only Anthropic provider returns stop_reason="tool_use"
-            # with structured raw blocks.  Other providers return tool calls embedded
-            # in the text or don't support tools — they fall straight to JSON parsing.
             raw_resp = response.raw
             tool_use_blocks = []
             text_blocks_raw = []
 
             if raw_resp is not None and hasattr(raw_resp, "content"):
-                # Anthropic response object
                 tool_use_blocks = [b for b in raw_resp.content if b.type == "tool_use"]
                 text_blocks_raw = [b for b in raw_resp.content if b.type == "text"]
 
@@ -372,17 +450,9 @@ class TradingAgent:
                     if block.type == "text":
                         assistant_content.append({"type": "text", "text": block.text})
                     elif block.type == "tool_use":
-                        assistant_content.append({
-                            "type": "tool_use",
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
+                        assistant_content.append({"type": "tool_use", "id": block.id, "name": block.name, "input": block.input})
                     elif block.type == "thinking":
-                        assistant_content.append({
-                            "type": "thinking",
-                            "thinking": block.thinking,
-                        })
+                        assistant_content.append({"type": "thinking", "thinking": block.thinking})
                 messages.append({"role": "assistant", "content": assistant_content})
 
                 tool_results = []
@@ -392,11 +462,7 @@ class TradingAgent:
                         repeated_tool_call = True
                     seen_tool_calls.add(signature)
                     result_str = _handle_tool_call(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result_str,
-                    })
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_str})
                 messages.append({"role": "user", "content": tool_results})
                 tool_rounds += 1
                 if repeated_tool_call or tool_rounds >= 3:
@@ -411,7 +477,6 @@ class TradingAgent:
                     })
                 continue
 
-            # No tool calls — use the provider's normalized text content
             raw_text = response.content
             if text_blocks_raw:
                 raw_text = "".join(b.text for b in text_blocks_raw)
@@ -420,10 +485,8 @@ class TradingAgent:
                 logging.error("Empty response from LLM provider")
                 break
 
-            # Strip markdown code fences if present
             cleaned = raw_text.strip()
             if cleaned.startswith("```"):
-                # Remove opening fence (```json or ```)
                 first_newline = cleaned.index("\n")
                 cleaned = cleaned[first_newline + 1:]
             if cleaned.endswith("```"):
@@ -433,7 +496,7 @@ class TradingAgent:
                 parsed = json.loads(cleaned)
                 if not isinstance(parsed, dict):
                     logging.error("Expected dict, got: %s; attempting sanitize", type(parsed))
-                    return _sanitize_output(raw_text, assets)
+                    parsed = await _sanitize_output(raw_text, assets)
 
                 reasoning_text = parsed.get("reasoning", "") or ""
                 decisions = parsed.get("trade_decisions")
@@ -450,21 +513,36 @@ class TradingAgent:
                             item.setdefault("exit_plan", "")
                             item.setdefault("rationale", "")
                             normalized.append(item)
-                    return {"reasoning": reasoning_text, "trade_decisions": normalized}
+                    return {
+                        "reasoning": reasoning_text,
+                        "trade_decisions": normalized,
+                        "trace_id": final_ctx.trace_id,
+                        "provider": final_ctx.provider,
+                        "model": response.model or final_ctx.model,
+                    }
 
                 logging.error("trade_decisions missing or invalid; attempting sanitize")
-                sanitized = _sanitize_output(raw_text, assets)
+                sanitized = await _sanitize_output(raw_text, assets)
                 if sanitized.get("trade_decisions"):
+                    sanitized["trace_id"] = final_ctx.trace_id
+                    sanitized["provider"] = final_ctx.provider
+                    sanitized["model"] = response.model or final_ctx.model
                     return sanitized
-                return {"reasoning": reasoning_text, "trade_decisions": []}
+                return {"reasoning": reasoning_text, "trade_decisions": [], "trace_id": final_ctx.trace_id, "provider": final_ctx.provider, "model": response.model or final_ctx.model}
 
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                logging.error("JSON parse error: %s, content: %s", e, raw_text[:200])
-                sanitized = _sanitize_output(raw_text, assets)
+                logging.error("JSON parse error: %s, content: %s", e, redact_text(raw_text[:200]))
+                sanitized = await _sanitize_output(raw_text, assets)
                 if sanitized.get("trade_decisions"):
+                    sanitized["trace_id"] = final_ctx.trace_id
+                    sanitized["provider"] = final_ctx.provider
+                    sanitized["model"] = response.model or final_ctx.model
                     return sanitized
                 return {
                     "reasoning": "Parse error",
+                    "trace_id": final_ctx.trace_id,
+                    "provider": final_ctx.provider,
+                    "model": response.model or final_ctx.model,
                     "trade_decisions": [{
                         "asset": a,
                         "action": "hold",
@@ -472,13 +550,15 @@ class TradingAgent:
                         "tp_price": None,
                         "sl_price": None,
                         "exit_plan": "",
-                        "rationale": "Parse error"
-                    } for a in assets]
+                        "rationale": "The AI response could not be validated safely, so no trade was executed.",
+                    } for a in assets],
                 }
 
-        # Exhausted tool loop
         return {
             "reasoning": "Indicator tool limit reached",
+            "trace_id": final_ctx.trace_id,
+            "provider": final_ctx.provider,
+            "model": final_ctx.model,
             "trade_decisions": [{
                 "asset": a,
                 "action": "hold",

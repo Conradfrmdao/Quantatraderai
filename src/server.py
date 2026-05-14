@@ -56,11 +56,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 import uvicorn
 
 from src.config_loader import CONFIG
+from src.ai.errors import AIError, AIErrorCode, safe_error_payload
+from src.ai.governance import AIRequestContext, governed_stream, new_trace_id
+from src.ai.redaction import redact_text
+from src.ai.telemetry import capture_posthog
 from src.risk_manager import RiskManager
 from src.agent.decision_maker import TradingAgent
 from src.venues.base import Venue
@@ -76,20 +81,6 @@ logging.basicConfig(
     format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":%(message)s}',
 )
 logger = logging.getLogger("quantatraderai.server")
-
-# M16: Sentry error tracking — optional, activate by setting SENTRY_DSN in env
-_SENTRY_DSN = os.getenv("SENTRY_DSN")
-if _SENTRY_DSN:
-    try:
-        import sentry_sdk
-        sentry_sdk.init(
-            dsn=_SENTRY_DSN,
-            traces_sample_rate=0.1,  # 10% of requests profiled
-            environment=os.getenv("ENVIRONMENT", "production"),
-        )
-        logger.info("Sentry initialized OK")
-    except ImportError:
-        logger.warning("SENTRY_DSN set but sentry-sdk not installed — run: pip install sentry-sdk")
 
 # ── Observability bootstrap ───────────────────────────────────────────────────
 try:
@@ -620,6 +611,7 @@ class AgentState:
     def __init__(self):
         self.status: str         = "idle"
         self.user_id: str | None = None
+        self.agent_run_id: str | None = None
         self.symbols: list[str]  = []
         self.timeframe: str      = "1h"
         self.is_paper: bool      = True
@@ -725,6 +717,97 @@ def get_state(user_id: str | None = None) -> AgentState:
     return s
 
 
+async def _build_ai_context_for_state(
+    s: AgentState,
+    *,
+    action: str,
+    trace_id: str | None = None,
+    endpoint: str = "/api/agent/start",
+    stream: bool = False,
+    symbol: str = "",
+) -> AIRequestContext:
+    user_id = s.user_id or ""
+    plan = await _get_user_plan(user_id) if user_id else "FREE"
+    return AIRequestContext(
+        user_id=user_id,
+        trace_id=trace_id or new_trace_id(),
+        plan=plan,
+        action=action,  # type: ignore[arg-type]
+        provider=(s.ai_agent.provider.name if s.ai_agent else "groq"),
+        model=(s.ai_agent.provider.model if s.ai_agent else "llama-3.3-70b-versatile"),
+        mode="paper" if s.is_paper else "live",
+        venue=s.venue_name or "binance",
+        symbol=symbol or ",".join(s.symbols),
+        persona=s.strategy_type or "",
+        agent_run_id=s.agent_run_id,
+        endpoint=endpoint,
+        stream=stream,
+    )
+
+
+def _safe_ai_error_message(error: AIError) -> str:
+    return f"{error.definition.user_message} Trace ID: {error.trace_id}"
+
+
+async def _persist_ai_decisions_for_state(
+    s: AgentState,
+    decisions: list[dict],
+    *,
+    trace_id: str,
+    provider: str,
+    model: str,
+    council_opinions: list[dict] | None = None,
+) -> None:
+    if not s.user_id or not decisions:
+        return
+    try:
+        from src.services.persistence import write_ai_council_vote, write_ai_decision
+        from src.services.supabase_reader import find_venue_id
+
+        venue_id = await find_venue_id(s.user_id, s.venue_name)
+        council_lookup = {str(item.get("asset")): item for item in (council_opinions or [])}
+        for dec in decisions:
+            symbol = str(dec.get("asset") or "")
+            decision_id = await write_ai_decision(
+                s.user_id,
+                agent_run_id=s.agent_run_id,
+                venue_id=venue_id,
+                trace_id=trace_id,
+                mode="paper" if s.is_paper else "live",
+                persona=s.strategy_type or None,
+                symbol=symbol,
+                provider=provider,
+                model=model,
+                final_action=str(dec.get("action") or "hold"),
+                confidence=float(dec.get("confidence") or 0.0),
+                reasoning_summary=redact_text(str(dec.get("rationale") or ""))[:1000],
+                risk_decision="deadlock" if dec.get("deadlock") else str(dec.get("action") or "hold"),
+                is_council=bool(council_opinions),
+            )
+            if not decision_id:
+                continue
+            council_entry = council_lookup.get(symbol)
+            for opinion in council_entry.get("opinions", []) if council_entry else []:
+                await write_ai_council_vote(
+                    s.user_id,
+                    decision_id=decision_id,
+                    provider=str(opinion.get("provider") or ""),
+                    model=str(opinion.get("model") or opinion.get("provider") or ""),
+                    role=str(opinion.get("role") or ""),
+                    vote_action=str(opinion.get("action") or "hold"),
+                    confidence=float(opinion.get("confidence") or 0.0),
+                    reasoning_summary=redact_text(str(opinion.get("rationale") or ""))[:1000],
+                    latency_ms=int(opinion.get("latency_ms") or 0),
+                    prompt_tokens=int(opinion.get("prompt_tokens") or 0),
+                    completion_tokens=int(opinion.get("completion_tokens") or 0),
+                    total_tokens=int(opinion.get("total_tokens") or 0),
+                    estimated_cost_usd=float(opinion.get("estimated_cost_usd") or 0.0),
+                    trace_id=str(opinion.get("trace_id") or trace_id),
+                )
+    except Exception as e:
+        logger.warning("AI decision persistence skipped: %s", e)
+
+
 # ── WebSocket broadcast ───────────────────────────────────────────────────────
 
 async def _broadcast(event: dict, user_id: str | None = None):
@@ -764,10 +847,15 @@ async def _poll_prices(s: "AgentState", symbols: list[str], interval_secs: int =
                 price  = ticker.last or 0.0
                 key    = sym.replace("/", "")
                 s.price_cache[key] = price
+                event_ts = int(time.time())
                 await _broadcast({
-                    "type":   "price_update",
-                    "symbol": key,
-                    "price":  price,
+                    "type":       "price_update",
+                    "symbol":     key,
+                    "price":      price,
+                    "ts":         event_ts,
+                    "exchange_ts": None,
+                    "source":     s.venue_name or "venue",
+                    "transport":  "polling",
                 }, s.user_id)
             except Exception as e:
                 s.log(f"Price poll error {sym}: {e}")
@@ -801,6 +889,7 @@ async def _stream_prices_binance(s: "AgentState", symbols: list[str], timeframe:
                             kline = data.get("data", {}).get("k", {})
                             if not kline:
                                 continue
+                            event_ts = int((data.get("data", {}).get("E") or 0) / 1000) or int(time.time())
                             raw_sym = kline["s"]
                             price   = float(kline["c"])
                             candle  = {
@@ -821,11 +910,15 @@ async def _stream_prices_binance(s: "AgentState", symbols: list[str], timeframe:
                                 if len(cache) > 500:
                                     cache.pop(0)
                             await _broadcast({
-                                "type":      "price_update",
-                                "symbol":    raw_sym,
-                                "price":     price,
-                                "candle":    candle,
-                                "timeframe": timeframe,
+                                "type":        "price_update",
+                                "symbol":      raw_sym,
+                                "price":       price,
+                                "candle":      candle,
+                                "timeframe":   timeframe,
+                                "ts":          int(time.time()),
+                                "exchange_ts": event_ts,
+                                "source":      "binance_ws",
+                                "transport":   "websocket",
                             }, s.user_id)
         except Exception as e:
             if s.status != "running":
@@ -1171,6 +1264,7 @@ async def _tick_for(s: "AgentState"):
                 s.log(f"Ticker poll error {sym}: {_te}")
 
     market_sections = []
+    market_data_status: dict[str, dict] = {}
     for sym in s.symbols:
         try:
             candles = await s.venue.get_candles(sym, s.timeframe, 100)
@@ -1183,6 +1277,15 @@ async def _tick_for(s: "AgentState"):
             # For FOREX: ticker polling above already set the price; candle is fallback.
             if px_key not in s.price_cache and candles:
                 s.price_cache[px_key] = candles[-1].close
+            data_status = _build_market_data_status(
+                sym,
+                raw,
+                inds,
+                s.timeframe,
+                float(s.price_cache.get(px_key, 0) or 0),
+            )
+            market_data_status[sym] = data_status
+            market_data_status[_normalize_market_symbol(sym)] = data_status
             rsi_val  = round_or_none(latest(inds.get("rsi14", [])), 2)
             macd_val = round_or_none(latest(inds.get("macd",  [])), 2)
             ema_val  = round_or_none(latest(inds.get("ema20", [])), 2)
@@ -1192,6 +1295,10 @@ async def _tick_for(s: "AgentState"):
                 "rsi14":         rsi_val,
                 "ema20":         ema_val,
                 "macd":          macd_val,
+                "bars":          data_status["bars_available"],
+                "data_ready":    data_status["ready"],
+                "data_state":    data_status["status"],
+                "latest_candle_ts": data_status["last_candle_ts"],
             })
             if rsi_val is not None:
                 if rsi_val < 30:
@@ -1202,6 +1309,30 @@ async def _tick_for(s: "AgentState"):
                 s.timeline_event("signal", sym, f"MACD {macd_val:+.4f} detected")
         except Exception as e:
             s.log(f"Data error {sym}: {e}")
+            failed_status = {
+                "symbol": sym,
+                "status": "error",
+                "ready": False,
+                "bars_available": 0,
+                "last_candle_ts": 0,
+                "candles_fresh": False,
+                "indicators_ready": False,
+                "price_available": False,
+                "fallback_rationale": f"Market data could not be loaded for {sym} on this tick.",
+            }
+            market_data_status[sym] = failed_status
+            market_data_status[_normalize_market_symbol(sym)] = failed_status
+            market_sections.append({
+                "asset": sym,
+                "current_price": round(s.price_cache.get(sym.replace("/", ""), 0), 5 if _is_forex else 4),
+                "rsi14": None,
+                "ema20": None,
+                "macd": None,
+                "bars": 0,
+                "data_ready": False,
+                "data_state": "error",
+                "latest_candle_ts": 0,
+            })
 
     # ── Intel feeds (calendar + sentiment) ────────────────────────────────
     # macro must be initialised BEFORE the intel block that may write to it
@@ -1295,10 +1426,23 @@ async def _tick_for(s: "AgentState"):
     outputs: dict = {}
     council_opinions: list | None = None
     use_council = _plan_allows(await _get_user_plan(s.user_id), "aiCouncil") or os.getenv("ENABLE_COUNCIL", "false").lower() in ("1", "true", "yes")
+    decision_trace_id = new_trace_id()
     try:
         if use_council:
             from src.agent.council import council_decide
-            council_results = await council_decide(s.symbols, context)
+            ai_ctx = await _build_ai_context_for_state(
+                s,
+                action="council_vote",
+                trace_id=decision_trace_id,
+                endpoint="/api/agent/start",
+                stream=True,
+            )
+            council_results = await council_decide(
+                s.symbols,
+                context,
+                ai_context=ai_ctx,
+                stream_handler=lambda payload: _broadcast(payload, s.user_id),
+            )
             decisions = []
             council_opinions = []
             for cd in council_results:
@@ -1315,10 +1459,17 @@ async def _tick_for(s: "AgentState"):
                         {
                             "role": op.role,
                             "provider": op.provider,
+                            "model": op.model,
                             "action": op.action,
                             "rationale": op.rationale[:120],
                             "confidence": op.confidence,
                             "veto": op.veto,
+                            "trace_id": op.trace_id,
+                            "latency_ms": op.latency_ms,
+                            "prompt_tokens": op.prompt_tokens,
+                            "completion_tokens": op.completion_tokens,
+                            "total_tokens": op.total_tokens,
+                            "estimated_cost_usd": op.estimated_cost_usd,
                         }
                         for op in cd.opinions
                     ],
@@ -1329,18 +1480,54 @@ async def _tick_for(s: "AgentState"):
                         {
                             "role": op.role,
                             "provider": op.provider,
+                            "model": op.model,
                             "action": op.action,
                             "confidence": op.confidence,
                             "rationale": op.rationale[:120],
                             "veto": op.veto,
+                            "trace_id": op.trace_id,
+                            "latency_ms": op.latency_ms,
+                            "prompt_tokens": op.prompt_tokens,
+                            "completion_tokens": op.completion_tokens,
+                            "total_tokens": op.total_tokens,
+                            "estimated_cost_usd": op.estimated_cost_usd,
                         }
                         for op in cd.opinions
                     ],
                     "vote": cd.action, "confidence": cd.confidence, "deadlock": cd.deadlock,
                 })
+            outputs = {"trace_id": decision_trace_id, "provider": "council", "model": "multi-role"}
         else:
-            outputs = s.ai_agent.decide_trade(s.symbols, context) or {}
+            ai_ctx = await _build_ai_context_for_state(
+                s,
+                action="agent_decision",
+                trace_id=decision_trace_id,
+                endpoint="/api/agent/start",
+                stream=True,
+            )
+            outputs = await s.ai_agent.decide_trade_async(
+                s.symbols,
+                context,
+                ai_context=ai_ctx,
+                stream_handler=lambda payload: _broadcast(payload, s.user_id),
+            ) or {}
             decisions = outputs.get("trade_decisions", []) if isinstance(outputs, dict) else []
+            decision_trace_id = str(outputs.get("trace_id") or decision_trace_id)
+    except AIError as e:
+        safe_msg = _safe_ai_error_message(e)
+        s.log(f"AI blocked safely: {safe_msg}")
+        await _notifier.emit(TradingEvent(
+            kind="decision_error", venue=s.venue_name or "unknown",
+            message=safe_msg,
+        ))
+        decisions = [{
+            "asset": sym,
+            "action": "hold",
+            "allocation_usd": 0.0,
+            "tp_price": None,
+            "sl_price": None,
+            "rationale": safe_msg,
+        } for sym in s.symbols]
     except Exception as e:
         s.log(f"AI error: {e}")
         await _notifier.emit(TradingEvent(
@@ -1349,13 +1536,25 @@ async def _tick_for(s: "AgentState"):
         ))
         decisions = []
 
+    decisions = _apply_market_data_guards(decisions, market_data_status)
+
     if decisions:
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
+            "trace_id": decision_trace_id,
+            "reasoning_summary": redact_text(str(outputs.get("reasoning") or ""))[:500] if isinstance(outputs, dict) else "",
             "trade_decisions": decisions,
             "council": council_opinions,
         }
         s.decisions.appendleft(entry)
+        await _persist_ai_decisions_for_state(
+            s,
+            decisions,
+            trace_id=decision_trace_id,
+            provider=str(outputs.get("provider") or ("council" if use_council else "unknown")) if isinstance(outputs, dict) else ("council" if use_council else "unknown"),
+            model=str(outputs.get("model") or ("multi-role" if use_council else "")) if isinstance(outputs, dict) else ("multi-role" if use_council else ""),
+            council_opinions=council_opinions,
+        )
         await _broadcast({"type": "decisions_update", "data": list(s.decisions)[:20]}, s.user_id)
         # Timeline: record AI decision events
         for dec in decisions:
@@ -1588,6 +1787,18 @@ async def _tick_for(s: "AgentState"):
                 s.user_id, "risk_block", sym, action,
                 {"reason": reason, "allocation_usd": alloc, "venue": s.venue_name},
             ))
+            if s.user_id:
+                asyncio.create_task(capture_posthog("trade_blocked_by_risk", {
+                    "user_id": s.user_id,
+                    "plan": await _get_user_plan(s.user_id),
+                    "mode": "paper" if s.is_paper else "live",
+                    "venue": s.venue_name,
+                    "persona": s.strategy_type or "",
+                    "provider": outputs.get("provider") if isinstance(outputs, dict) else "",
+                    "trace_id": decision_trace_id,
+                    "success": True,
+                    "reason_code": "risk_block",
+                }))
             continue
 
         price = dec["current_price"]
@@ -1641,6 +1852,18 @@ async def _tick_for(s: "AgentState"):
                 s.user_id, "order", sym, action,
                 {"qty": qty, "price": price, "venue": s.venue_name, "allocation_usd": exec_alloc},
             ))
+            if s.user_id:
+                asyncio.create_task(capture_posthog("trade_executed", {
+                    "user_id": s.user_id,
+                    "plan": await _get_user_plan(s.user_id),
+                    "mode": "paper" if s.is_paper else "live",
+                    "venue": s.venue_name,
+                    "persona": s.strategy_type or "",
+                    "provider": outputs.get("provider") if isinstance(outputs, dict) else "",
+                    "trace_id": decision_trace_id,
+                    "success": True,
+                    "reason_code": "trade_executed",
+                }))
             # Mirror to copy-trading followers
             if s.user_id and (_plan_allows(await _get_user_plan(s.user_id), "copyTrading") or os.getenv("ENABLE_COPY_TRADING", "false").lower() in ("1", "true", "yes")):
                 asyncio.create_task(_mirror_to_followers(
@@ -1672,7 +1895,19 @@ async def _llm_worker(s: "AgentState"):
             break
         try:
             if s.ai_agent:
-                result = s.ai_agent.decide_trade(ctx["symbols"], ctx["context"])
+                ai_ctx = await _build_ai_context_for_state(
+                    s,
+                    action="agent_decision",
+                    trace_id=new_trace_id(),
+                    endpoint="/api/agent/start",
+                    stream=True,
+                )
+                result = await s.ai_agent.decide_trade_async(
+                    ctx["symbols"],
+                    ctx["context"],
+                    ai_context=ai_ctx,
+                    stream_handler=lambda payload: _broadcast(payload, s.user_id),
+                )
                 decisions = result.get("trade_decisions", []) if isinstance(result, dict) else []
                 # Push decisions to the order queue for execution
                 if decisions and not s.is_paper:
@@ -2204,6 +2439,15 @@ async def refresh_risk(request: Request, req: RiskRefreshRequest):
 @app.get("/api/decisions")
 async def get_decisions(request: Request, limit: int = 20, userId: Optional[str] = None):
     userId = await _resolve_request_user_id(request, userId)
+    if not userId:
+        return {"decisions": list(get_state(userId).decisions)[:limit]}
+    try:
+        from src.services.supabase_reader import list_ai_decisions
+        decisions = await list_ai_decisions(userId, limit=limit)
+        if decisions:
+            return {"decisions": decisions}
+    except Exception as e:
+        logger.warning("Falling back to in-memory decisions for %s: %s", userId, e)
     return {"decisions": list(get_state(userId).decisions)[:limit]}
 
 
@@ -2286,10 +2530,9 @@ async def get_candles(
     key = _candle_cache_key(symbol, timeframe)
     cached = state.candle_cache.get(key) if state else None
     stale_cached = cached[-limit:] if cached else None
-    if _candles_are_fresh(cached, timeframe):
-        return {"candles": cached[-limit:], "source": "cache"}
-
     v = (venue or (state.venue_name if state else None) or "binance").lower()
+    if _candles_are_fresh(cached, timeframe):
+        return {"candles": cached[-limit:], "source": "cache", **_candle_response_meta(v)}
 
     # If agent is live and the venue matches, use its adapter
     if state and state.venue is not None and v == state.venue_name:
@@ -2301,7 +2544,7 @@ async def get_candles(
                 for c in bars
             ]
             state.candle_cache[key] = candles
-            return {"candles": candles[-limit:], "source": "agent"}
+            return {"candles": candles[-limit:], "source": "agent", **_candle_response_meta(v)}
         except Exception as e:
             logger.warning("Venue candle fetch failed, falling back to Binance: %s", e)
 
@@ -2320,7 +2563,7 @@ async def get_candles(
                 if candles:
                     if state:
                         state.candle_cache[key] = candles
-                    return {"candles": candles[-limit:], "source": "venue"}
+                    return {"candles": candles[-limit:], "source": "venue", **_candle_response_meta(v)}
         except Exception as e:
             logger.warning("Saved venue candle fetch failed for %s on %s: %s", symbol, v, e)
 
@@ -2339,7 +2582,7 @@ async def get_candles(
             async with session.get(url) as resp:
                 data = await resp.json()
         if not isinstance(data, list):
-            return {"candles": []}
+            return {"candles": [], "source": "public", **_candle_response_meta("binance")}
         candles = [
             {"time": int(row[0]) // 1000,
              "open": float(row[1]), "high": float(row[2]),
@@ -2349,7 +2592,7 @@ async def get_candles(
         ]
         if state:
             state.candle_cache[key] = candles
-        return {"candles": candles[-limit:], "source": "public"}
+        return {"candles": candles[-limit:], "source": "public", **_candle_response_meta("binance")}
     except Exception as e:
         if stale_cached:
             logger.warning(
@@ -2358,7 +2601,7 @@ async def get_candles(
                 timeframe,
                 v,
             )
-            return {"candles": stale_cached, "source": "stale_cache"}
+            return {"candles": stale_cached, "source": "stale_cache", **_candle_response_meta(v)}
         raise HTTPException(status_code=502, detail=f"Candle fetch failed: {e}")
 
 
@@ -2499,6 +2742,138 @@ def _candles_are_fresh(candles: list[dict] | None, timeframe: str | None, now_ts
     interval_s = max(_timeframe_seconds(timeframe), 60)
     current_bucket = (int(now_ts or time.time()) // interval_s) * interval_s
     return last_ts >= max(0, current_bucket - interval_s)
+
+
+_VENUE_EXCHANGE_TIMEZONES: dict[str, str] = {
+    "alpaca": "America/New_York",
+    "ibkr": "America/New_York",
+}
+
+
+def _exchange_timezone_for_venue(venue_name: str | None) -> str:
+    base = str(venue_name or "").lower().split(":")[0]
+    return _VENUE_EXCHANGE_TIMEZONES.get(base, "UTC")
+
+
+def _candle_response_meta(venue_name: str | None) -> dict:
+    return {
+        "time_basis": "utc_epoch",
+        "exchange_timezone": _exchange_timezone_for_venue(venue_name),
+        "server_ts": int(time.time()),
+    }
+
+
+def _build_market_data_status(
+    symbol: str,
+    candles: list[dict],
+    indicators: dict,
+    timeframe: str,
+    current_price: float,
+    now_ts: int | None = None,
+) -> dict:
+    now_ts = int(now_ts or time.time())
+    last_candle_ts = int(candles[-1].get("time") or 0) if candles else 0
+    bars_available = len(candles)
+    rsi_ready = latest(indicators.get("rsi14", [])) is not None
+    ema_ready = latest(indicators.get("ema20", [])) is not None
+    macd_ready = latest(indicators.get("macd", [])) is not None
+    indicators_ready = rsi_ready and ema_ready and macd_ready
+    candles_fresh = _candles_are_fresh(candles, timeframe, now_ts=now_ts)
+    price_available = bool(current_price and current_price > 0)
+
+    if bars_available == 0:
+        status = "missing"
+        fallback = f"No candles are available yet for {symbol}."
+    elif bars_available < 35:
+        status = "warmup"
+        fallback = f"Indicator warm-up in progress for {symbol} — only {bars_available} candles available."
+    elif not candles_fresh:
+        status = "stale"
+        lag_s = max(0, now_ts - last_candle_ts) if last_candle_ts else None
+        fallback = (
+            f"Market data is stale for {symbol}."
+            if lag_s is None else
+            f"Market data is stale for {symbol} — latest candle is {lag_s}s old."
+        )
+    elif not indicators_ready:
+        status = "indicators_warming"
+        fallback = f"Indicators are still warming up for {symbol} on {timeframe}."
+    elif not price_available:
+        status = "price_missing"
+        fallback = f"Live price is unavailable for {symbol} on this tick."
+    else:
+        status = "ready"
+        fallback = "No high-confidence setup after the latest live market scan."
+
+    return {
+        "symbol": symbol,
+        "status": status,
+        "ready": status == "ready",
+        "bars_available": bars_available,
+        "last_candle_ts": last_candle_ts,
+        "candles_fresh": candles_fresh,
+        "indicators_ready": indicators_ready,
+        "price_available": price_available,
+        "fallback_rationale": fallback,
+    }
+
+
+def _missing_market_data_rationale(text: str | None) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return True
+    markers = (
+        "insufficient market data",
+        "insufficient data",
+        "not enough data",
+        "data unavailable",
+        "missing market data",
+        "trend evaluation",
+    )
+    return any(marker in normalized for marker in markers)
+
+
+def _normalize_hold_rationale(rationale: str | None, data_status: dict | None) -> str:
+    text = str(rationale or "").strip()
+    if not data_status:
+        return text or "No high-confidence setup after the latest live market scan."
+    if not text or _missing_market_data_rationale(text):
+        return str(data_status.get("fallback_rationale") or text or "No high-confidence setup after the latest live market scan.")
+    return text
+
+
+def _apply_market_data_guards(decisions: list[dict] | None, data_status_map: dict[str, dict]) -> list[dict]:
+    guarded: list[dict] = []
+    for dec in decisions or []:
+        if not isinstance(dec, dict):
+            continue
+        out = dict(dec)
+        symbol = str(out.get("asset") or "")
+        data_status = data_status_map.get(symbol) or data_status_map.get(_normalize_market_symbol(symbol))
+        action = str(out.get("action") or "hold").lower()
+
+        if data_status and not data_status.get("ready") and action in ("buy", "sell"):
+            out["action"] = "hold"
+            out["allocation_usd"] = 0.0
+            out["tp_price"] = None
+            out["sl_price"] = None
+            action = "hold"
+
+        if data_status and not data_status.get("ready"):
+            out["rationale"] = str(
+                data_status.get("fallback_rationale")
+                or out.get("rationale")
+                or "Market data is not ready for this tick."
+            )
+        elif action == "hold":
+            out["rationale"] = _normalize_hold_rationale(out.get("rationale"), data_status)
+
+        if data_status:
+            out["data_ready"] = bool(data_status.get("ready"))
+            out["data_status"] = data_status.get("status")
+
+        guarded.append(out)
+    return guarded
 
 
 def _resolve_test_venue_target(requested_venue: str, stored_market: str | None = None) -> tuple[str, str, str]:
@@ -2807,13 +3182,35 @@ async def _do_start(
     if user_id:
         try:
             from src.services.supabase_reader import upsert_agent_run
-            await upsert_agent_run(user_id, v_key, symbols, timeframe, is_paper, market, True)
+            final_state.agent_run_id = await upsert_agent_run(user_id, v_key, symbols, timeframe, is_paper, market, True)
         except Exception as e:
             logger.warning("AgentRun persist failed: %s", e)
         asyncio.create_task(_persist_audit(
             user_id, "agent_start", None, None,
             {"venue": v_key, "symbols": symbols, "timeframe": timeframe, "is_paper": is_paper},
         ))
+        asyncio.create_task(capture_posthog("agent_started", {
+            "user_id": user_id,
+            "plan": await _get_user_plan(user_id),
+            "mode": "paper" if is_paper else "live",
+            "venue": v_key,
+            "persona": strategy_type or "",
+            "provider": final_state.ai_agent.provider.name if final_state.ai_agent else "",
+            "trace_id": new_trace_id(),
+            "success": True,
+            "reason_code": "agent_started",
+        }))
+        asyncio.create_task(capture_posthog("paper_mode_started" if is_paper else "live_mode_started", {
+            "user_id": user_id,
+            "plan": await _get_user_plan(user_id),
+            "mode": "paper" if is_paper else "live",
+            "venue": v_key,
+            "persona": strategy_type or "",
+            "provider": final_state.ai_agent.provider.name if final_state.ai_agent else "",
+            "trace_id": new_trace_id(),
+            "success": True,
+            "reason_code": "mode_started",
+        }))
 
     result: dict = {"ok": True, "venue": v_key, "symbols": symbols, "timeframe": timeframe, "paper": is_paper}
     if forced_paper_warning:
@@ -2936,12 +3333,30 @@ async def stop_agent(request: Request, body: dict = {}):
         asyncio.create_task(_persist_audit(
             s.user_id, "agent_stop", None, None, {"venue": s.venue_name},
         ))
+        asyncio.create_task(capture_posthog("agent_stopped", {
+            "user_id": s.user_id,
+            "plan": await _get_user_plan(s.user_id),
+            "mode": "paper" if s.is_paper else "live",
+            "venue": s.venue_name,
+            "persona": s.strategy_type or "",
+            "provider": s.ai_agent.provider.name if s.ai_agent else "",
+            "trace_id": new_trace_id(),
+            "success": True,
+            "reason_code": "agent_stopped",
+        }))
     return {"ok": True}
 
 
 class StrategyRequest(BaseModel):
     text:   str
     userId: Optional[str] = None
+
+
+class AITextStreamRequest(BaseModel):
+    text: str
+    userId: Optional[str] = None
+    symbol: str = ""
+    venue: str = "binance"
 
 
 @app.post("/api/strategies")
@@ -2953,13 +3368,149 @@ async def create_strategy(request: Request, req: StrategyRequest):
     from src.agent.nl_parser import parse_nl_rule
     from src.services.supabase_reader import create_strategy_rule
 
-    rule = await parse_nl_rule(req.text)
+    ai_ctx = AIRequestContext(
+        user_id=user_id,
+        trace_id=new_trace_id(),
+        plan=await _get_user_plan(user_id),
+        action="manual_command_parse",
+        provider="groq",
+        model="",
+        mode="paper",
+        venue="strategy_rules",
+        endpoint="/api/strategies",
+        stream=False,
+    )
+    try:
+        rule = await parse_nl_rule(req.text, ai_context=ai_ctx)
+    except AIError as error:
+        raise HTTPException(status_code=error.http_status, detail=safe_error_payload(error)["error"])
     if not rule:
         raise HTTPException(status_code=422, detail="Could not parse rule")
     saved = await create_strategy_rule(user_id, rule)
     if not saved:
         raise HTTPException(status_code=500, detail="Could not save rule")
     return {"ok": True, "rule": {"id": rule.id, "condition": rule.condition, "action": rule.action, "symbol": rule.symbol, "threshold": rule.threshold}}
+
+
+@app.post("/api/strategies/stream")
+async def create_strategy_stream(request: Request, req: StrategyRequest):
+    user_id = await _resolve_request_user_id(request, req.userId)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from src.agent.nl_parser import parse_nl_rule
+    from src.services.supabase_reader import create_strategy_rule
+
+    async def event_stream():
+        events: list[dict] = []
+
+        async def collect(event: dict):
+            events.append(event)
+
+        ai_ctx = AIRequestContext(
+            user_id=user_id,
+            trace_id=new_trace_id(),
+            plan=await _get_user_plan(user_id),
+            action="manual_command_parse",
+            provider="groq",
+            model="",
+            mode="paper",
+            venue="strategy_rules",
+            endpoint="/api/strategies/stream",
+            stream=True,
+        )
+        try:
+            rule = await parse_nl_rule(req.text, ai_context=ai_ctx, stream_handler=collect)
+            for event in events:
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+            if not rule:
+                yield f"data: {json.dumps({'type': 'ai_stream_failed', 'trace_id': ai_ctx.trace_id, 'message': 'Could not parse rule safely.'})}\n\n"
+                return
+            saved = await create_strategy_rule(user_id, rule)
+            payload = {
+                "type": "strategy_saved",
+                "trace_id": ai_ctx.trace_id,
+                "final": True,
+                "rule": {
+                    "id": rule.id,
+                    "condition": rule.condition,
+                    "action": rule.action,
+                    "symbol": rule.symbol,
+                    "threshold": rule.threshold,
+                },
+                "saved": bool(saved),
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+        except AIError as error:
+            yield f"data: {json.dumps({'type': 'ai_stream_failed', **safe_error_payload(error)['error']})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/explanations/stream")
+async def explanation_stream(request: Request, req: AITextStreamRequest):
+    user_id = await _require_request_user_id(request, req.userId)
+    from src.agent.providers.factory import get_provider
+
+    async def event_stream():
+        provider = get_provider()
+        ai_ctx = AIRequestContext(
+            user_id=user_id,
+            trace_id=new_trace_id(),
+            plan=await _get_user_plan(user_id),
+            action="trade_explanation",
+            provider=provider.name,
+            model=provider.model,
+            mode="paper",
+            venue=req.venue or "binance",
+            symbol=req.symbol,
+            endpoint="/api/explanations/stream",
+            stream=True,
+        )
+        events = await governed_stream(
+            provider=provider,
+            system="You explain a completed trading decision clearly and safely. Keep it concise and actionable.",
+            messages=[{"role": "user", "content": req.text}],
+            max_tokens=600,
+            context=ai_ctx,
+        )
+        for event in events:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/backtest/commentary/stream")
+async def backtest_commentary_stream(request: Request, req: AITextStreamRequest):
+    user_id = await _require_request_user_id(request, req.userId)
+    from src.agent.providers.factory import get_provider
+
+    async def event_stream():
+        provider = get_provider()
+        ai_ctx = AIRequestContext(
+            user_id=user_id,
+            trace_id=new_trace_id(),
+            plan=await _get_user_plan(user_id),
+            action="backtest_commentary",
+            provider=provider.name,
+            model=provider.model,
+            mode="paper",
+            venue=req.venue or "binance",
+            symbol=req.symbol,
+            endpoint="/api/backtest/commentary/stream",
+            stream=True,
+        )
+        events = await governed_stream(
+            provider=provider,
+            system="You summarize a backtest result without making live trading guarantees. Mention risks and limitations.",
+            messages=[{"role": "user", "content": req.text}],
+            max_tokens=800,
+            context=ai_ctx,
+        )
+        for event in events:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @app.get("/api/strategies")
@@ -3103,10 +3654,32 @@ async def test_venue(request: Request, req: VenueTestRequest):
         if balances:
             b = balances[0]
             result = {"ok": True, "currency": b.currency, "balance": b.total, "available": b.available, "venue": req.venue}
+            asyncio.create_task(capture_posthog("venue_connected", {
+                "user_id": user_id,
+                "plan": await _get_user_plan(user_id),
+                "mode": "paper" if req.isPaper else "live",
+                "venue": req.venue,
+                "persona": "",
+                "provider": "",
+                "trace_id": new_trace_id(),
+                "success": True,
+                "reason_code": "venue_connected",
+            }))
             if warning: result["warning"] = warning
             return result
         result = {"ok": True, "currency": "—", "balance": 0, "available": 0, "venue": req.venue,
                   "note": "Connection succeeded but no balances returned (account may be empty)."}
+        asyncio.create_task(capture_posthog("venue_connected", {
+            "user_id": user_id,
+            "plan": await _get_user_plan(user_id),
+            "mode": "paper" if req.isPaper else "live",
+            "venue": req.venue,
+            "persona": "",
+            "provider": "",
+            "trace_id": new_trace_id(),
+            "success": True,
+            "reason_code": "venue_connected_empty",
+        }))
         if warning: result["warning"] = warning
         return result
     except Exception as e:
@@ -3123,6 +3696,17 @@ async def test_venue(request: Request, req: VenueTestRequest):
         else:
             hint = msg[:200]
         logger.warning("venue test failed for %s: %s", venue_match_key, e)
+        asyncio.create_task(capture_posthog("venue_connection_failed", {
+            "user_id": user_id,
+            "plan": await _get_user_plan(user_id),
+            "mode": "paper" if req.isPaper else "live",
+            "venue": req.venue,
+            "persona": "",
+            "provider": "",
+            "trace_id": new_trace_id(),
+            "success": False,
+            "reason_code": "venue_connection_failed",
+        }))
         return {"ok": False, "error": hint, "raw": msg[:500]}
 
 
@@ -3307,14 +3891,18 @@ async def get_price_live(
         try:
             t = await s.venue.get_ticker(symbol)
             if t and getattr(t, "last", None):
+                server_ts = int(time.time())
                 return {
-                    "price":  float(t.last),
-                    "bid":    float(getattr(t, "bid",  0) or 0) or None,
-                    "ask":    float(getattr(t, "ask",  0) or 0) or None,
-                    "ts":     int(time.time()),
-                    "symbol": symbol,
-                    "venue":  s.venue_name,
-                    "source": "agent",
+                    "price":             float(t.last),
+                    "bid":               float(getattr(t, "bid",  0) or 0) or None,
+                    "ask":               float(getattr(t, "ask",  0) or 0) or None,
+                    "ts":                server_ts,
+                    "exchange_ts":       None,
+                    "symbol":            symbol,
+                    "venue":             s.venue_name,
+                    "source":            "agent",
+                    "transport":         "polling",
+                    "exchange_timezone": _exchange_timezone_for_venue(s.venue_name),
                 }
         except Exception:
             pass
@@ -3328,14 +3916,18 @@ async def get_price_live(
                 v_obj, _match, _venue_registry_name, _venue_market = bound
                 t = await v_obj.get_ticker(symbol)
                 if t and getattr(t, "last", None):
+                    server_ts = int(time.time())
                     return {
-                        "price":  float(t.last),
-                        "bid":    float(getattr(t, "bid",  0) or 0) or None,
-                        "ask":    float(getattr(t, "ask",  0) or 0) or None,
-                        "ts":     int(time.time()),
-                        "symbol": symbol,
-                        "venue":  v_key,
-                        "source": "venue",
+                        "price":             float(t.last),
+                        "bid":               float(getattr(t, "bid",  0) or 0) or None,
+                        "ask":               float(getattr(t, "ask",  0) or 0) or None,
+                        "ts":                server_ts,
+                        "exchange_ts":       None,
+                        "symbol":            symbol,
+                        "venue":             v_key,
+                        "source":            "venue",
+                        "transport":         "polling",
+                        "exchange_timezone": _exchange_timezone_for_venue(v_key),
                     }
         except Exception as e:
             logger.warning("price/live venue fetch failed for %s: %s", venue, e)
@@ -3344,13 +3936,28 @@ async def get_price_live(
 
 
 @app.post("/api/backtest/run")
-async def run_backtest(req: BacktestRequest):
+async def run_backtest(request: Request, req: BacktestRequest):
     """Run a strategy backtest and return equity curve + metrics."""
     try:
         from src.backtesting.engine import run_backtest_json
+        user_id = await _resolve_request_user_id(request)
         # Resolve asset_class: use provided value or auto-detect from venue name
         v_key = req.venue.lower().split(":")[0]
         resolved_ac = req.asset_class or _ASSET_CLASS.get(v_key, "crypto_perp")
+        ai_ctx = None
+        if req.strategy == "llm" and user_id:
+            ai_ctx = AIRequestContext(
+                user_id=user_id,
+                trace_id=new_trace_id(),
+                plan=await _get_user_plan(user_id),
+                action="backtest_commentary",
+                provider="groq",
+                model="",
+                mode="paper",
+                venue=req.venue,
+                symbol=req.symbol,
+                endpoint="/api/backtest/run",
+            )
         result = await run_backtest_json(
             venue=req.venue,
             symbol=req.symbol,
@@ -3359,8 +3966,11 @@ async def run_backtest(req: BacktestRequest):
             initial_capital=req.initial_capital,
             strategy=req.strategy,
             asset_class=resolved_ac,
+            ai_context=ai_ctx,
         )
         return result
+    except AIError as e:
+        raise HTTPException(status_code=e.http_status, detail=safe_error_payload(e)["error"])
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -3659,6 +4269,17 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
             s.user_id, "kill_switch", None, None,
             {"venue": s.venue_name, "closed": closed, "errors": errors},
         ))
+        asyncio.create_task(capture_posthog("kill_switch_triggered", {
+            "user_id": s.user_id,
+            "plan": await _get_user_plan(s.user_id),
+            "mode": "paper" if s.is_paper else "live",
+            "venue": s.venue_name,
+            "persona": s.strategy_type or "",
+            "provider": s.ai_agent.provider.name if s.ai_agent else "",
+            "trace_id": new_trace_id(),
+            "success": True,
+            "reason_code": "kill_switch",
+        }))
     return {"ok": True, "closed": closed, "errors": errors}
 
 
@@ -3677,6 +4298,15 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
 
     # Resolve which state to send based on the user's session
     s = get_state(ws_user_id) if ws_user_id else _state
+    db_decisions = list(s.decisions)[:20]
+    if ws_user_id:
+        try:
+            from src.services.supabase_reader import list_ai_decisions
+            fetched = await list_ai_decisions(ws_user_id, limit=20)
+            if fetched:
+                db_decisions = fetched
+        except Exception as e:
+            logger.debug("ws init decisions fallback: %s", e)
     await ws.send_json({
         "type":      "init",
         "status":    s.status,
@@ -3688,7 +4318,7 @@ async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default
         "strategy_type": s.strategy_type or None,
         "account":   s.account,
         "positions": s.positions,
-        "decisions": list(s.decisions)[:20],
+        "decisions": db_decisions,
         "prices":    s.price_cache,
         "paper":     s.is_paper,
     })

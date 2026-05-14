@@ -26,8 +26,18 @@ interface TradeDecision {
 
 interface Decision {
   ts?:             string;
+  trace_id?:       string;
+  reasoning_summary?: string;
   trade_decisions?: TradeDecision[];
   council?:        { asset: string; opinions: CouncilOpinion[]; vote: string; confidence: number; deadlock: boolean }[];
+}
+
+interface DecisionDraft {
+  trace_id: string;
+  provider?: string;
+  model?: string;
+  action: string;
+  partial: string;
 }
 
 /* ── Colour maps ───────────────────────────────────────────────────── */
@@ -139,7 +149,7 @@ function CouncilRow({ opinion }: { opinion: CouncilOpinion }) {
 }
 
 /* ── Main component ────────────────────────────────────────────────── */
-export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
+export function DecisionsFeed({ decisions, drafts = [] }: { decisions: Decision[]; drafts?: DecisionDraft[] }) {
   const flat = decisions
     .flatMap((d) =>
       (d.trade_decisions ?? []).map((td) => {
@@ -147,6 +157,7 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
         const councilEntry = d.council?.find(c => c.asset?.toUpperCase() === td.asset?.toUpperCase());
         return {
           ts:      d.ts,
+          trace_id: d.trace_id,
           ...td,
           council: td.council ?? councilEntry?.opinions,
           deadlock: td.deadlock ?? councilEntry?.deadlock,
@@ -169,6 +180,34 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {drafts.map((draft) => (
+        <div
+          key={draft.trace_id}
+          style={{
+            padding: "12px 14px",
+            borderRadius: 16,
+            background: "rgba(79,142,247,0.06)",
+            border: "1px solid rgba(79,142,247,0.18)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 6 }}>
+            <span style={{
+              fontSize: 9, fontWeight: 700, padding: "3px 9px", borderRadius: 8,
+              background: "rgba(79,142,247,0.12)", color: "#4F8EF7",
+              border: "1px solid rgba(79,142,247,0.22)", textTransform: "uppercase", letterSpacing: "0.1em",
+            }}>
+              live
+            </span>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)" }}>
+              {draft.provider ?? "AI"}{draft.model ? ` • ${draft.model}` : ""}
+            </span>
+          </div>
+          <p style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", lineHeight: 1.55, marginBottom: 6 }}>
+            {draft.partial || "Thinking..."}
+          </p>
+          <p style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>Trace ID: {draft.trace_id}</p>
+        </div>
+      ))}
       <AnimatePresence>
         {flat.map((d, i) => {
           const action      = (d.action ?? "hold").toLowerCase();
@@ -249,6 +288,12 @@ export function DecisionsFeed({ decisions }: { decisions: Decision[] }) {
                       overflow: "hidden", display: "-webkit-box",
                       WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
                       {humanizeRationale(d.rationale)}
+                    </p>
+                  )}
+
+                  {d.trace_id && (
+                    <p style={{ fontSize: 10, color: "rgba(255,255,255,0.32)", marginTop: 6 }}>
+                      Trace ID: {d.trace_id}
                     </p>
                   )}
 

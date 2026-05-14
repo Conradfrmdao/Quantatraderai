@@ -25,6 +25,7 @@ import { EquityChart }       from "@/components/EquityChart";
 import { LogoWordmark }      from "@/components/Logo";
 import { MacroIntelStrip }   from "@/components/MacroIntelStrip";
 import { NLCommandBar }      from "@/components/NLCommandBar";
+import { AITradeExplanationPanel } from "@/components/AITradeExplanationPanel";
 import { ErrorBoundary }     from "@/components/ErrorBoundary";
 import { useVenues } from "@/hooks/useVenues";
 import { useToast }            from "@/components/Toast";
@@ -108,9 +109,29 @@ interface StatusData    { status: string; provider: string; model: string; venue
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface CommitteeOpinionData { role?: string; provider: string; action: string; rationale: string; confidence: number; veto?: boolean }
 interface CommitteeSummaryData { asset: string; opinions: CommitteeOpinionData[]; vote: string; confidence: number; deadlock: boolean }
+interface LivePriceEventData {
+  symbol: string;
+  price: number;
+  ts?: number | null;
+  exchangeTs?: number | null;
+  receivedAt: number;
+  candle?: { time: number; open: number; high: number; low: number; close: number; volume?: number } | null;
+  timeframe?: string | null;
+  transport?: string | null;
+  source?: string | null;
+}
+interface DecisionDraftData {
+  trace_id: string;
+  provider?: string;
+  model?: string;
+  action: string;
+  partial: string;
+}
 interface DecisionsData {
   decisions: {
     ts: string;
+    trace_id?: string;
+    reasoning_summary?: string;
     trade_decisions: { asset: string; action: string; rationale: string; tp_price: number; sl_price: number; allocation_usd: number; confidence?: number; deadlock?: boolean; council?: CommitteeOpinionData[] }[];
     council?: CommitteeSummaryData[];
   }[]
@@ -168,7 +189,8 @@ export default function Dashboard() {
   const [refreshing, setRefreshing]       = useState(false);
   const [agentLoading, setAgentLoading]   = useState(false);
   const [killConfirm, setKillConfirm]     = useState(false);
-  const [livePrice, setLivePrice]         = useState<number | null>(null);
+  const [liveEvent, setLiveEvent]         = useState<LivePriceEventData | null>(null);
+  const [decisionDrafts, setDecisionDrafts] = useState<Record<string, DecisionDraftData>>({});
   const [strategyType, setStrategyType]     = useState<string>("MOMENTUM_HUNTER");
   const [timeframe, setTimeframe]           = useState<string>("5m");
   const [market, setMarket]                 = useState<string>("spot");
@@ -220,14 +242,27 @@ export default function Dashboard() {
   }, [activeVenue?.id, activeVenue?.paperCapital, venuesLoading]);
 
   const isForexVenue = activeCapability.assetClass === "forex";
+  const latestDecisionEntry = decisions.data?.decisions?.[0] ?? null;
+  const latestTradeDecision = latestDecisionEntry?.trade_decisions?.[0]
+    ? {
+        ts: latestDecisionEntry.ts,
+        trace_id: latestDecisionEntry.trace_id,
+        ...latestDecisionEntry.trade_decisions[0],
+        council:
+          latestDecisionEntry.council?.find((entry) => normalizeMarketSymbol(entry.asset) === normalizeMarketSymbol(latestDecisionEntry.trade_decisions[0].asset))?.opinions
+          ?? latestDecisionEntry.trade_decisions[0].council
+          ?? [],
+      }
+    : null;
 
   const toast = useToast();
 
   // Reset derived UI state immediately on user switch / sign-out
   useEffect(() => {
-    setLivePrice(null);
+    setLiveEvent(null);
     setKillConfirm(false);
     setAgentLoading(false);
+    setDecisionDrafts({});
     processedWsEventRef.current = null;
   }, [sessionKey]);
 
@@ -289,8 +324,37 @@ export default function Dashboard() {
       if (ev.decisions) decisions.set({ decisions: ev.decisions });
     }
     if (lastEvent.type === "price_update") {
-      const ev = lastEvent as { type: string; symbol: string; price: number };
-      if (normalizeMarketSymbol(ev.symbol ?? "") === normalizeMarketSymbol(symbol)) setLivePrice(ev.price);
+      const ev = lastEvent as {
+        type: string;
+        symbol: string;
+        price: number;
+        ts?: number | null;
+        exchange_ts?: number | null;
+        timeframe?: string | null;
+        transport?: string | null;
+        source?: string | null;
+        candle?: { time?: number; open?: number; high?: number; low?: number; close?: number; volume?: number } | null;
+      };
+      if (normalizeMarketSymbol(ev.symbol ?? "") === normalizeMarketSymbol(symbol)) {
+        setLiveEvent({
+          symbol: ev.symbol,
+          price: ev.price,
+          ts: typeof ev.ts === "number" ? ev.ts : null,
+          exchangeTs: typeof ev.exchange_ts === "number" ? ev.exchange_ts : null,
+          receivedAt: Date.now(),
+          timeframe: ev.timeframe ?? null,
+          transport: ev.transport ?? null,
+          source: ev.source ?? null,
+          candle: ev.candle && typeof ev.candle.time === "number" ? {
+            time: ev.candle.time,
+            open: Number(ev.candle.open ?? ev.price),
+            high: Number(ev.candle.high ?? ev.price),
+            low: Number(ev.candle.low ?? ev.price),
+            close: Number(ev.candle.close ?? ev.price),
+            volume: typeof ev.candle.volume === "number" ? ev.candle.volume : undefined,
+          } : null,
+        });
+      }
     }
     if (lastEvent.type === "account_update") {
       const ev = lastEvent as { type: string; data?: AccountData };
@@ -301,6 +365,47 @@ export default function Dashboard() {
       if (ev.data) positions.set(ev.data);
     }
     if (lastEvent.type === "decision" || lastEvent.type === "decisions_update") {
+      decisions.refresh();
+    }
+    if (lastEvent.type === "ai_decision_started" || lastEvent.type === "ai_council_vote_started") {
+      const ev = lastEvent as { trace_id?: string; provider?: string; model?: string; action?: string };
+      if (ev.trace_id) {
+        setDecisionDrafts((current) => ({
+          ...current,
+          [ev.trace_id!]: {
+            trace_id: ev.trace_id!,
+            provider: ev.provider,
+            model: ev.model,
+            action: ev.action ?? "agent_decision",
+            partial: "",
+          },
+        }));
+      }
+    }
+    if (lastEvent.type === "ai_decision_delta" || lastEvent.type === "ai_council_vote_delta") {
+      const ev = lastEvent as { trace_id?: string; provider?: string; model?: string; action?: string; partial?: string };
+      if (ev.trace_id) {
+        setDecisionDrafts((current) => ({
+          ...current,
+          [ev.trace_id!]: {
+            trace_id: ev.trace_id!,
+            provider: ev.provider,
+            model: ev.model,
+            action: ev.action ?? "agent_decision",
+            partial: `${current[ev.trace_id!]?.partial ?? ""}${ev.partial ?? ""}`,
+          },
+        }));
+      }
+    }
+    if (lastEvent.type === "ai_decision_completed" || lastEvent.type === "ai_council_vote_completed" || lastEvent.type === "ai_decision_failed" || lastEvent.type === "ai_stream_failed") {
+      const ev = lastEvent as { trace_id?: string };
+      if (ev.trace_id) {
+        setDecisionDrafts((current) => {
+          const next = { ...current };
+          delete next[ev.trace_id!];
+          return next;
+        });
+      }
       decisions.refresh();
     }
     if (lastEvent.type === "trade_executed") {
@@ -570,7 +675,10 @@ export default function Dashboard() {
   };
 
   // Normalise both sides: strip slashes and uppercase so "BTC/USDT", "BTCUSDT", "BTC" all match.
-  const displayPrice = livePrice ?? pos.find((p) => normalizeMarketSymbol(p.symbol) === normalizeMarketSymbol(symbol))?.current_price;
+  const displayPrice =
+    liveEvent && normalizeMarketSymbol(liveEvent.symbol) === normalizeMarketSymbol(symbol)
+      ? liveEvent.price
+      : pos.find((p) => normalizeMarketSymbol(p.symbol) === normalizeMarketSymbol(symbol))?.current_price;
 
   // M3: Backend connectivity check — banner shown if Python is unreachable
   // After the first poll completes, status.data should be populated. If it's still null
@@ -1141,7 +1249,8 @@ export default function Dashboard() {
                   venueType={venueType}
                   venueLabel={venueLabel}
                   assetClass={activeCapability.assetClass}
-                  livePrice={livePrice}
+                  liveEvent={liveEvent}
+                  appRealtimeConnected={connected}
                 />
               </ErrorBoundary>
             </motion.section>
@@ -1287,7 +1396,14 @@ export default function Dashboard() {
                   </div>
                 );
               })()}
-              <DecisionsFeed decisions={decisions.data?.decisions ?? []} />
+              <div style={{ marginBottom: 12 }}>
+                <AITradeExplanationPanel
+                  decision={latestTradeDecision}
+                  venue={venueRegistryName}
+                  mode={effectiveIsPaper ? "paper" : "live"}
+                />
+              </div>
+              <DecisionsFeed decisions={decisions.data?.decisions ?? []} drafts={Object.values(decisionDrafts)} />
             </motion.section>
 
             {/* Decision Timeline */}

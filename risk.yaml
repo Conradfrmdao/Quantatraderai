@@ -45,7 +45,7 @@ overrides:
   - venue: binance
     asset_class: crypto_spot
     max_leverage: 1.0          # spot: no leverage
-    max_position_pct: 5.0
+    max_position_pct: 4.0
     mandatory_sl_pct: 3.0
 
   - venue: oanda

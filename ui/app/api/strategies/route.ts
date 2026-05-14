@@ -39,8 +39,19 @@ export async function POST(req: Request) {
     body: JSON.stringify({ text, userId: user.clerkId }),
   }).catch(() => null);
   if (!res?.ok) {
-    const data = await res?.json().catch(() => ({})) as { detail?: string; error?: string } | undefined;
-    return Response.json({ error: data?.detail ?? data?.error ?? "Parse failed" }, { status: res?.status ?? 502 });
+    const data = await res?.json().catch(() => ({})) as {
+      detail?: string | { message?: string; trace_id?: string; retry_after_seconds?: number };
+      error?: string;
+    } | undefined;
+    const detail = typeof data?.detail === "string" ? { message: data.detail } : data?.detail;
+    return Response.json(
+      {
+        error: detail?.message ?? data?.error ?? "Parse failed",
+        trace_id: detail?.trace_id,
+        retry_after_seconds: detail?.retry_after_seconds,
+      },
+      { status: res?.status ?? 502 },
+    );
   }
   return Response.json(await res.json());
 }

@@ -8,6 +8,7 @@ export const POSTHOG_HOST  = process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us
 
 // Typed event catalogue
 export type PHEvent =
+  | { event: "onboarding_started";   props: { mode: "beginner" | "expert" } }
   | { event: "agent_started";        props: { venue: string; assets: string; interval: string } }
   | { event: "agent_stopped";        props: { reason: string } }
   | { event: "killswitch_triggered"; props: { venue: string } }

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 
+import aiohttp
 import requests
 
 from src.agent.providers.base import LLMProvider, LLMResponse
@@ -41,22 +42,7 @@ class OpenRouterProvider(LLMProvider):
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> LLMResponse:
-        openrouter_messages = [{"role": "system", "content": system}]
-        for msg in messages:
-            role = msg.get("role") or "user"
-            content = msg.get("content") or ""
-            if isinstance(content, list):
-                content = " ".join(
-                    c.get("text") or c.get("content") or ""
-                    for c in content if isinstance(c, dict)
-                )
-            openrouter_messages.append({"role": role, "content": content})
-
-        payload: dict = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": openrouter_messages,
-        }
+        payload = self._build_payload(system, messages, max_tokens)
 
         try:
             resp = requests.post(
@@ -70,20 +56,66 @@ class OpenRouterProvider(LLMProvider):
                 timeout=60,
             )
             resp.raise_for_status()
-            data = resp.json()
-            choice = (data.get("choices") or [{}])[0]
-            text = (choice.get("message") or {}).get("content") or ""
-            usage = data.get("usage") or {}
-            logging.info("OpenRouter: model=%s tokens in=%d out=%d",
-                         self.model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
-            return LLMResponse(
-                content=text,
-                model=self.model,
-                input_tokens=usage.get("prompt_tokens", 0),
-                output_tokens=usage.get("completion_tokens", 0),
-                stop_reason=choice.get("finish_reason") or "stop",
-                raw=data,
-            )
+            return self._parse_response(resp.json())
         except Exception as e:
             logging.error("OpenRouter error: %s", e)
             return LLMResponse(content="", model=self.model, stop_reason="error")
+
+    async def acomplete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
+        payload = self._build_payload(system, messages, max_tokens)
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+                async with session.post(
+                    f"{_BASE_URL}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "HTTP-Referer": "https://github.com/QuantatraderAI",
+                        "X-Title": "QuantatraderAI",
+                    },
+                    json=payload,
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+            return self._parse_response(data)
+        except Exception as e:
+            logging.error("OpenRouter error: %s", e)
+            return LLMResponse(content="", model=self.model, stop_reason="error")
+
+    def _build_payload(self, system: str, messages: list[dict], max_tokens: int) -> dict:
+        openrouter_messages = [{"role": "system", "content": system}]
+        for msg in messages:
+            role = msg.get("role") or "user"
+            content = msg.get("content") or ""
+            if isinstance(content, list):
+                content = " ".join(
+                    c.get("text") or c.get("content") or ""
+                    for c in content if isinstance(c, dict)
+                )
+            openrouter_messages.append({"role": role, "content": content})
+
+        return {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": openrouter_messages,
+        }
+
+    def _parse_response(self, data: dict) -> LLMResponse:
+        choice = (data.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        usage = data.get("usage") or {}
+        logging.info("OpenRouter: model=%s tokens in=%d out=%d",
+                     self.model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+        return LLMResponse(
+            content=text,
+            model=self.model,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            stop_reason=choice.get("finish_reason") or "stop",
+            raw=data,
+        )

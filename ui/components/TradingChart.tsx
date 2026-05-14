@@ -1,16 +1,74 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  alignToBucket,
+  dedupeAndSortBars,
+  describeFeedFreshness,
+  formatTimestamp,
+  getBrowserTimeZone,
+  mergeRealtimeBar,
+  secondsSince,
+  timeframeSeconds,
+  toUnixSeconds,
+  validateCandleSequence,
+  type Bar,
+  type CandleValidation,
+  type ChartTimezoneMode,
+} from "@/lib/chart-sync";
+
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 type TF = (typeof TIMEFRAMES)[number];
 
+interface LiveChartEvent {
+  symbol: string;
+  price: number;
+  ts?: number | null;
+  exchangeTs?: number | null;
+  receivedAt: number;
+  candle?: Bar | null;
+  timeframe?: string | null;
+  transport?: string | null;
+  source?: string | null;
+}
+
 interface Props {
-  symbol?:    string;
+  symbol?: string;
   venueType?: string;
   venueLabel?: string;
   assetClass?: string;
-  livePrice?: number | null; // Real-time price from WebSocket — updates last bar instantly
+  liveEvent?: LiveChartEvent | null;
+  appRealtimeConnected?: boolean;
 }
+
+interface HistoryResponse {
+  bars: Bar[];
+  source: string;
+  timeBasis: string;
+  exchangeTimezone: string;
+  asOf: number | null;
+}
+
+interface PriceResponse {
+  price?: number;
+  changePct?: number | null;
+  high?: number | null;
+  low?: number | null;
+  error?: string;
+  source?: string;
+  ts?: number | null;
+  exchange_ts?: number | null;
+  exchange_timezone?: string | null;
+  transport?: string | null;
+}
+
+const EMPTY_VALIDATION: CandleValidation = {
+  duplicates: 0,
+  skippedIntervals: 0,
+  misaligned: 0,
+  futureBars: 0,
+  latestBarAgeSec: null,
+};
 
 function inferAssetClassFromVenueType(venueType: string): "crypto" | "forex" | "stocks" | "prediction" {
   if (venueType === "OANDA" || venueType === "METATRADER") return "forex";
@@ -19,141 +77,252 @@ function inferAssetClassFromVenueType(venueType: string): "crypto" | "forex" | "
   return "crypto";
 }
 
-/** Yahoo Finance timeframe → interval+range query params */
-function yahooParams(tf: string): { interval: string; range: string } {
-  const map: Record<string, { interval: string; range: string }> = {
-    "1m": { interval: "1m",  range: "1d"  },
-    "5m": { interval: "5m",  range: "5d"  },
-    "15m":{ interval: "15m", range: "5d"  },
-    "30m":{ interval: "30m", range: "30d" },
-    "1h": { interval: "60m", range: "30d" },
-    "4h": { interval: "1d",  range: "60d" }, // Yahoo has no 4h; use 1d and show as close
-    "1d": { interval: "1d",  range: "1y"  },
-  };
-  return map[tf] ?? { interval: "60m", range: "30d" };
-}
-
 function normaliseBinanceSymbol(sym: string): string {
   return sym.replace(/[/_\-]/g, "").toUpperCase();
 }
 
-const TIMEFRAME_SECONDS: Record<TF, number> = {
-  "1m": 60,
-  "5m": 300,
-  "15m": 900,
-  "30m": 1800,
-  "1h": 3600,
-  "4h": 14400,
-  "1d": 86400,
-};
-
-function timeframeSeconds(tf: TF): number {
-  return TIMEFRAME_SECONDS[tf] ?? 3600;
-}
-
-function alignToBucket(unixTs: number, tf: TF): number {
-  const intervalS = timeframeSeconds(tf);
-  return Math.floor(unixTs / intervalS) * intervalS;
-}
-
 function formatPrice(price: number, assetClass: string): string {
   if (assetClass === "forex") {
-    // Forex: no currency prefix, 4 decimal places
     return price.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 5 });
   }
   if (assetClass === "stocks") {
     return `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
-  // Crypto: 2 decimals for high-value, 6 for small
   return `$${price.toLocaleString("en-US", { maximumFractionDigits: price > 10 ? 2 : 6 })}`;
 }
 
-type Bar = { time: number; open: number; high: number; low: number; close: number };
-type CandleResponse = { candles?: Bar[]; source?: string };
-type PriceResponse = {
-  price?: number;
-  changePct?: number;
-  high?: number;
-  low?: number;
-  error?: string;
-  source?: string;
-};
+function transportLabel(transport: string, source: string): string {
+  if (transport === "websocket") {
+    if (source === "binance_ws") return "Binance websocket";
+    return "Authenticated websocket";
+  }
+  if (transport === "polling") return "Venue polling";
+  if (transport === "rest") return "REST snapshot";
+  if (source === "cache" || source === "stale_cache") return "Cached snapshot";
+  return "Idle";
+}
 
-export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venueLabel, assetClass, livePrice }: Props) {
-  const containerRef   = useRef<HTMLDivElement>(null);
-  const chartRef       = useRef<any>(null);
-  const seriesRef      = useRef<any>(null);
-  const wsRef          = useRef<WebSocket | null>(null);
-  const pollRef        = useRef<ReturnType<typeof setInterval> | null>(null);
+function timezoneLabel(mode: ChartTimezoneMode, browserTimeZone: string, exchangeTimeZone: string): string {
+  if (mode === "utc") return "UTC";
+  if (mode === "exchange") return `Exchange (${exchangeTimeZone})`;
+  return `Local (${browserTimeZone})`;
+}
+
+function browserOffsetLabel(): string {
+  const offsetMinutes = -new Date().getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absMinutes = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absMinutes / 60)).padStart(2, "0");
+  const minutes = String(absMinutes % 60).padStart(2, "0");
+  return `UTC${sign}${hours}:${minutes}`;
+}
+
+export function TradingChart({
+  symbol = "BTC/USDT",
+  venueType = "BINANCE",
+  venueLabel,
+  assetClass,
+  liveEvent,
+  appRealtimeConnected = false,
+}: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const historyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
   const lastBarTimeRef = useRef<number>(0);
   const currentBarsRef = useRef<Bar[]>([]);
 
   const resolvedAssetClass = assetClass ?? inferAssetClassFromVenueType(venueType);
-  const [ready,       setReady]       = useState(false);
-  const [tf,          setTf]          = useState<TF>("1h");
-  const [price,       setPrice]       = useState<number | null>(null);
-  const [change,      setChange]      = useState<number | null>(null);
-  const [live,        setLive]        = useState(false);
-  const [loading,     setLoading]     = useState(true);
-  const [noData,      setNoData]      = useState(false);   // agent not running yet
-  const [dataSource,  setDataSource]  = useState("");      // "live" | "cached" | "public"
-
   const isCrypto = resolvedAssetClass === "crypto";
-  const isForex  = resolvedAssetClass === "forex";
-  const isStocks = resolvedAssetClass === "stocks";
   const isBinanceVenue = venueType.toUpperCase() === "BINANCE";
+  const continuousMarket = resolvedAssetClass === "crypto" || resolvedAssetClass === "prediction";
 
-  // ── 0. Push WebSocket live price to last bar instantly ──────────
-  // When the parent passes livePrice (from the WS price_update event),
-  // update the chart's last candle without waiting for the next poll.
+  const [ready, setReady] = useState(false);
+  const [tf, setTf] = useState<TF>("1h");
+  const [price, setPrice] = useState<number | null>(null);
+  const [change, setChange] = useState<number | null>(null);
+  const [live, setLive] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [noData, setNoData] = useState(false);
+  const [dataSource, setDataSource] = useState("");
+  const [feedSource, setFeedSource] = useState("");
+  const [timeBasis, setTimeBasis] = useState("utc_epoch");
+  const [exchangeTimeZone, setExchangeTimeZone] = useState("UTC");
+  const [browserTimeZone, setBrowserTimeZone] = useState("UTC");
+  const [timezoneMode, setTimezoneMode] = useState<ChartTimezoneMode>("local");
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [lastEventTs, setLastEventTs] = useState<number | null>(null);
+  const [lastExchangeTs, setLastExchangeTs] = useState<number | null>(null);
+  const [lastCandleTs, setLastCandleTs] = useState<number | null>(null);
+  const [lastWsTickAt, setLastWsTickAt] = useState<number | null>(null);
+  const [lastPollAt, setLastPollAt] = useState<number | null>(null);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
+  const [feedTransport, setFeedTransport] = useState("rest");
+  const [feedConnection, setFeedConnection] = useState("offline");
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [validation, setValidation] = useState<CandleValidation>(EMPTY_VALIDATION);
+
+  const feedFreshness = describeFeedFreshness(lastUpdatedAt, nowMs);
+  const updateAgeSec = secondsSince(lastUpdatedAt, nowMs);
+  const expectsLiveFeed = live || dataSource === "live" || feedTransport === "websocket" || feedTransport === "polling";
+  const freshnessLabel = expectsLiveFeed
+    ? (feedFreshness === "stale" ? "LIVE DELAYED" : "LIVE")
+    : dataSource === "cache" || dataSource === "stale_cache"
+      ? "CACHED"
+      : feedFreshness === "stale"
+        ? "PUBLIC DELAYED"
+        : "PUBLIC";
+  const freshnessText = updateAgeSec == null
+    ? "Awaiting updates"
+    : feedFreshness === "stale"
+      ? `Last update ${updateAgeSec}s ago`
+      : `Updated ${updateAgeSec}s ago`;
+  const feedColor = feedFreshness === "live" ? "#22c55e" : feedFreshness === "delayed" ? "#f59e0b" : "#ef4444";
+
   useEffect(() => {
-    if (livePrice == null || !seriesRef.current || !lastBarTimeRef.current) return;
-    setPrice(livePrice);
+    setBrowserTimeZone(getBrowserTimeZone());
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const syncValidation = (bars: Bar[]) => {
+    setValidation(validateCandleSequence(bars, tf, Math.floor(Date.now() / 1000)));
+  };
+
+  const keepLatestVisible = () => {
+    if (!chartRef.current) return;
     try {
-      const nowS = Math.floor(Date.now() / 1000);
-      const targetTime = alignToBucket(nowS, tf);
-      const bars = currentBarsRef.current;
-      const prevBar = bars[bars.length - 1];
-      if (!prevBar) return;
-
-      const nextBar =
-        lastBarTimeRef.current < targetTime
-          ? {
-              time: targetTime,
-              open: prevBar.close,
-              high: Math.max(prevBar.close, livePrice),
-              low: Math.min(prevBar.close, livePrice),
-              close: livePrice,
-            }
-          : {
-              ...prevBar,
-              time: lastBarTimeRef.current,
-              high: Math.max(prevBar.high, livePrice),
-              low: Math.min(prevBar.low, livePrice),
-              close: livePrice,
-            };
-
-      currentBarsRef.current =
-        lastBarTimeRef.current < targetTime
-          ? [...bars, nextBar].slice(-500)
-          : [...bars.slice(0, -1), nextBar];
-      lastBarTimeRef.current = nextBar.time;
-      seriesRef.current.update(nextBar as any);
+      chartRef.current.timeScale().scrollToRealTime();
     } catch {}
-  }, [livePrice, tf]);
+  };
 
-  // ── 1. Create chart instance once ──────────────────────────────
+  const applyHistoryBars = (result: HistoryResponse, liveMode: boolean) => {
+    const cleaned = dedupeAndSortBars(result.bars);
+    currentBarsRef.current = cleaned;
+    seriesRef.current?.setData(cleaned as any[]);
+    chartRef.current?.timeScale().fitContent();
+    keepLatestVisible();
+
+    if (cleaned.length) {
+      const first = cleaned[0].close;
+      const last = cleaned[cleaned.length - 1].close;
+      const lastTime = cleaned[cleaned.length - 1].time;
+      lastBarTimeRef.current = lastTime;
+      setPrice(last);
+      setChange(first ? ((last - first) / first) * 100 : 0);
+      setLastCandleTs(lastTime);
+      setLastEventTs(result.asOf ?? lastTime);
+      setLastExchangeTs(result.asOf ?? lastTime);
+      setValidation(validateCandleSequence(cleaned, tf, Math.floor(Date.now() / 1000)));
+    } else {
+      lastBarTimeRef.current = 0;
+      setLastCandleTs(null);
+      setLastEventTs(null);
+      setLastExchangeTs(null);
+      setValidation(EMPTY_VALIDATION);
+    }
+
+    setFeedSource(result.source);
+    setExchangeTimeZone(result.exchangeTimezone || "UTC");
+    setTimeBasis(result.timeBasis || "utc_epoch");
+    setLastUpdatedAt(Date.now());
+    setLastPollAt(Date.now());
+    setLive(liveMode);
+    setLoading(false);
+  };
+
+  const applyRealtimeUpdate = (payload: {
+    price: number;
+    sourceTs?: number | null;
+    exchangeTs?: number | null;
+    candle?: Bar | null;
+    transport: string;
+    source: string;
+    connection: string;
+  }) => {
+    if (!seriesRef.current || !lastBarTimeRef.current || !Number.isFinite(payload.price)) return;
+
+    const merged = mergeRealtimeBar({
+      bars: currentBarsRef.current,
+      timeframe: tf,
+      price: payload.price,
+      sourceTs: payload.sourceTs,
+      exchangeTs: payload.exchangeTs,
+      candle: payload.candle,
+    });
+
+    if (!merged.updatedBar) return;
+
+    currentBarsRef.current = merged.bars;
+    lastBarTimeRef.current = merged.updatedBar.time;
+    seriesRef.current.update(merged.updatedBar as any);
+    keepLatestVisible();
+
+    const eventTs = payload.sourceTs ?? null;
+    const exchangeTs = payload.exchangeTs ?? null;
+    const receivedAt = Date.now();
+    setPrice(payload.price);
+    setLastUpdatedAt(receivedAt);
+    setLastCandleTs(merged.updatedBar.time);
+    setLastEventTs(eventTs);
+    setLastExchangeTs(exchangeTs);
+    const latencySource = exchangeTs ?? eventTs;
+    setLatencyMs(latencySource ? Math.max(0, receivedAt - latencySource * 1000) : null);
+    setFeedTransport(payload.transport);
+    setFeedConnection(payload.connection);
+    setFeedSource(payload.source);
+    setDataSource(
+      payload.source === "agent" || payload.source === "venue"
+        ? "live"
+        : payload.source === "binance_ws"
+          ? "public"
+          : payload.source,
+    );
+    setLive(payload.source === "agent" || payload.source === "venue" || payload.source === "binance_ws");
+    if (payload.transport === "websocket") {
+      setLastWsTickAt(receivedAt);
+    } else {
+      setLastPollAt(receivedAt);
+    }
+    syncValidation(merged.bars);
+  };
+
+  useEffect(() => {
+    if (!liveEvent) return;
+    const liveSymbol = normaliseBinanceSymbol(liveEvent.symbol ?? "");
+    const selectedSymbol = normaliseBinanceSymbol(symbol);
+    if (!liveSymbol || liveSymbol !== selectedSymbol) return;
+    if (typeof liveEvent.price !== "number" || !Number.isFinite(liveEvent.price)) return;
+
+    const candle = liveEvent.timeframe === tf ? liveEvent.candle ?? null : null;
+    applyRealtimeUpdate({
+      price: liveEvent.price,
+      sourceTs: liveEvent.ts ?? null,
+      exchangeTs: liveEvent.exchangeTs ?? null,
+      candle,
+      transport: liveEvent.transport ?? "websocket",
+      source: liveEvent.source ?? "agent",
+      connection: appRealtimeConnected ? "connected" : "reconnecting",
+    });
+  }, [appRealtimeConnected, liveEvent, symbol, tf]);
+
   useEffect(() => {
     if (!containerRef.current) return;
-    let gone = false;
+    let disposed = false;
+    let observer: ResizeObserver | null = null;
+    let onOrient: (() => void) | null = null;
+
     import("lightweight-charts").then(({ createChart, CrosshairMode, CandlestickSeries }) => {
-      if (gone || !containerRef.current) return;
+      if (disposed || !containerRef.current) return;
       const chart = createChart(containerRef.current, {
-        width:  containerRef.current.clientWidth,
+        width: containerRef.current.clientWidth,
         height: 340,
         layout: {
           background: { color: "transparent" },
-          textColor:  "rgba(255,255,255,0.45)",
+          textColor: "rgba(255,255,255,0.45)",
           fontSize: 11,
         },
         grid: {
@@ -162,150 +331,250 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
         },
         crosshair: { mode: CrosshairMode.Normal },
         rightPriceScale: { borderColor: "rgba(255,255,255,0.05)" },
-        timeScale:       { borderColor: "rgba(255,255,255,0.05)", timeVisible: true },
+        timeScale: {
+          borderColor: "rgba(255,255,255,0.05)",
+          timeVisible: true,
+          rightOffset: 6,
+          shiftVisibleRangeOnNewBar: true,
+          rightBarStaysOnScroll: true,
+        },
       });
       const series = chart.addSeries(CandlestickSeries, {
-        upColor:       "#4ade80",
-        downColor:     "#f87171",
-        wickUpColor:   "#4ade80",
+        upColor: "#4ade80",
+        downColor: "#f87171",
+        wickUpColor: "#4ade80",
         wickDownColor: "#f87171",
         borderVisible: false,
       });
-      chartRef.current  = chart;
+
+      chartRef.current = chart;
       seriesRef.current = series;
       setReady(true);
 
       const resizeChart = () => {
-        if (containerRef.current && chartRef.current) {
-          chartRef.current.applyOptions({
-            width:  containerRef.current.clientWidth,
-            height: containerRef.current.clientHeight,
-          });
-          chartRef.current.timeScale().fitContent();
-        }
+        if (!containerRef.current || !chartRef.current) return;
+        chartRef.current.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
+        keepLatestVisible();
       };
 
-      const ro = new ResizeObserver(resizeChart);
-      ro.observe(containerRef.current);
+      observer = new ResizeObserver(resizeChart);
+      observer.observe(containerRef.current);
 
-      // Force resize on device rotation / iOS toolbar show-hide
-      const onOrient = () => {
+      onOrient = () => {
         resizeChart();
-        // iOS sometimes reports stale width during the rotation animation —
-        // re-measure once it settles
-        setTimeout(resizeChart, 300);
+        window.setTimeout(resizeChart, 320);
       };
-      window.addEventListener("app:orientation-change", onOrient);
 
-      return () => {
-        ro.disconnect();
-        window.removeEventListener("app:orientation-change", onOrient);
-      };
+      window.addEventListener("app:orientation-change", onOrient);
+      window.addEventListener("orientationchange", onOrient);
+      window.addEventListener("resize", onOrient);
     });
+
     return () => {
-      gone = true;
+      disposed = true;
+      observer?.disconnect();
+      if (onOrient) {
+        window.removeEventListener("app:orientation-change", onOrient);
+        window.removeEventListener("orientationchange", onOrient);
+        window.removeEventListener("resize", onOrient);
+      }
       chartRef.current?.remove();
-      chartRef.current  = null;
+      chartRef.current = null;
       seriesRef.current = null;
     };
   }, []);
 
-  // ── 2. Load / reload on symbol · timeframe · venue change ──────
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    const formatAxisTime = (time: unknown) => {
+      const unixTs = toUnixSeconds(time);
+      if (unixTs == null) return "";
+      return formatTimestamp(unixTs, {
+        mode: timezoneMode,
+        browserTimeZone,
+        exchangeTimeZone,
+        includeDate: tf === "4h" || tf === "1d",
+      });
+    };
+
+    const formatTooltipTime = (time: unknown) => {
+      const unixTs = toUnixSeconds(time);
+      if (unixTs == null) return "";
+      return formatTimestamp(unixTs, {
+        mode: timezoneMode,
+        browserTimeZone,
+        exchangeTimeZone,
+        includeDate: true,
+        withSeconds: true,
+      });
+    };
+
+    chartRef.current.applyOptions({
+      localization: {
+        timeFormatter: formatTooltipTime,
+      },
+      timeScale: {
+        tickMarkFormatter: formatAxisTime,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 6,
+        shiftVisibleRangeOnNewBar: true,
+        rightBarStaysOnScroll: true,
+      },
+    });
+  }, [browserTimeZone, exchangeTimeZone, tf, timezoneMode]);
+
   useEffect(() => {
     if (!ready) return;
 
-    // Close old streams + clear timers
     wsRef.current?.close();
-    if (pollRef.current) clearInterval(pollRef.current);
+    if (historyPollRef.current) clearInterval(historyPollRef.current);
+    if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current);
 
-    // CRITICAL: Clear old chart data and reset zoom IMMEDIATELY so users
-    // never see stale BTC bars while EURUSD loads, and zoom from the
-    // previous symbol doesn't trap the new (different price scale) data.
     seriesRef.current?.setData([]);
-    // setData([]) above already clears bars; fitContent will run when new bars arrive
-
-    setLive(false);
     setLoading(true);
     setNoData(false);
-    setDataSource("");
+    setLive(false);
     setPrice(null);
     setChange(null);
+    setDataSource("");
+    setFeedSource("");
+    setTimeBasis("utc_epoch");
+    setLastUpdatedAt(null);
+    setLastEventTs(null);
+    setLastExchangeTs(null);
+    setLastCandleTs(null);
+    setLastWsTickAt(null);
+    setLastPollAt(null);
+    setLatencyMs(null);
+    setFeedTransport("rest");
+    setFeedConnection("offline");
+    setValidation(EMPTY_VALIDATION);
     lastBarTimeRef.current = 0;
     currentBarsRef.current = [];
 
     let cancelled = false;
     let pricePollId: ReturnType<typeof setInterval> | null = null;
 
-    const applyBars = (bars: Bar[]) => {
-      currentBarsRef.current = bars;
-      seriesRef.current?.setData(bars as any[]);
-      chartRef.current?.timeScale().fitContent();
-      if (bars.length) {
-        lastBarTimeRef.current = bars[bars.length - 1].time;
-        setPrice(bars[bars.length - 1].close);
-      }
-      if (bars.length >= 2) {
-        const first = bars[0].close;
-        const last  = bars[bars.length - 1].close;
-        setChange(((last - first) / first) * 100);
-      }
-      setLoading(false);
-    };
-
-    // ── A. Always try the backend first (has candle cache when agent runs) ──
-    const loadFromBackend = async (): Promise<CandleResponse> => {
+    const loadFromBackend = async (): Promise<HistoryResponse> => {
       const url = `/api/agent/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
       const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) return { candles: [], source: "" };
-      const data = await res.json() as CandleResponse;
-      return { candles: data.candles ?? [], source: data.source ?? "" };
+      if (!res.ok) return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
+      const data = await res.json() as {
+        candles?: Bar[];
+        source?: string;
+        time_basis?: string;
+        exchange_timezone?: string;
+        server_ts?: number;
+      };
+      return {
+        bars: data.candles ?? [],
+        source: data.source ?? "",
+        timeBasis: data.time_basis ?? "utc_epoch",
+        exchangeTimezone: data.exchange_timezone ?? "UTC",
+        asOf: data.server_ts ?? null,
+      };
     };
 
-    // ── B. Yahoo Finance via server-side proxy (avoids CORS) ──
-    // Handles: forex (EURUSD), stocks (AAPL), indices (US30/^DJI), metals (XAUUSD/GC=F)
-    const loadFromYahoo = async (): Promise<Bar[]> => {
+    const loadFromYahoo = async (): Promise<HistoryResponse> => {
       try {
-        const res  = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${tf}`, { cache: "no-store" });
-        if (!res.ok) return [];
-        const data = await res.json() as { bars?: Bar[]; error?: string };
-        if (data.error || !data.bars?.length) return [];
-        return data.bars;
-      } catch { return []; }
+        const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${tf}`, { cache: "no-store" });
+        if (!res.ok) return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
+        const data = await res.json() as {
+          bars?: Bar[];
+          source?: string;
+          error?: string;
+          time_basis?: string;
+          exchange_timezone?: string;
+          as_of?: number | null;
+        };
+        if (data.error || !data.bars?.length) {
+          return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
+        }
+        return {
+          bars: data.bars,
+          source: data.source ?? "yahoo",
+          timeBasis: data.time_basis ?? "utc_epoch",
+          exchangeTimezone: data.exchange_timezone ?? "UTC",
+          asOf: data.as_of ?? null,
+        };
+      } catch {
+        return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
+      }
     };
 
-    // ── C. Binance public fallback for crypto symbols ──
-    const loadFromBinance = async (): Promise<Bar[]> => {
-      const sym  = normaliseBinanceSymbol(symbol);
-      const url  = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${tf}&limit=500`;
-      const res  = await fetch(url);
+    const loadFromBinance = async (): Promise<HistoryResponse> => {
+      const sym = normaliseBinanceSymbol(symbol);
+      const url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${tf}&limit=500`;
+      const res = await fetch(url, { cache: "no-store" });
       const data = await res.json();
-      if (!Array.isArray(data)) return [];
-      return data.map((row: any[]) => ({
-        time:  Math.floor(row[0] / 1000),
-        open:  parseFloat(row[1]),
-        high:  parseFloat(row[2]),
-        low:   parseFloat(row[3]),
+      if (!Array.isArray(data)) {
+        return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
+      }
+      const bars = data.map((row: any[]) => ({
+        time: Math.floor(row[0] / 1000),
+        open: parseFloat(row[1]),
+        high: parseFloat(row[2]),
+        low: parseFloat(row[3]),
         close: parseFloat(row[4]),
+        volume: parseFloat(row[5]),
       }));
+      return {
+        bars,
+        source: "binance_public",
+        timeBasis: "utc_epoch",
+        exchangeTimezone: "UTC",
+        asOf: bars[bars.length - 1]?.time ?? null,
+      };
     };
 
-    const startBinanceLiveWS = (mode: "live" | "public" = "live") => {
+    const startBinanceLiveWS = (mode: "live" | "public" = "live", attempt = 0) => {
+      if (cancelled) return;
       const sym = normaliseBinanceSymbol(symbol).toLowerCase();
-      const ws  = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${tf}`);
+      const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${tf}`);
       wsRef.current = ws;
-      ws.onopen    = () => { if (!cancelled) { setLive(true); setDataSource(mode); } };
-      ws.onclose   = () => { if (!cancelled) setLive(false); };
-      ws.onmessage = (e: MessageEvent) => {
-        if (!seriesRef.current || cancelled) return;
-        const { k } = JSON.parse(e.data as string) as { k: any };
-        const t = Math.floor(k.t / 1000);
-        if (t < lastBarTimeRef.current) return;
-        lastBarTimeRef.current = t;
-        seriesRef.current.update({
-          time: t, open: parseFloat(k.o), high: parseFloat(k.h),
-          low: parseFloat(k.l), close: parseFloat(k.c),
-        } as any);
-        setPrice(parseFloat(k.c));
+
+      ws.onopen = () => {
+        if (cancelled) return;
+        setLive(true);
+        setDataSource(mode);
+        setFeedTransport("websocket");
+        setFeedConnection("connected");
+      };
+
+      ws.onclose = () => {
+        if (cancelled) return;
+        setFeedConnection("reconnecting");
+        setLive(false);
+        const delay = Math.min(10_000, 1_000 * (attempt + 1));
+        reconnectTimerRef.current = window.setTimeout(() => startBinanceLiveWS(mode, attempt + 1), delay);
+      };
+
+      ws.onmessage = (event: MessageEvent) => {
+        if (cancelled || !seriesRef.current) return;
+        const payload = JSON.parse(event.data as string) as { E?: number; k?: any };
+        const kline = payload.k;
+        if (!kline) return;
+        applyRealtimeUpdate({
+          price: parseFloat(kline.c),
+          sourceTs: typeof payload.E === "number" ? Math.floor(payload.E / 1000) : Math.floor(Date.now() / 1000),
+          exchangeTs: typeof payload.E === "number" ? Math.floor(payload.E / 1000) : null,
+          candle: {
+            time: Math.floor(kline.t / 1000),
+            open: parseFloat(kline.o),
+            high: parseFloat(kline.h),
+            low: parseFloat(kline.l),
+            close: parseFloat(kline.c),
+            volume: parseFloat(kline.v),
+          },
+          transport: "websocket",
+          source: "binance_ws",
+          connection: "connected",
+        });
       };
     };
 
@@ -313,91 +582,70 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
       const fastPricePoll = async () => {
         if (cancelled) return;
         try {
-          let d: PriceResponse | null = null;
+          let payload: PriceResponse | null = null;
           try {
-            const live = await fetch(
+            const liveRes = await fetch(
               `/api/price/live?symbol=${encodeURIComponent(symbol)}&venue=${venueType.toLowerCase()}`,
-              { cache: "no-store" }
+              { cache: "no-store" },
             );
-            if (live.ok) {
-              const payload = await live.json() as PriceResponse;
-              if (payload.price && !payload.error) d = payload;
+            if (liveRes.ok) {
+              const liveData = await liveRes.json() as PriceResponse;
+              if (liveData.price && !liveData.error) payload = liveData;
             }
           } catch {}
 
-          if (!d) {
-            const r = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`);
-            if (!r.ok) return;
-            d = await r.json() as PriceResponse;
+          if (!payload) {
+            const fallbackRes = await fetch(`/api/price?symbol=${encodeURIComponent(symbol)}`, { cache: "no-store" });
+            if (!fallbackRes.ok) return;
+            payload = await fallbackRes.json() as PriceResponse;
           }
-          if (!d || !d.price || d.error) return;
+          if (!payload || !payload.price || payload.error) return;
 
-          setPrice(d.price);
-          if (d.changePct !== undefined && d.changePct !== null) setChange(d.changePct);
-          const realtimeFromVenue = d.source === "agent" || d.source === "venue";
-          setLive(realtimeFromVenue);
-          setDataSource(realtimeFromVenue ? "live" : "public");
-          if (seriesRef.current && lastBarTimeRef.current) {
-            const nowS = Math.floor(Date.now() / 1000);
-            const targetTime = alignToBucket(nowS, tf);
-            const bars = currentBarsRef.current;
-            const prevBar = bars[bars.length - 1];
-            if (!prevBar) return;
-
-            const nextBar =
-              lastBarTimeRef.current < targetTime
-                ? {
-                    time: targetTime,
-                    open: prevBar.close,
-                    high: d.high ?? Math.max(prevBar.close, d.price),
-                    low: d.low ?? Math.min(prevBar.close, d.price),
-                    close: d.price,
-                  }
-                : {
-                    ...prevBar,
-                    time: lastBarTimeRef.current,
-                    high: d.high ?? Math.max(prevBar.high, d.price),
-                    low: d.low ?? Math.min(prevBar.low, d.price),
-                    close: d.price,
-                  };
-
-            currentBarsRef.current =
-              lastBarTimeRef.current < targetTime
-                ? [...bars, nextBar].slice(-500)
-                : [...bars.slice(0, -1), nextBar];
-            lastBarTimeRef.current = nextBar.time;
-            seriesRef.current.update(nextBar as any);
-          }
+          setExchangeTimeZone(payload.exchange_timezone ?? exchangeTimeZone);
+          setDataSource(payload.source === "agent" || payload.source === "venue" ? "live" : "public");
+          setLive(payload.source === "agent" || payload.source === "venue");
+          if (payload.changePct != null) setChange(payload.changePct);
+          applyRealtimeUpdate({
+            price: payload.price,
+            sourceTs: typeof payload.ts === "number" ? payload.ts : Math.floor(Date.now() / 1000),
+            exchangeTs: typeof payload.exchange_ts === "number" ? payload.exchange_ts : null,
+            candle: lastBarTimeRef.current ? {
+              time: alignToBucket(
+                typeof payload.exchange_ts === "number"
+                  ? payload.exchange_ts
+                  : typeof payload.ts === "number"
+                    ? payload.ts
+                    : Math.floor(Date.now() / 1000),
+                tf,
+              ),
+              open: currentBarsRef.current[currentBarsRef.current.length - 1]?.close ?? payload.price,
+              high: Number(payload.high ?? payload.price),
+              low: Number(payload.low ?? payload.price),
+              close: payload.price,
+            } : null,
+            transport: payload.transport ?? "polling",
+            source: payload.source ?? "venue",
+            connection: "connected",
+          });
         } catch {}
       };
 
-      fastPricePoll();
+      void fastPricePoll();
       pricePollId = setInterval(fastPricePoll, 3_000);
 
-      pollRef.current = setInterval(async () => {
-        if (cancelled) { if (pricePollId) clearInterval(pricePollId); return; }
-        const backend = await loadFromBackend().catch(() => ({ candles: [], source: "" }));
-        if (backend.candles?.length) {
-          seriesRef.current?.setData(backend.candles as any[]);
-          chartRef.current?.timeScale().fitContent();
-          currentBarsRef.current = backend.candles;
-          lastBarTimeRef.current = backend.candles[backend.candles.length - 1]?.time ?? 0;
-          setDataSource(
-            backend.source === "cache" || backend.source === "stale_cache"
-              ? "cached"
-              : backend.source === "public"
-                ? "public"
-                : "live"
-          );
-          setLive(backend.source === "agent" || backend.source === "venue");
+      historyPollRef.current = setInterval(async () => {
+        if (cancelled) return;
+        const backend = await loadFromBackend().catch(() => ({ bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null }));
+        if (backend.bars.length) {
+          applyHistoryBars(backend, backend.source === "agent" || backend.source === "venue");
+          setDataSource(backend.source);
           return;
         }
         if (!isCrypto) {
-          const freshBars = await loadFromYahoo().catch(() => []);
-          if (freshBars.length) {
-            seriesRef.current?.setData(freshBars as any[]);
-            currentBarsRef.current = freshBars;
-            lastBarTimeRef.current = freshBars[freshBars.length - 1]?.time ?? 0;
+          const freshBars = await loadFromYahoo().catch(() => ({ bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null }));
+          if (freshBars.bars.length) {
+            applyHistoryBars(freshBars, false);
+            setDataSource("public");
           }
         }
       }, historyInterval);
@@ -405,107 +653,232 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
 
     const load = async () => {
       try {
-        // Step 1: try backend cache first (fastest, most accurate when agent is live)
-        let backend = await loadFromBackend();
-        let bars = backend.candles ?? [];
+        const backend = await loadFromBackend();
         if (cancelled) return;
-        if (bars.length) {
-          applyBars(bars);
-          setDataSource(
-            backend.source === "cache" || backend.source === "stale_cache"
-              ? "cached"
-              : backend.source === "public"
-                ? "public"
-                : "live"
-          );
-          setLive(backend.source === "agent" || backend.source === "venue");
-          if (isCrypto && isBinanceVenue) startBinanceLiveWS("live");
+        if (backend.bars.length) {
+          applyHistoryBars(backend, backend.source === "agent" || backend.source === "venue");
+          setDataSource(backend.source);
+          if (isCrypto && isBinanceVenue) startBinanceLiveWS(backend.source === "agent" || backend.source === "venue" ? "live" : "public");
           else startVenuePolling(10_000);
           return;
         }
 
-        // Step 2: crypto — Binance public API (no account needed)
         if (isCrypto) {
-          bars = await loadFromBinance();
+          const publicBars = await loadFromBinance();
           if (cancelled) return;
-          if (bars.length) {
-            applyBars(bars);
+          if (publicBars.bars.length) {
+            applyHistoryBars(publicBars, false);
             setDataSource("public");
-            setLive(false);
             startBinanceLiveWS("public");
             return;
           }
         }
 
-        // Step 3: forex/stocks/indices/metals — Yahoo Finance free public API
-        // Works for EURUSD, GBP/USD, AAPL, TSLA, US30, NAS100, XAU/USD etc.
-        if (!isCrypto) {
-          bars = await loadFromYahoo();
-          if (cancelled) return;
-          if (bars.length) {
-            applyBars(bars);
-            setDataSource("public");
-            setLive(false);
-            startVenuePolling(20_000);
-            return;
-          }
+        const yahooBars = await loadFromYahoo();
+        if (cancelled) return;
+        if (yahooBars.bars.length) {
+          applyHistoryBars(yahooBars, false);
+          setDataSource("public");
+          startVenuePolling(20_000);
+          return;
         }
 
-        // Step 4: nothing worked — show helpful placeholder
-        if (!cancelled) { setLoading(false); setNoData(true); }
+        setLoading(false);
+        setNoData(true);
       } catch {
-        if (!cancelled) { setLoading(false); setNoData(true); }
+        if (!cancelled) {
+          setLoading(false);
+          setNoData(true);
+        }
       }
     };
 
-    load();
+    void load();
 
     return () => {
       cancelled = true;
       wsRef.current?.close();
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (historyPollRef.current) clearInterval(historyPollRef.current);
       if (pricePollId) clearInterval(pricePollId);
+      if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current);
     };
   }, [ready, symbol, tf, venueType, isCrypto, isBinanceVenue]);
 
+  const localNow = formatTimestamp(Math.floor(nowMs / 1000), {
+    mode: "local",
+    browserTimeZone,
+    exchangeTimeZone,
+    includeDate: true,
+    withSeconds: true,
+  });
+  const lastCandleLabel = lastCandleTs
+    ? formatTimestamp(lastCandleTs, {
+        mode: timezoneMode,
+        browserTimeZone,
+        exchangeTimeZone,
+        includeDate: true,
+        withSeconds: true,
+      })
+    : "—";
+  const lastEventLabel = lastEventTs
+    ? formatTimestamp(lastEventTs, {
+        mode: timezoneMode,
+        browserTimeZone,
+        exchangeTimeZone,
+        includeDate: true,
+        withSeconds: true,
+      })
+    : "—";
+  const exchangeClockLabel = lastExchangeTs
+    ? formatTimestamp(lastExchangeTs, {
+        mode: "exchange",
+        browserTimeZone,
+        exchangeTimeZone,
+        includeDate: true,
+        withSeconds: true,
+      })
+    : "—";
+
   return (
     <div>
-      {/* Header row */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-          <span style={{ fontSize: 20, fontWeight: 600, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
-            {price !== null ? formatPrice(price, resolvedAssetClass) : "—"}
-          </span>
-          {change !== null && (
-            <span style={{ fontSize: 13, fontWeight: 500, color: change >= 0 ? "#4ade80" : "#f87171" }}>
-              {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 20, fontWeight: 600, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
+              {price !== null ? formatPrice(price, resolvedAssetClass) : "—"}
             </span>
-          )}
+            {change !== null && (
+              <span style={{ fontSize: 13, fontWeight: 500, color: change >= 0 ? "#4ade80" : "#f87171" }}>
+                {change >= 0 ? "+" : ""}{change.toFixed(2)}%
+              </span>
+            )}
+          </div>
+
           {!loading && (
-            <span style={{ fontSize: 10, color: live ? "#4ade80" : "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.08em", marginLeft: 6 }}>
-              {live ? (dataSource === "public" ? "public live" : "● live") : dataSource === "cached" ? "cached" : dataSource === "public" ? "public" : ""}
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700, color: feedColor, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                <span style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: feedColor,
+                  boxShadow: feedFreshness === "live" ? "0 0 0 0 rgba(34,197,94,0.6)" : undefined,
+                  animation: feedFreshness === "live" ? "pulse-ring 1.4s ease-out infinite" : undefined,
+                }} />
+                {freshnessLabel}
+              </span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>{freshnessText}</span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                {transportLabel(feedTransport, feedSource)} · {feedConnection}
+              </span>
+              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                TZ: {timezoneLabel(timezoneMode, browserTimeZone, exchangeTimeZone)}
+              </span>
+            </div>
           )}
         </div>
 
-        {/* Timeframe picker */}
-        <div style={{ display: "flex", gap: 2, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          {TIMEFRAMES.map(t => (
-            <button key={t} onClick={() => setTf(t)} style={{
-              padding: "4px 8px", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
-              background: tf === t ? "rgba(255,255,255,0.1)" : "transparent",
-              border: tf === t ? "1px solid rgba(255,255,255,0.15)" : "1px solid transparent",
-              color: tf === t ? "#fff" : "var(--muted)",
-            }}>
-              {t}
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {TIMEFRAMES.map((value) => (
+            <button
+              key={value}
+              onClick={() => setTf(value)}
+              style={{
+                padding: "4px 8px",
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 500,
+                cursor: "pointer",
+                background: tf === value ? "rgba(255,255,255,0.1)" : "transparent",
+                border: tf === value ? "1px solid rgba(255,255,255,0.15)" : "1px solid transparent",
+                color: tf === value ? "#fff" : "var(--muted)",
+              }}
+            >
+              {value}
             </button>
           ))}
+          <select
+            value={timezoneMode}
+            onChange={(event) => setTimezoneMode(event.target.value as ChartTimezoneMode)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              fontSize: 11,
+              background: "rgba(255,255,255,0.04)",
+              border: "1px solid rgba(255,255,255,0.1)",
+              color: "#fff",
+            }}
+          >
+            <option value="local">Local</option>
+            <option value="utc">UTC</option>
+            <option value="exchange">Exchange</option>
+          </select>
+          <button
+            onClick={() => setDebugOpen((open) => !open)}
+            style={{
+              padding: "4px 8px",
+              borderRadius: 6,
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: "pointer",
+              background: debugOpen ? "rgba(74,222,128,0.1)" : "rgba(255,255,255,0.04)",
+              border: `1px solid ${debugOpen ? "rgba(74,222,128,0.25)" : "rgba(255,255,255,0.1)"}`,
+              color: debugOpen ? "#4ade80" : "rgba(255,255,255,0.6)",
+            }}
+          >
+            Debug
+          </button>
         </div>
       </div>
 
-      {/* Chart canvas */}
       <div ref={containerRef} style={{ width: "100%", height: 340, position: "relative" }}>
-        {/* Loading state */}
+        {debugOpen && (
+          <div style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            zIndex: 4,
+            width: 280,
+            maxWidth: "calc(100% - 20px)",
+            padding: 12,
+            borderRadius: 12,
+            background: "rgba(10,15,24,0.88)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            backdropFilter: "blur(12px)",
+            display: "grid",
+            gap: 6,
+          }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#4ade80", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Chart Debug
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)" }}>Local now: {localNow}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Browser TZ: {browserTimeZone} ({browserOffsetLabel()})</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Chart TZ: {timezoneLabel(timezoneMode, browserTimeZone, exchangeTimeZone)}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Timestamp basis: {timeBasis}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Latest candle: {lastCandleLabel}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Last tick event: {lastEventLabel}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Exchange clock: {exchangeClockLabel}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Transport: {transportLabel(feedTransport, feedSource)}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Connection: {feedConnection}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Updated: {freshnessText}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Latency: {latencyMs != null ? `${latencyMs} ms` : "n/a"}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Last WS tick: {lastWsTickAt ? `${secondsSince(lastWsTickAt, nowMs)}s ago` : "n/a"}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Last poll: {lastPollAt ? `${secondsSince(lastPollAt, nowMs)}s ago` : "n/a"}</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Interval: {tf} ({timeframeSeconds(tf)}s)</div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>Validation: {validation.duplicates} dup · {validation.skippedIntervals} gap · {validation.misaligned} misaligned · {validation.futureBars} future</div>
+            {!continuousMarket && validation.skippedIntervals > 0 && (
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.35)" }}>
+                Session gaps can be normal on forex and stock markets outside trading hours.
+              </div>
+            )}
+            {feedFreshness === "stale" && (
+              <div style={{ fontSize: 10, color: "#fca5a5" }}>
+                Delayed feed warning: no chart update has landed for more than 10 seconds.
+              </div>
+            )}
+          </div>
+        )}
+
         {loading && (
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}>
             <div style={{ width: 24, height: 24, borderRadius: "50%", border: "2px solid rgba(255,255,255,0.1)", borderTopColor: "rgba(255,255,255,0.5)", animation: "spin 0.8s linear infinite" }} />
@@ -513,11 +886,10 @@ export function TradingChart({ symbol = "BTC/USDT", venueType = "BINANCE", venue
           </div>
         )}
 
-        {/* No-data state — agent not running for this venue */}
         {!loading && noData && (
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 32, textAlign: "center" }}>
             <div style={{ fontSize: 32, lineHeight: 1 }}>
-              {isForex ? "💱" : isStocks ? "📈" : "📊"}
+              {resolvedAssetClass === "forex" ? "💱" : resolvedAssetClass === "stocks" ? "📈" : "📊"}
             </div>
             <p style={{ fontSize: 14, fontWeight: 600, color: "rgba(255,255,255,0.7)" }}>
               {(venueLabel ?? venueType)} — {symbol}

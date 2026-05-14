@@ -8,6 +8,7 @@ import {
   ChevronRight, Info, X, Rocket,
 } from "lucide-react";
 import { LogoWordmark } from "@/components/Logo";
+import { capture } from "@/lib/posthog";
 import {
   getVenueCapability,
   type VenueCapability,
@@ -125,6 +126,7 @@ export default function OnboardingPage() {
   const [planChoice, setPlanChoice] = useState<"FREE" | "STARTER" | "PRO">("FREE");
   const [saving,     setSaving]     = useState(false);
   const [error,      setError]      = useState("");
+  const onboardingStartedRef = useRef(false);
 
   const STEPS = mode === "expert" ? EXPERT_STEPS : BEGINNER_STEPS;
   const totalSteps = STEPS.length;
@@ -160,6 +162,14 @@ export default function OnboardingPage() {
   const next = () => { setError(""); setStep(s => Math.min(s + 1, totalSteps)); };
   const back = () => { setError(""); setStep(s => Math.max(s - 1, 1)); };
 
+  const chooseMode = (nextMode: "beginner" | "expert") => {
+    if (!onboardingStartedRef.current) {
+      onboardingStartedRef.current = true;
+      void capture({ event: "onboarding_started", props: { mode: nextMode } });
+    }
+    setMode(nextMode);
+  };
+
   const skipToDashboard = async () => {
     markOnboardingDone();
     router.replace("/dashboard");
@@ -177,6 +187,12 @@ export default function OnboardingPage() {
         }));
         markOnboardingDone(uid);
       } catch { /* private mode */ }
+      if (mode) {
+        void capture({
+          event: "onboarding_completed",
+          props: { mode, plan: planChoice, venue: venueType },
+        });
+      }
       await fetch("/api/auth/refresh", { method: "POST", credentials: "same-origin" }).catch(() => {});
       if (planChoice !== "FREE" && mode === "beginner") {
         router.replace(`/billing?intent=upgrade&plan=${planChoice}&onboarding=1`);
@@ -234,7 +250,7 @@ export default function OnboardingPage() {
               {/* Beginner path */}
               <motion.button
                 whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                onClick={() => setMode("beginner")}
+                onClick={() => chooseMode("beginner")}
                 style={{
                   padding: "20px 22px", borderRadius: 16, cursor: "pointer", textAlign: "left",
                   background: "rgba(74,222,128,0.06)", border: "1px solid rgba(74,222,128,0.2)",
@@ -264,7 +280,7 @@ export default function OnboardingPage() {
               {/* Expert path */}
               <motion.button
                 whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
-                onClick={() => setMode("expert")}
+                onClick={() => chooseMode("expert")}
                 style={{
                   padding: "20px 22px", borderRadius: 16, cursor: "pointer", textAlign: "left",
                   background: "rgba(129,140,248,0.06)", border: "1px solid rgba(129,140,248,0.2)",

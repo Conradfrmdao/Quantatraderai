@@ -34,6 +34,16 @@ class LLMProvider(ABC):
         """Synchronous completion (called from the agent's sync context)."""
         ...
 
+    async def acomplete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
+        """Async completion when the provider has a native non-blocking client."""
+        raise NotImplementedError("Async completion is not implemented for this provider")
+
     @property
     def supports_tools(self) -> bool:
         """True if this provider supports function/tool calling."""

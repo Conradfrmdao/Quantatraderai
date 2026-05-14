@@ -80,7 +80,7 @@ export async function GET(req: Request) {
             "Accept":          "application/json",
             "Accept-Language": "en-US,en;q=0.9",
           },
-          next: { revalidate: 15 },
+          cache: "no-store",
         });
         clearTimeout(timeout);
         if (r.status === 429 && i < maxAttempts - 1) {
@@ -109,6 +109,10 @@ export async function GET(req: Request) {
     const json = await res.json() as {
       chart?: {
         result?: Array<{
+          meta?: {
+            regularMarketTime?: number;
+            exchangeTimezoneName?: string;
+          };
           timestamp?: number[];
           indicators?: {
             quote?: Array<{
@@ -143,7 +147,17 @@ export async function GET(req: Request) {
       bars.push({ time: timestamps[i], open: o, high: h, low: l, close: c });
     }
 
-    return Response.json({ bars, ticker, symbol, source: "yahoo" });
+    return Response.json({
+      bars,
+      ticker,
+      symbol,
+      source: "yahoo",
+      time_basis: "utc_epoch",
+      exchange_timezone: result.meta?.exchangeTimezoneName ?? "UTC",
+      as_of: result.meta?.regularMarketTime ?? bars[bars.length - 1]?.time ?? null,
+    }, {
+      headers: { "Cache-Control": "private, no-store" },
+    });
   } catch (e) {
     console.error("[chart]", e);
     return Response.json({ error: "Service temporarily unavailable" }, { status: 502 });

@@ -22,6 +22,8 @@ export function NLCommandBar() {
   const [rules,   setRules]   = useState<StrategyRule[]>([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
+  const [traceId, setTraceId] = useState("");
+  const [streamText, setStreamText] = useState("");
   const [open,    setOpen]    = useState(false);
 
   const loadRules = useCallback(() => {
@@ -37,16 +39,69 @@ export function NLCommandBar() {
     if (!text.trim()) return;
     setLoading(true);
     setError("");
+    setTraceId("");
+    setStreamText("");
     try {
-      const res  = await fetch("/api/strategies", {
+      const res  = await fetch("/api/strategies/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json() as { error?: string };
-      if (data.error) { setError(data.error); }
-      else            { setText(""); loadRules(); }
-    } catch { setError("Failed to parse rule"); }
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({})) as { error?: string; trace_id?: string };
+        setError(data.error ?? "Failed to parse rule");
+        setTraceId(data.trace_id ?? "");
+        setLoading(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let saved = false;
+      let streamFailed = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const line = part.split("\n").find((entry) => entry.startsWith("data: "));
+          if (!line) continue;
+          const payload = JSON.parse(line.slice(6)) as {
+            type?: string;
+            partial?: string;
+            content?: string;
+            message?: string;
+            trace_id?: string;
+            rule?: StrategyRule;
+            saved?: boolean;
+          };
+          if (payload.trace_id) setTraceId(payload.trace_id);
+          if (payload.partial) {
+            setStreamText((current) => `${current}${payload.partial}`);
+          }
+          if (payload.type === "strategy_saved" && payload.saved) {
+            saved = true;
+            setText("");
+            setStreamText("");
+            loadRules();
+          }
+          if (payload.type === "ai_stream_failed") {
+            streamFailed = true;
+            setError(payload.message ?? "Stream failed");
+          }
+        }
+      }
+
+      if (!saved && !streamFailed) {
+        setError("The AI stream ended before the rule was saved.");
+      }
+    } catch {
+      setError("Failed to parse rule");
+    }
     setLoading(false);
   };
 
@@ -120,6 +175,25 @@ export function NLCommandBar() {
 
               {/* Error */}
               {error && <p style={{ fontSize: 11, color: "var(--red)", marginBottom: 8 }}>{error}</p>}
+              {traceId && (
+                <p style={{ fontSize: 10, color: "rgba(255,255,255,0.35)", marginBottom: 8 }}>
+                  Trace ID: {traceId}
+                </p>
+              )}
+              {loading && streamText && (
+                <div style={{
+                  marginBottom: 10,
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  background: "rgba(255,255,255,0.03)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.35)", marginBottom: 6 }}>
+                    AI Parsing
+                  </p>
+                  <p style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", lineHeight: 1.5 }}>{streamText}</p>
+                </div>
+              )}
 
               {/* Examples */}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>

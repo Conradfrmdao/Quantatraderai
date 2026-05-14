@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 
+import aiohttp
 import requests
 
 from src.agent.providers.base import LLMProvider, LLMResponse
@@ -44,6 +45,47 @@ class GroqProvider(LLMProvider):
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> LLMResponse:
+        kwargs = self._build_payload(system, messages, max_tokens, tools)
+        resp = requests.post(
+            f"{_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=kwargs,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return self._parse_response(resp.json())
+
+    async def acomplete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
+        kwargs = self._build_payload(system, messages, max_tokens, tools)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+            async with session.post(
+                f"{_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=kwargs,
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        return self._parse_response(data)
+
+    def _build_payload(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int,
+        tools: list[dict] | None,
+    ) -> dict:
         groq_messages = [{"role": "system", "content": system}] + messages
 
         kwargs: dict = {
@@ -64,18 +106,9 @@ class GroqProvider(LLMProvider):
                 }
                 for t in tools
             ]
+        return kwargs
 
-        resp = requests.post(
-            f"{_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=kwargs,
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    def _parse_response(self, data: dict) -> LLMResponse:
 
         choice = (data.get("choices") or [{}])[0]
         message = choice.get("message") or {}

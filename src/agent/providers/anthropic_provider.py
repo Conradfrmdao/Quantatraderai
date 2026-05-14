@@ -16,6 +16,7 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, model: str | None = None):
         self.model = model or CONFIG.get("llm_model") or "claude-sonnet-4-6"
         self.client = anthropic.Anthropic(api_key=CONFIG.get("anthropic_api_key") or "")
+        self.async_client = anthropic.AsyncAnthropic(api_key=CONFIG.get("anthropic_api_key") or "")
 
     @property
     def supports_tools(self) -> bool:
@@ -32,6 +33,24 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> LLMResponse:
+        return self._build_response(self.client.messages.create(**self._build_kwargs(system, messages, max_tokens, tools)))
+
+    async def acomplete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
+        return self._build_response(await self.async_client.messages.create(**self._build_kwargs(system, messages, max_tokens, tools)))
+
+    def _build_kwargs(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int,
+        tools: list[dict] | None,
+    ) -> dict:
         kwargs: dict = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -46,8 +65,9 @@ class AnthropicProvider(LLMProvider):
                 "budget_tokens": int(CONFIG.get("thinking_budget_tokens") or 10000),
             }
             kwargs["max_tokens"] = max(max_tokens, 16000)
+        return kwargs
 
-        resp = self.client.messages.create(**kwargs)
+    def _build_response(self, resp) -> LLMResponse:
         logging.info("Anthropic: stop=%s usage=%s", resp.stop_reason, resp.usage)
 
         text = "".join(b.text for b in resp.content if b.type == "text")

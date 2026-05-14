@@ -20,6 +20,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.ai.errors import AIError
+from src.ai.governance import AIRequestContext, governed_complete, new_trace_id
+
 logger = logging.getLogger("quantatraderai.agent.nl_parser")
 
 
@@ -53,7 +56,12 @@ Return ONLY valid JSON with this structure:
 """
 
 
-async def parse_nl_rule(text: str, rule_id: str | None = None) -> StrategyRule | None:
+async def parse_nl_rule(
+    text: str,
+    rule_id: str | None = None,
+    ai_context: AIRequestContext | None = None,
+    stream_handler=None,
+) -> StrategyRule | None:
     """Parse a natural language rule string into a StrategyRule."""
     import uuid
     rid = rule_id or str(uuid.uuid4())[:8]
@@ -63,7 +71,26 @@ async def parse_nl_rule(text: str, rule_id: str | None = None) -> StrategyRule |
         from src.agent.providers.factory import get_provider
         provider = get_provider()
         messages = [{"role": "user", "content": f"Parse this trading rule: {text}"}]
-        resp = provider.complete(system=_SYSTEM_PROMPT, messages=messages, max_tokens=256)
+        call_ctx = ai_context or AIRequestContext(
+            user_id="",
+            trace_id=new_trace_id(),
+            plan="FREE",
+            action="manual_command_parse",
+            provider=provider.name,
+            model=provider.model,
+            mode="paper",
+            venue="strategy_rules",
+            endpoint="/api/strategies",
+            stream=stream_handler is not None,
+        )
+        resp = await governed_complete(
+            provider=provider,
+            system=_SYSTEM_PROMPT,
+            messages=messages,
+            max_tokens=256,
+            context=call_ctx,
+            stream_handler=stream_handler,
+        )
         raw  = resp.content if hasattr(resp, "content") else str(resp)
         start = raw.find("{"); end = raw.rfind("}") + 1
         if start != -1 and end > 0:
@@ -78,6 +105,8 @@ async def parse_nl_rule(text: str, rule_id: str | None = None) -> StrategyRule |
                 threshold=float(parsed.get("threshold", 30)),
                 allocation_pct=float(parsed.get("allocation_pct", 3)),
             )
+    except AIError:
+        raise
     except Exception as e:
         logger.warning("LLM parse failed: %s — trying keyword fallback", e)
 

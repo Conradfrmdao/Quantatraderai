@@ -100,6 +100,41 @@ async def test_broadcast_fans_out_to_all_clients_for_same_user_only():
 
 
 @pytest.mark.asyncio
+async def test_poll_prices_broadcasts_timestamp_metadata():
+    import src.server as srv
+    from src.venues.models import Ticker
+
+    class StubVenue:
+        async def get_ticker(self, symbol):
+            return Ticker(symbol=symbol, last=123.45, bid=123.4, ask=123.5)
+
+    s = srv.get_state("clerk_price_stream_meta")
+    s.status = "running"
+    s.user_id = "clerk_price_stream_meta"
+    s.venue_name = "oanda"
+    s.venue = StubVenue()
+    s.price_cache = {}
+
+    events: list[dict] = []
+
+    async def fake_broadcast(event, user_id=None):
+        events.append({"event": event, "user_id": user_id})
+        s.status = "stopped"
+
+    with patch("src.server._broadcast", fake_broadcast):
+        await srv._poll_prices(s, ["EUR_USD"], interval_secs=0)
+
+    assert events
+    event = events[0]["event"]
+    assert event["type"] == "price_update"
+    assert event["transport"] == "polling"
+    assert event["source"] == "oanda"
+    assert isinstance(event["ts"], int) and event["ts"] > 0
+    assert "exchange_ts" in event
+    assert events[0]["user_id"] == "clerk_price_stream_meta"
+
+
+@pytest.mark.asyncio
 async def test_resolve_request_user_id_accepts_bearer_when_internal_token_mismatch(monkeypatch):
     import src.server as srv
 
@@ -215,6 +250,57 @@ async def test_get_account_returns_configured_paper_balance_when_idle():
     assert data["equity"] == 25000.0
     assert data["initial_equity"] == 25000.0
     assert data["open_positions"] == 0
+
+
+def test_apply_market_data_guards_rewrites_vague_hold_reason_when_data_ready():
+    from src.server import _apply_market_data_guards
+
+    decisions = [{
+        "asset": "BTC/USDT",
+        "action": "hold",
+        "allocation_usd": 0.0,
+        "rationale": "Insufficient market data for trend evaluation",
+    }]
+    data_status = {
+        "BTC/USDT": {
+            "ready": True,
+            "status": "ready",
+            "fallback_rationale": "No high-confidence setup after the latest live market scan.",
+        }
+    }
+
+    guarded = _apply_market_data_guards(decisions, data_status)
+    assert guarded[0]["action"] == "hold"
+    assert guarded[0]["rationale"] == "No high-confidence setup after the latest live market scan."
+    assert guarded[0]["data_ready"] is True
+
+
+def test_apply_market_data_guards_blocks_trade_when_data_is_not_ready():
+    from src.server import _apply_market_data_guards
+
+    decisions = [{
+        "asset": "BTC/USDT",
+        "action": "buy",
+        "allocation_usd": 250.0,
+        "tp_price": 72_000.0,
+        "sl_price": 68_000.0,
+        "rationale": "Momentum confirmation",
+    }]
+    data_status = {
+        "BTC/USDT": {
+            "ready": False,
+            "status": "stale",
+            "fallback_rationale": "Market data is stale for BTC/USDT — latest candle is 97s old.",
+        }
+    }
+
+    guarded = _apply_market_data_guards(decisions, data_status)
+    assert guarded[0]["action"] == "hold"
+    assert guarded[0]["allocation_usd"] == 0.0
+    assert guarded[0]["tp_price"] is None
+    assert guarded[0]["sl_price"] is None
+    assert guarded[0]["rationale"] == "Market data is stale for BTC/USDT — latest candle is 97s old."
+    assert guarded[0]["data_status"] == "stale"
 
 
 @pytest.mark.asyncio

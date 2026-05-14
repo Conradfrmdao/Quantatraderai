@@ -48,6 +48,9 @@ model User {
   strategyRules     StrategyRule[]
   strategyListings  StrategyListing[]
   auditLogs         AuditLog[]
+  aiUsageLogs       AIUsageLog[]
+  aiDecisions       AIDecision[]
+  aiCouncilVotes    AICouncilVote[]
   copyLeading       CopyRelationship[] @relation("CopyLeader")
   copyFollowing     CopyRelationship[] @relation("CopyFollower")
 
@@ -76,6 +79,7 @@ model Venue {
   updatedAt      DateTime     @updatedAt
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   riskProfile    RiskProfile?
+  aiDecisions    AIDecision[]
 
   @@index([userId])
 }
@@ -216,6 +220,92 @@ model AgentRun {
   startedAt DateTime  @default(now())
   stoppedAt DateTime?
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  aiUsageLogs AIUsageLog[]
+  aiDecisions AIDecision[]
 
   @@index([isRunning])
+}
+
+model AIUsageLog {
+  id                 String    @id @default(cuid())
+  userId             String
+  agentRunId         String?
+  provider           String
+  model              String
+  action             String
+  promptTokens       Int       @default(0)
+  completionTokens   Int       @default(0)
+  totalTokens        Int       @default(0)
+  estimatedCostUsd   Float     @default(0)
+  traceId            String
+  mode               String    @default("paper")
+  venue              String?
+  createdAt          DateTime  @default(now())
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentRun           AgentRun? @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, action, createdAt])
+  @@index([traceId])
+}
+
+model AIDecision {
+  id               String           @id @default(cuid())
+  userId           String
+  agentRunId       String?
+  venueId          String?
+  traceId          String
+  mode             String           @default("paper")
+  persona          String?
+  symbol           String
+  provider         String
+  model            String
+  finalAction      String
+  confidence       Float            @default(0)
+  reasoningSummary String
+  riskDecision     String           @default("hold")
+  isCouncil        Boolean          @default(false)
+  createdAt        DateTime         @default(now())
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentRun         AgentRun?        @relation(fields: [agentRunId], references: [id], onDelete: SetNull)
+  venue            Venue?           @relation(fields: [venueId], references: [id], onDelete: SetNull)
+  councilVotes     AICouncilVote[]
+
+  @@index([userId, createdAt])
+  @@index([userId, symbol, createdAt])
+  @@index([traceId])
+}
+
+model AICouncilVote {
+  id               String     @id @default(cuid())
+  decisionId       String
+  userId           String
+  provider         String
+  model            String
+  role             String
+  voteAction       String
+  confidence       Float      @default(0)
+  reasoningSummary String
+  latencyMs        Int        @default(0)
+  promptTokens     Int        @default(0)
+  completionTokens Int        @default(0)
+  totalTokens      Int        @default(0)
+  estimatedCostUsd Float      @default(0)
+  traceId          String
+  createdAt        DateTime   @default(now())
+  decision         AIDecision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  user             User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([decisionId, createdAt])
+  @@index([userId, createdAt])
+  @@index([traceId])
+}
+
+model RuntimeCounter {
+  id        String   @id
+  value     Int      @default(0)
+  expiresAt DateTime
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@index([expiresAt])
 }

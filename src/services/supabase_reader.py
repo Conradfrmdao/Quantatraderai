@@ -101,6 +101,18 @@ async def get_user_settings(clerk_user_id: str) -> dict[str, Any] | None:
         await conn.close()
 
 
+async def get_user_plan(clerk_user_id: str) -> str:
+    conn = await _connect()
+    try:
+        user_id = await _resolve_db_user_id(conn, clerk_user_id)
+        if not user_id:
+            return "FREE"
+        row = await conn.fetchrow('SELECT plan FROM "User" WHERE id = $1', user_id)
+        return str(row["plan"]) if row else "FREE"
+    finally:
+        await conn.close()
+
+
 async def upsert_agent_run(
     clerk_user_id: str,
     venue: str,
@@ -109,7 +121,7 @@ async def upsert_agent_run(
     is_paper: bool,
     market: str,
     is_running: bool,
-) -> None:
+) -> str | None:
     """Persist agent state so it can be resumed on server restart."""
     conn = await _connect()
     try:
@@ -119,7 +131,7 @@ async def upsert_agent_run(
             return
 
         import uuid
-        await conn.execute(
+        row = await conn.fetchrow(
             """
             INSERT INTO "AgentRun"
                 ("id","userId","venue","symbols","timeframe","isPaper","market","isRunning","startedAt")
@@ -130,11 +142,14 @@ async def upsert_agent_run(
                 "stoppedAt"=CASE WHEN $8=false THEN NOW() ELSE NULL END,
                 "startedAt"=CASE WHEN $8=true  THEN NOW()
                                  ELSE "AgentRun"."startedAt" END
+            RETURNING "id"
             """,
             str(uuid.uuid4()), user_id, venue, symbols, timeframe, is_paper, market, is_running,
         )
+        return str(row["id"]) if row else None
     except Exception as e:
         logger.warning("upsert_agent_run failed: %s", e)
+        return None
     finally:
         await conn.close()
 
@@ -237,6 +252,111 @@ async def get_running_agents() -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
     except Exception as e:
         logger.warning("get_running_agents failed: %s", e)
+        return []
+    finally:
+        await conn.close()
+
+
+async def find_venue_id(clerk_user_id: str, venue_name: str) -> str | None:
+    conn = await _connect()
+    try:
+        user_id = await _resolve_db_user_id(conn, clerk_user_id)
+        if not user_id:
+            return None
+        rows = await conn.fetch('SELECT id, type FROM "Venue" WHERE "userId" = $1', user_id)
+        for row in rows:
+            normalized = str(row["type"]).lower()
+            if normalized == venue_name.lower() or normalized == venue_name.split(":")[0].upper().lower():
+                return str(row["id"])
+        return None
+    except Exception as e:
+        logger.warning("find_venue_id failed: %s", e)
+        return None
+    finally:
+        await conn.close()
+
+
+async def list_ai_decisions(clerk_user_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    conn = await _connect()
+    try:
+        user_id = await _resolve_db_user_id(conn, clerk_user_id)
+        if not user_id:
+            return []
+
+        decision_rows = await conn.fetch(
+            """
+            SELECT *
+            FROM "AIDecision"
+            WHERE "userId" = $1
+            ORDER BY "createdAt" DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+        decision_ids = [str(row["id"]) for row in decision_rows]
+        votes_by_decision: dict[str, list[dict[str, Any]]] = {}
+        if decision_ids:
+            vote_rows = await conn.fetch(
+                """
+                SELECT *
+                FROM "AICouncilVote"
+                WHERE "decisionId" = ANY($1::text[])
+                ORDER BY "createdAt" ASC
+                """,
+                decision_ids,
+            )
+            for row in vote_rows:
+                votes_by_decision.setdefault(str(row["decisionId"]), []).append(dict(row))
+
+        results: list[dict[str, Any]] = []
+        for row in decision_rows:
+            payload = dict(row)
+            votes = votes_by_decision.get(str(row["id"]), [])
+            results.append({
+                "ts": payload["createdAt"].isoformat(),
+                "trace_id": payload["traceId"],
+                "reasoning_summary": payload["reasoningSummary"],
+                "trade_decisions": [{
+                    "asset": payload["symbol"],
+                    "action": payload["finalAction"],
+                    "rationale": payload["reasoningSummary"],
+                    "allocation_usd": 0.0,
+                    "confidence": payload["confidence"],
+                    "deadlock": payload["riskDecision"] == "deadlock",
+                    "council": [
+                        {
+                            "role": vote.get("role"),
+                            "provider": vote.get("provider"),
+                            "action": vote.get("voteAction"),
+                            "confidence": vote.get("confidence"),
+                            "rationale": vote.get("reasoningSummary"),
+                            "veto": vote.get("voteAction") == "hold" and vote.get("role") == "risk_officer",
+                        }
+                        for vote in votes
+                    ] if votes else None,
+                }],
+                "council": [{
+                    "asset": payload["symbol"],
+                    "vote": payload["finalAction"],
+                    "confidence": payload["confidence"],
+                    "deadlock": payload["riskDecision"] == "deadlock",
+                    "opinions": [
+                        {
+                            "role": vote.get("role"),
+                            "provider": vote.get("provider"),
+                            "action": vote.get("voteAction"),
+                            "confidence": vote.get("confidence"),
+                            "rationale": vote.get("reasoningSummary"),
+                            "veto": vote.get("voteAction") == "hold" and vote.get("role") == "risk_officer",
+                        }
+                        for vote in votes
+                    ],
+                }] if votes else None,
+            })
+        return results
+    except Exception as e:
+        logger.warning("list_ai_decisions failed: %s", e)
         return []
     finally:
         await conn.close()

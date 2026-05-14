@@ -46,8 +46,33 @@ class GeminiProvider(LLMProvider):
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
     ) -> LLMResponse:
+        history, config = self._build_request(system, messages, max_tokens)
+        try:
+            resp = self._model_client.generate_content(history, generation_config=config)
+            return self._build_response(resp)
+        except Exception as e:
+            logging.error("Gemini API error: %s", e)
+            return LLMResponse(content="", model=self.model, stop_reason="error")
+
+    async def acomplete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        tools: list[dict] | None = None,
+    ) -> LLMResponse:
+        history, config = self._build_request(system, messages, max_tokens)
+        try:
+            if hasattr(self._model_client, "generate_content_async"):
+                resp = await self._model_client.generate_content_async(history, generation_config=config)
+                return self._build_response(resp)
+            return self.complete(system, messages, max_tokens=max_tokens, tools=tools)
+        except Exception as e:
+            logging.error("Gemini API error: %s", e)
+            return LLMResponse(content="", model=self.model, stop_reason="error")
+
+    def _build_request(self, system: str, messages: list[dict], max_tokens: int):
         # Gemini uses a different message format; rebuild from Anthropic-style
-        combined_history = []
         full_system = system
         # Prepend system as a user message (Gemini doesn't have a system role in older API)
         history = [{"role": "user", "parts": [full_system + "\n\n" + (messages[0].get("content") or "")]}]
@@ -62,17 +87,19 @@ class GeminiProvider(LLMProvider):
             history.append({"role": role, "parts": [content]})
 
         config = self._genai.types.GenerationConfig(max_output_tokens=max_tokens)
-        try:
-            resp = self._model_client.generate_content(history, generation_config=config)
-            text = resp.text or ""
-        except Exception as e:
-            logging.error("Gemini API error: %s", e)
-            text = ""
+        return history, config
 
-        logging.info("Gemini: model=%s response_len=%d", self.model, len(text))
+    def _build_response(self, resp) -> LLMResponse:
+        text = resp.text or ""
+        usage = getattr(resp, "usage_metadata", None)
+        prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+        output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+        logging.info("Gemini: model=%s response_len=%d tokens in=%d out=%d", self.model, len(text), prompt_tokens, output_tokens)
         return LLMResponse(
             content=text,
             model=self.model,
+            input_tokens=prompt_tokens,
+            output_tokens=output_tokens,
             stop_reason="stop",
-            raw=resp if "resp" in dir() else None,
+            raw=resp,
         )

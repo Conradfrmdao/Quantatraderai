@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
-from typing import Callable
+from typing import Awaitable, Callable
+
+from src.ai.governance import AIRequestContext, new_trace_id
 
 from src.backtesting.data_loader import load_candles
 from src.backtesting.mock_venue import MockVenue
@@ -109,7 +112,7 @@ def default_decide(context: dict) -> dict:
     return {"action": "hold"}
 
 
-def _make_llm_decide_fn(symbol: str) -> "DecideFn":
+def _make_llm_decide_fn(symbol: str, ai_context: AIRequestContext | None = None) -> "DecideFn":
     """C6: Create a backtest decide function that calls the configured LLM.
 
     Uses the same TradingAgent as live trading, called once per bar.
@@ -129,7 +132,7 @@ def _make_llm_decide_fn(symbol: str) -> "DecideFn":
         _log.warning("LLM strategy init failed (%s) — falling back to RSI", init_err)
         return default_decide
 
-    def decide(context: dict) -> dict:
+    async def decide(context: dict) -> dict:
         try:
             closes = context["closes"]
             price  = closes[-1]
@@ -170,7 +173,19 @@ def _make_llm_decide_fn(symbol: str) -> "DecideFn":
                 },
             })
             # Run the agent (sync API). It internally talks to the configured provider.
-            result = agent.decide_trade([symbol], ctx) or {}
+            local_ctx = ai_context or AIRequestContext(
+                user_id="",
+                trace_id=new_trace_id(),
+                plan="FREE",
+                action="backtest_commentary",
+                provider=agent.provider.name,
+                model=agent.provider.model,
+                mode="paper",
+                venue="backtest",
+                symbol=symbol,
+                endpoint="/api/backtest/run",
+            )
+            result = await agent.decide_trade_async([symbol], ctx, ai_context=local_ctx) or {}
             decisions = result.get("trade_decisions") if isinstance(result, dict) else None
             if not decisions:
                 return {"action": "hold"}
@@ -192,7 +207,7 @@ def _make_llm_decide_fn(symbol: str) -> "DecideFn":
     return decide
 
 
-DecideFn = Callable[[dict], dict]
+DecideFn = Callable[[dict], dict | Awaitable[dict]]
 
 
 async def run_backtest(
@@ -244,6 +259,8 @@ async def run_backtest(
         }
 
         trade = decide(ctx)
+        if inspect.isawaitable(trade):
+            trade = await trade
         if trade.get("action", "hold") == "hold":
             continue
 
@@ -296,6 +313,7 @@ async def run_backtest_json(
     initial_capital: float = 10_000.0,
     strategy: str = "rsi",
     asset_class: str = "crypto_perp",
+    ai_context: AIRequestContext | None = None,
 ) -> dict:
     """API-friendly wrapper — returns a JSON-serializable dict.
 
@@ -308,7 +326,7 @@ async def run_backtest_json(
     lookback = days * bars_per_day
 
     if strategy == "llm":
-        decide_fn = _make_llm_decide_fn(symbol)
+        decide_fn = _make_llm_decide_fn(symbol, ai_context=ai_context)
     else:
         decide_fn = default_decide
 
@@ -336,6 +354,8 @@ async def run_backtest_json(
         ctx = {"symbol": symbol, "ts": bar.ts, "closes": closes,
                "bar": bar.__dict__, "account_state": acc_state}
         trade = decide_fn(ctx)
+        if inspect.isawaitable(trade):
+            trade = await trade
         if trade.get("action", "hold") == "hold":
             continue
         ok, reason, trade = risk.validate_trade(trade, acc_state, initial_capital)

@@ -1,3 +1,4 @@
+import { getAuthenticatedUser } from "@/lib/auth";
 import { requirePlan } from "@/lib/plan-guard";
 import { rateLimit }   from "@/lib/rate-limit";
 
@@ -6,6 +7,7 @@ const PYTHON_API = process.env.PYTHON_API_URL ?? "http://localhost:8000";
 export async function POST(req: Request) {
   const guard = await requirePlan("backtesting");
   if (!guard.allowed) return guard.response;
+  const { user } = await getAuthenticatedUser();
 
   // M13: 10 backtests per hour per user
   const rl = rateLimit(guard.userId, "backtest", 10, 3_600_000);
@@ -25,12 +27,24 @@ export async function POST(req: Request) {
   try {
     const res = await fetch(`${PYTHON_API}/api/backtest/run`, {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(body),
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": process.env.PYTHON_INTERNAL_TOKEN ?? "",
+        "x-user-id": user.clerkId,
+      },
+      body:    JSON.stringify({ ...body, userId: user.clerkId }),
       signal:  controller.signal,
     });
     clearTimeout(timeout);
-    const data = await res.json();
+    const data = await res.json().catch(() => ({})) as { detail?: { message?: string; trace_id?: string; retry_after_seconds?: number } | string };
+    if (!res.ok) {
+      const detail = typeof data.detail === "string" ? { message: data.detail } : data.detail;
+      return Response.json({
+        error: detail?.message ?? "Backtest failed",
+        trace_id: detail?.trace_id,
+        retry_after_seconds: detail?.retry_after_seconds,
+      }, { status: res.status });
+    }
     return Response.json(data, { status: res.status });
   } catch (err) {
     clearTimeout(timeout);

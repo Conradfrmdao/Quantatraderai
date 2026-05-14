@@ -85,9 +85,11 @@ export async function GET(req: Request) {
         price: stooq.price, high: stooq.high, low: stooq.low,
         change: null, changePct: null, prevClose: null,
         ts: Math.floor(Date.now() / 1000),
+        exchange_ts: null,
         ticker, symbol, source: "stooq",
+        exchange_timezone: "UTC",
       }, {
-        headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=5" },
+        headers: { "Cache-Control": "private, no-store" },
       });
     }
   }
@@ -186,12 +188,14 @@ export async function GET(req: Request) {
       changePct,
       prevClose,
       ts:        result.meta?.regularMarketTime,
+      exchange_ts: result.meta?.regularMarketTime,
       ticker,
       symbol,
       currency:  result.meta?.currency,
+      exchange_timezone: result.meta?.exchangeTimezoneName ?? "UTC",
       source:    "yahoo",
     }, {
-      headers: { "Cache-Control": "public, s-maxage=3, stale-while-revalidate=5" },
+      headers: { "Cache-Control": "private, no-store" },
     });
   } catch (e) {
     console.error("[price]", e);

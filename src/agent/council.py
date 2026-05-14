@@ -26,9 +26,13 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.ai.budgets import estimate_cost_usd
+from src.ai.errors import AIError
+from src.ai.governance import AIRequestContext, governed_complete, new_trace_id
 from src.config_loader import CONFIG
 
 logger = logging.getLogger("quantatraderai.council")
@@ -101,6 +105,12 @@ class MemberOpinion:
     veto: bool = False
     weight: float = 1.0
     order_type: str | None = None
+    trace_id: str = ""
+    latency_ms: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 @dataclass
@@ -275,7 +285,13 @@ def _parse_role_response(
     return opinions
 
 
-async def _ask_role(role_cfg: RoleConfig, assets: list[str], context: str) -> list[MemberOpinion]:
+async def _ask_role(
+    role_cfg: RoleConfig,
+    assets: list[str],
+    context: str,
+    ai_context: AIRequestContext | None = None,
+    stream_handler=None,
+) -> list[MemberOpinion]:
     """Ask one specialist role, with provider fallback inside that role."""
     from src.agent.providers.factory import get_provider
 
@@ -301,21 +317,50 @@ async def _ask_role(role_cfg: RoleConfig, assets: list[str], context: str) -> li
     for candidate in candidates:
         try:
             provider = get_provider(provider_name=candidate["name"], model=candidate["model"])
-            resp = await asyncio.to_thread(
-                provider.complete,
+            call_ctx = AIRequestContext(
+                user_id=ai_context.user_id if ai_context else "",
+                trace_id=(ai_context.trace_id if ai_context else new_trace_id()),
+                plan=ai_context.plan if ai_context else "FREE",
+                action="council_vote",
+                provider=provider.name,
+                model=provider.model,
+                mode=ai_context.mode if ai_context else "paper",
+                venue=ai_context.venue if ai_context else "crypto",
+                symbol=",".join(assets),
+                persona=ai_context.persona if ai_context else "",
+                agent_run_id=ai_context.agent_run_id if ai_context else None,
+                endpoint=ai_context.endpoint if ai_context else "/api/agent/start",
+                stream=bool(ai_context.stream) if ai_context else False,
+            )
+            started_at = time.perf_counter()
+            resp = await governed_complete(
+                provider=provider,
                 system=system,
                 messages=messages,
                 max_tokens=1024,
+                context=call_ctx,
+                stream_handler=stream_handler,
             )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
             parsed = _extract_json_object(resp.content if hasattr(resp, "content") else str(resp))
             opinions = _parse_role_response(
                 role_cfg=role_cfg,
-                provider_name=candidate["name"],
-                provider_model=candidate["model"],
+                provider_name=provider.name,
+                provider_model=provider.model,
                 assets=assets,
                 payload=parsed,
             )
+            for opinion in opinions:
+                opinion.trace_id = call_ctx.trace_id
+                opinion.latency_ms = latency_ms
+                opinion.prompt_tokens = int(resp.input_tokens or 0)
+                opinion.completion_tokens = int(resp.output_tokens or 0)
+                opinion.total_tokens = opinion.prompt_tokens + opinion.completion_tokens
+                opinion.estimated_cost_usd = estimate_cost_usd(provider.name, opinion.prompt_tokens, opinion.completion_tokens)
             return opinions
+        except AIError as exc:
+            last_error = exc.code.value
+            logger.warning("Council role %s failed via %s: %s", role_cfg.role, candidate["name"], exc.code.value)
         except Exception as exc:
             last_error = str(exc)
             logger.warning(
@@ -356,7 +401,13 @@ def _needs_chair(opinions: list[MemberOpinion]) -> bool:
     return False
 
 
-async def _ask_chair(asset: str, context: str, opinions: list[MemberOpinion]) -> MemberOpinion | None:
+async def _ask_chair(
+    asset: str,
+    context: str,
+    opinions: list[MemberOpinion],
+    ai_context: AIRequestContext | None = None,
+    stream_handler=None,
+) -> MemberOpinion | None:
     """Ask an optional chair model to break deadlocks or elevated-risk disputes."""
     from src.agent.providers.factory import get_provider
 
@@ -387,21 +438,46 @@ async def _ask_chair(asset: str, context: str, opinions: list[MemberOpinion]) ->
     for candidate in candidates:
         try:
             provider = get_provider(provider_name=candidate["name"], model=candidate["model"])
-            resp = await asyncio.to_thread(
-                provider.complete,
+            call_ctx = AIRequestContext(
+                user_id=ai_context.user_id if ai_context else "",
+                trace_id=(ai_context.trace_id if ai_context else new_trace_id()),
+                plan=ai_context.plan if ai_context else "FREE",
+                action="council_vote",
+                provider=provider.name,
+                model=provider.model,
+                mode=ai_context.mode if ai_context else "paper",
+                venue=ai_context.venue if ai_context else "crypto",
+                symbol=asset,
+                persona=ai_context.persona if ai_context else "",
+                agent_run_id=ai_context.agent_run_id if ai_context else None,
+                endpoint=ai_context.endpoint if ai_context else "/api/agent/start",
+                stream=bool(ai_context.stream) if ai_context else False,
+            )
+            started_at = time.perf_counter()
+            resp = await governed_complete(
+                provider=provider,
                 system=system,
                 messages=[{"role": "user", "content": user_content}],
                 max_tokens=1024,
+                context=call_ctx,
+                stream_handler=stream_handler,
             )
+            latency_ms = int((time.perf_counter() - started_at) * 1000)
             parsed = _extract_json_object(resp.content if hasattr(resp, "content") else str(resp))
             chair_opinion = _parse_role_response(
                 role_cfg=role_cfg,
-                provider_name=candidate["name"],
-                provider_model=candidate["model"],
+                provider_name=provider.name,
+                provider_model=provider.model,
                 assets=[asset],
                 payload=parsed,
             )[0]
             chair_opinion.confidence = max(chair_opinion.confidence, 0.55)
+            chair_opinion.trace_id = call_ctx.trace_id
+            chair_opinion.latency_ms = latency_ms
+            chair_opinion.prompt_tokens = int(resp.input_tokens or 0)
+            chair_opinion.completion_tokens = int(resp.output_tokens or 0)
+            chair_opinion.total_tokens = chair_opinion.prompt_tokens + chair_opinion.completion_tokens
+            chair_opinion.estimated_cost_usd = estimate_cost_usd(provider.name, chair_opinion.prompt_tokens, chair_opinion.completion_tokens)
             return chair_opinion
         except Exception as exc:
             logger.warning("Council chair failed via %s: %s", candidate["name"], exc)
@@ -514,7 +590,12 @@ def _synthesize_asset_decision(asset: str, opinions: list[MemberOpinion], chair_
     )
 
 
-async def council_decide(assets: list[str], context: str) -> list[CouncilDecision]:
+async def council_decide(
+    assets: list[str],
+    context: str,
+    ai_context: AIRequestContext | None = None,
+    stream_handler=None,
+) -> list[CouncilDecision]:
     """Run the role-based committee and synthesize one decision per asset."""
     if not assets:
         return []
@@ -534,13 +615,25 @@ async def council_decide(assets: list[str], context: str) -> list[CouncilDecisio
             for asset in assets
         ]
 
-    role_results = await asyncio.gather(*[_ask_role(role_cfg, assets, context) for role_cfg in ROLE_CONFIGS])
+    if ai_context is None and stream_handler is None:
+        role_results = await asyncio.gather(*[_ask_role(role_cfg, assets, context) for role_cfg in ROLE_CONFIGS])
+    else:
+        role_results = await asyncio.gather(*[
+            _ask_role(role_cfg, assets, context, ai_context=ai_context, stream_handler=stream_handler)
+            for role_cfg in ROLE_CONFIGS
+        ])
     flattened = [op for role_group in role_results for op in role_group]
 
     decisions: list[CouncilDecision] = []
     for asset in assets:
         asset_opinions = [op for op in flattened if _normalize_asset(op.asset) == _normalize_asset(asset)]
-        chair = await _ask_chair(asset, context, asset_opinions) if _needs_chair(asset_opinions) else None
+        if _needs_chair(asset_opinions):
+            if ai_context is None and stream_handler is None:
+                chair = await _ask_chair(asset, context, asset_opinions)
+            else:
+                chair = await _ask_chair(asset, context, asset_opinions, ai_context=ai_context, stream_handler=stream_handler)
+        else:
+            chair = None
         decision = _synthesize_asset_decision(asset, asset_opinions, chair)
         logger.info(
             "ROLE-COUNCIL %s: %s (conf=%.2f alloc=%.2f deadlock=%s)",
