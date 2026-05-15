@@ -197,6 +197,28 @@ def test_agent_has_fallback_chain():
     assert len(agent._fallback_chain) >= 1, "Agent must have at least 1 provider"
 
 
+def test_paid_anthropic_fallback_is_opt_in(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+
+    class PrimaryProvider:
+        name = "groq"
+        model = "llama-3.3-70b-versatile"
+        supports_tools = False
+
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: PrimaryProvider())
+    monkeypatch.setitem(dm.CONFIG, "llm_provider", "groq")
+    monkeypatch.setitem(dm.CONFIG, "anthropic_api_key", "sk-ant-present-but-disabled")
+    monkeypatch.setitem(dm.CONFIG, "groq_api_key", "gsk-present")
+    monkeypatch.setitem(dm.CONFIG, "sanitize_model", "claude-haiku-4-5-20251001")
+    monkeypatch.setitem(dm.CONFIG, "allow_paid_ai_fallbacks", False)
+
+    agent = TradingAgent(hyperliquid=None)
+
+    assert [provider.name for provider in agent._fallback_chain] == ["groq"]
+    assert agent._sanitize_provider.name == "groq"
+
+
 @pytest.mark.asyncio
 async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
     from types import SimpleNamespace

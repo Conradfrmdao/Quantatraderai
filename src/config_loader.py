@@ -95,6 +95,7 @@ CONFIG = {
     "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-6"),
     "max_tokens": _get_int("MAX_TOKENS", 4096),
     "enable_tool_calling": _get_bool("ENABLE_TOOL_CALLING", True),
+    "allow_paid_ai_fallbacks": _get_bool("ALLOW_PAID_AI_FALLBACKS", False),
     "thinking_enabled": _get_bool("THINKING_ENABLED", False),
     "thinking_budget_tokens": _get_int("THINKING_BUDGET_TOKENS", 10000),
 

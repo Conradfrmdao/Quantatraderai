@@ -48,8 +48,14 @@ class TradingAgent:
         primary_name = (CONFIG.get("llm_provider") or "groq").lower()
         anthropic_key = CONFIG.get("anthropic_api_key") or ""
         groq_key = CONFIG.get("groq_api_key") or ""
+        allow_paid_fallbacks = bool(CONFIG.get("allow_paid_ai_fallbacks"))
 
-        if primary_name != "anthropic" and anthropic_key and not anthropic_key.startswith("dummy"):
+        if (
+            allow_paid_fallbacks
+            and primary_name != "anthropic"
+            and anthropic_key
+            and not anthropic_key.startswith("dummy")
+        ):
             try:
                 from src.agent.providers.anthropic_provider import AnthropicProvider
                 self._fallback_chain.append(AnthropicProvider())
@@ -72,7 +78,12 @@ class TradingAgent:
 
         # Fallback sanitizer — use a cheap Anthropic model if available
         sanitize_model = CONFIG.get("sanitize_model")
-        if sanitize_model and anthropic_key and not anthropic_key.startswith("dummy"):
+        if (
+            sanitize_model
+            and (primary_name == "anthropic" or allow_paid_fallbacks)
+            and anthropic_key
+            and not anthropic_key.startswith("dummy")
+        ):
             try:
                 from src.agent.providers.anthropic_provider import AnthropicProvider
                 self._sanitize_provider = AnthropicProvider(model=sanitize_model)
