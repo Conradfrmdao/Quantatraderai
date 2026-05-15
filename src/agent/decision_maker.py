@@ -2,6 +2,7 @@
 
 Supports multiple LLM providers via src/agent/providers/:
   anthropic  — Claude (best quality)                        PAID
+  bedrock    — Claude through AWS Bedrock credits/quotas
   groq       — Llama 3.3 70B / 8B, Gemma2                  FREE
   gemini     — Gemini 2.0 Flash / 1.5 Flash                 FREE
   ollama     — any local model (llama3, mistral, …)         FREE (local)
@@ -186,7 +187,8 @@ class TradingAgent:
         is_forex = self.venue_context == "forex"
         enable_tools = CONFIG.get("enable_tool_calling", True)
         indicator_tools_available = bool(enable_tools and self.hyperliquid is not None and not is_forex)
-        can_use_indicator_tools = bool(indicator_tools_available and self.provider.name == "anthropic")
+        anthropic_tool_protocol = {"anthropic", "bedrock"}
+        can_use_indicator_tools = bool(indicator_tools_available and self.provider.name in anthropic_tool_protocol)
         if indicator_tools_available and not can_use_indicator_tools:
             logging.info(
                 "Indicator tool loop disabled for provider=%s; using supplied market context only",
@@ -293,7 +295,7 @@ class TradingAgent:
                     tool_list = tools if (
                         use_tools
                         and can_use_indicator_tools
-                        and prov.name == "anthropic"
+                        and prov.name in anthropic_tool_protocol
                         and prov.supports_tools
                     ) else None
                     response = await governed_complete(

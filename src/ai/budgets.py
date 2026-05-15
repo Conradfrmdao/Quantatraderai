@@ -27,6 +27,7 @@ PLAN_TOKEN_BUDGETS: dict[str, TokenBudgetPolicy] = {
 
 PROVIDER_COSTS_PER_1K: dict[str, tuple[float, float]] = {
     "anthropic": (0.0008, 0.004),
+    "bedrock": (0.0008, 0.004),
     "groq": (0.0, 0.0),
     "gemini": (0.0, 0.0),
     "openrouter": (0.0006, 0.002),

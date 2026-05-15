@@ -90,7 +90,7 @@ CONFIG = {
 
     # LLM provider selection
     # Free options: groq | gemini | ollama | openrouter
-    # Paid: anthropic (best quality)
+    # Paid / credited: anthropic | bedrock
     "llm_provider": _get_env("LLM_PROVIDER", "anthropic"),
     "llm_model": _get_env("LLM_MODEL", "claude-sonnet-4-6"),
     "max_tokens": _get_int("MAX_TOKENS", 4096),
@@ -102,6 +102,14 @@ CONFIG = {
     # Anthropic (llm_provider=anthropic)
     "anthropic_api_key": _get_env("ANTHROPIC_API_KEY"),
     "sanitize_model": _get_env("SANITIZE_MODEL", "claude-haiku-4-5-20251001"),
+
+    # AWS Bedrock Claude — uses AWS credits/quotas rather than Anthropic direct billing
+    "aws_access_key_id": _get_env("AWS_ACCESS_KEY_ID"),
+    "aws_secret_access_key": _get_env("AWS_SECRET_ACCESS_KEY"),
+    "aws_session_token": _get_env("AWS_SESSION_TOKEN"),
+    "aws_profile": _get_env("AWS_PROFILE"),
+    "aws_region": _get_env("AWS_REGION", "us-east-1"),
+    "bedrock_model": _get_env("BEDROCK_MODEL"),
 
     # Groq — FREE (llm_provider=groq)
     # Sign up at console.groq.com — no credit card needed

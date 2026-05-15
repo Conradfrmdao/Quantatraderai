@@ -12,7 +12,7 @@ Free/default path:
   - optional Ollama if explicitly enabled
 
 Optional paid escalation:
-  - Anthropic/OpenRouter chair only for deadlocks or high-risk disagreement
+  - Bedrock/Anthropic/OpenRouter chair only for deadlocks or high-risk disagreement
 
 The rest of the app still calls `council_decide()` and receives one
 CouncilDecision per asset, so this module can evolve without disturbing the
@@ -42,6 +42,7 @@ _SYMBOL_RE = re.compile(r"[^A-Z0-9]")
 DEFAULT_MODELS: dict[str, str] = {
     "groq": "llama-3.3-70b-versatile",
     "gemini": "gemini-2.0-flash-exp",
+    "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
     "anthropic": "claude-haiku-4-5-20251001",
     "ollama": os.getenv("COUNCIL_OLLAMA_MODEL", "qwen2.5:14b"),
     "openrouter": "deepseek/deepseek-r1:free",
@@ -81,13 +82,13 @@ class RoleConfig:
 
 
 ROLE_CONFIGS: tuple[RoleConfig, ...] = (
-    RoleConfig("market_analyst", ("groq", "gemini", "ollama", "anthropic"), 1.1),
-    RoleConfig("risk_officer", ("gemini", "groq", "ollama", "anthropic"), 1.15),
-    RoleConfig("execution_arbiter", ("ollama", "groq", "gemini", "anthropic"), 1.0),
-    RoleConfig("portfolio_allocator", ("gemini", "ollama", "groq", "anthropic"), 0.95),
+    RoleConfig("market_analyst", ("groq", "gemini", "ollama", "bedrock", "anthropic"), 1.1),
+    RoleConfig("risk_officer", ("gemini", "groq", "ollama", "bedrock", "anthropic"), 1.15),
+    RoleConfig("execution_arbiter", ("ollama", "groq", "gemini", "bedrock", "anthropic"), 1.0),
+    RoleConfig("portfolio_allocator", ("gemini", "ollama", "groq", "bedrock", "anthropic"), 0.95),
 )
 
-CHAIR_PROVIDER_ORDER: tuple[str, ...] = ("anthropic", "openrouter")
+CHAIR_PROVIDER_ORDER: tuple[str, ...] = ("bedrock", "anthropic", "openrouter")
 
 
 @dataclass
@@ -173,6 +174,11 @@ def _provider_is_available(name: str) -> bool:
     if lname == "anthropic":
         key = CONFIG.get("anthropic_api_key") or ""
         return bool(key and not key.startswith("your-") and not key.startswith("dummy"))
+    if lname == "bedrock":
+        key = CONFIG.get("aws_access_key_id") or ""
+        secret = CONFIG.get("aws_secret_access_key") or ""
+        profile = CONFIG.get("aws_profile") or ""
+        return bool(profile or (key and secret and not key.startswith("your-") and not secret.startswith("your-")))
     if lname == "openrouter":
         key = CONFIG.get("openrouter_api_key") or ""
         return bool(key and not key.startswith("your-") and not key.startswith("dummy"))
@@ -600,7 +606,7 @@ async def council_decide(
     if not assets:
         return []
 
-    if not any(_provider_is_available(name) for name in ("groq", "gemini", "ollama", "anthropic", "openrouter")):
+    if not any(_provider_is_available(name) for name in ("groq", "gemini", "ollama", "bedrock", "anthropic", "openrouter")):
         logger.warning("No council providers configured — holding all")
         return [
             CouncilDecision(

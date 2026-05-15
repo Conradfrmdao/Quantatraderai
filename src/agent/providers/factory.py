@@ -8,6 +8,7 @@ Free options (no Anthropic key needed):
 
 Paid:
   anthropic  — Claude (best quality for trading decisions)
+  bedrock    — Claude through AWS Bedrock credits/quotas
 """
 
 from __future__ import annotations
@@ -22,6 +23,10 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
     if name == "anthropic":
         from src.agent.providers.anthropic_provider import AnthropicProvider
         return AnthropicProvider(model=model)
+
+    if name == "bedrock":
+        from src.agent.providers.bedrock_provider import BedrockProvider
+        return BedrockProvider(model=model)
 
     if name == "groq":
         from src.agent.providers.groq_provider import GroqProvider
@@ -41,5 +46,5 @@ def get_provider(provider_name: str | None = None, model: str | None = None) -> 
 
     raise ValueError(
         f"Unknown LLM provider: {name!r}. "
-        "Choose one of: anthropic | groq | gemini | ollama | openrouter"
+        "Choose one of: anthropic | bedrock | groq | gemini | ollama | openrouter"
     )
