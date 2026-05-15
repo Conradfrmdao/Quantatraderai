@@ -174,7 +174,13 @@ class TradingAgent:
         """Dispatch decision request through the governed AI boundary."""
         is_forex = self.venue_context == "forex"
         enable_tools = CONFIG.get("enable_tool_calling", True)
-        can_use_indicator_tools = bool(enable_tools and self.hyperliquid is not None and not is_forex)
+        indicator_tools_available = bool(enable_tools and self.hyperliquid is not None and not is_forex)
+        can_use_indicator_tools = bool(indicator_tools_available and self.provider.name == "anthropic")
+        if indicator_tools_available and not can_use_indicator_tools:
+            logging.info(
+                "Indicator tool loop disabled for provider=%s; using supplied market context only",
+                self.provider.name,
+            )
         assets_str = json.dumps(list(assets))
 
         if is_forex:
@@ -273,7 +279,12 @@ class TradingAgent:
                     stream=base_ctx.stream,
                 )
                 try:
-                    tool_list = tools if (use_tools and can_use_indicator_tools and prov.supports_tools) else None
+                    tool_list = tools if (
+                        use_tools
+                        and can_use_indicator_tools
+                        and prov.name == "anthropic"
+                        and prov.supports_tools
+                    ) else None
                     response = await governed_complete(
                         provider=prov,
                         system=system_prompt,
@@ -600,11 +611,18 @@ class TradingAgent:
                     } for a in assets],
                 }
 
+        if tool_rounds > 0:
+            return _safe_hold_payload(
+                reason="The model could not complete a safe final analysis on this tick",
+                rationale=(
+                    "The model reached the tool-analysis safety limit and did not return valid final trading JSON, "
+                    "so no trade was executed."
+                ),
+                reason_code="ai_final_response_invalid",
+            )
+
         return _safe_hold_payload(
-            reason="The model could not complete a safe final analysis on this tick",
-            rationale=(
-                "The model reached the tool-analysis safety limit and did not return valid final trading JSON, "
-                "so no trade was executed."
-            ),
+            reason="The AI did not return valid final trading JSON on this tick",
+            rationale="The AI response could not be validated safely, so no trade was executed.",
             reason_code="ai_final_response_invalid",
         )

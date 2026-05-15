@@ -227,7 +227,7 @@ async def test_agent_forces_final_json_after_repeated_tool_calls(monkeypatch):
             return candles
 
     class RepeatingToolProvider:
-        name = "mock"
+        name = "anthropic"
         model = "mock-tool-model"
         supports_tools = True
 
@@ -300,7 +300,7 @@ async def test_agent_records_reason_code_after_invalid_no_tool_final(monkeypatch
             ]
 
     class BrokenFinalProvider:
-        name = "mock"
+        name = "anthropic"
         model = "mock-broken-final"
         supports_tools = True
 
@@ -385,6 +385,100 @@ async def test_agent_disables_indicator_tools_when_no_hyperliquid_client(monkeyp
     assert provider.last_tools is None
     assert result["trade_decisions"][0]["action"] == "buy"
     assert result["trade_decisions"][0]["allocation_usd"] == 125
+
+
+@pytest.mark.asyncio
+async def test_groq_provider_does_not_enter_anthropic_tool_loop(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class StubHyperliquid:
+        async def get_candles(self, asset: str, interval: str, lookback: int):
+            return [
+                {"time": 1_700_000_000 + i * 60, "open": 1, "high": 2, "low": 0.5, "close": 1, "volume": 1}
+                for i in range(lookback)
+            ]
+
+    class GroqLikeProvider:
+        name = "groq"
+        model = "llama-3.3-70b-versatile"
+        supports_tools = True
+
+        def __init__(self):
+            self.calls = 0
+            self.last_tools = object()
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            self.calls += 1
+            self.last_tools = tools
+            return LLMResponse(
+                content=(
+                    '{"reasoning":"Context-only decision completed","trade_decisions":['
+                    '{"asset":"BTC/USDT","action":"hold","allocation_usd":0,'
+                    '"order_type":"market","limit_price":null,"tp_price":null,'
+                    '"sl_price":null,"exit_plan":"","rationale":"Waiting for a cleaner setup."}]}'
+                ),
+                model=self.model,
+                stop_reason="stop",
+            )
+
+    provider = GroqLikeProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", True)
+
+    agent = TradingAgent(hyperliquid=StubHyperliquid(), venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], '{"market_data":[{"asset":"BTC/USDT","data_ready":true}]}')
+
+    assert provider.calls == 1
+    assert provider.last_tools is None
+    assert result["reasoning"] == "Context-only decision completed"
+    assert result["trade_decisions"][0]["action"] == "hold"
+
+
+@pytest.mark.asyncio
+async def test_invalid_no_tool_response_uses_generic_safe_message(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class BrokenProvider:
+        name = "groq"
+        model = "broken-context-only"
+        supports_tools = True
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            return LLMResponse(content="", model=self.model, stop_reason="stop")
+
+    provider = BrokenProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", True)
+
+    agent = TradingAgent(hyperliquid=None, venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], '{"market_data":[{"asset":"BTC/USDT","data_ready":true}]}')
+
+    assert result["trade_decisions"][0]["action"] == "hold"
+    assert result["trade_decisions"][0]["reason_code"] == "ai_final_response_invalid"
+    assert "tool-analysis safety limit" not in result["trade_decisions"][0]["rationale"]
+    assert "no trade was executed" in result["trade_decisions"][0]["rationale"]
 
 
 # ── Duplicate webhook signal ──────────────────────────────────────────────────
