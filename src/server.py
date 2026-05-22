@@ -20,7 +20,7 @@ POST /api/agent/killswitch — close ALL positions immediately (emergency)
 
 WebSocket
 ---------
-WS   /ws?token=<clerk_session_token>   — real-time event stream (JWT-gated)
+WS   /ws   — real-time event stream (JWT-gated via subprotocol auth)
 
 Requires CLERK_JWKS_URL env var for WebSocket auth. If unset, auth is skipped
 (safe for local dev; never leave unset in production).
@@ -216,6 +216,8 @@ async def _notify_user(user_id: str, event: "TradingEvent") -> None:
 _jwks_cache: dict | None = None
 _jwks_cache_ts: float = 0.0
 _JWKS_TTL = 3600.0  # refresh keys hourly
+_WS_APP_SUBPROTOCOL = "quantatraderai-v1"
+_WS_AUTH_SUBPROTOCOL_PREFIX = "auth."
 
 
 async def _get_jwks() -> dict | None:
@@ -280,6 +282,24 @@ async def _verify_ws_token(token: str | None) -> tuple[bool, str | None]:
     except Exception as e:
         logger.warning("WS token verification failed: %s", e)
         return False, None
+
+
+def _parse_ws_subprotocols(header_value: str | None) -> list[str]:
+    return [item.strip() for item in (header_value or "").split(",") if item.strip()]
+
+
+def _resolve_ws_auth(ws: WebSocket, query_token: str | None) -> tuple[str | None, str | None]:
+    protocols = _parse_ws_subprotocols(ws.headers.get("sec-websocket-protocol"))
+    accepted_protocol = _WS_APP_SUBPROTOCOL if _WS_APP_SUBPROTOCOL in protocols else None
+    protocol_token = next(
+        (
+            item[len(_WS_AUTH_SUBPROTOCOL_PREFIX):]
+            for item in protocols
+            if item.startswith(_WS_AUTH_SUBPROTOCOL_PREFIX) and len(item) > len(_WS_AUTH_SUBPROTOCOL_PREFIX)
+        ),
+        None,
+    )
+    return protocol_token or query_token, accepted_protocol
 
 
 async def _verify_clerk_token(token: str | None) -> tuple[bool, str | None]:
@@ -4421,12 +4441,13 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket, token: Optional[str] = Query(default=None)):
-    allowed, ws_user_id = await _verify_ws_token(token)
+    ws_token, accepted_protocol = _resolve_ws_auth(ws, token)
+    allowed, ws_user_id = await _verify_ws_token(ws_token)
     if not allowed:
         await ws.close(code=4001)
         return
 
-    await ws.accept()
+    await ws.accept(subprotocol=accepted_protocol)
     _ws_clients.add(ws)
     _ws_user_map[ws] = ws_user_id
 

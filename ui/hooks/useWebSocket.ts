@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
+import { buildWebSocketConnection } from "@/lib/ws-auth";
 
 export interface WsEvent {
   type: string;
@@ -9,7 +10,7 @@ export interface WsEvent {
 /**
  * Auto-reconnecting WebSocket hook.
  * Pass `getToken` (e.g. Clerk's session.getToken) to authenticate the connection.
- * The token is appended as ?token=<jwt> on every connect/reconnect.
+ * The token is sent via WebSocket subprotocol auth on every connect/reconnect.
  */
 export function useWebSocket(
   url: string | null,
@@ -65,16 +66,15 @@ export function useWebSocket(
     stopPing();
     wsRef.current?.close();
 
-    let wsUrl = url;
+    let token: string | null = null;
     if (getToken) {
       try {
-        const token = await getToken();
+        token = await getToken();
         if (!token) {
           setConnected(false);
           scheduleReconnect(1_000);
           return;
         }
-        wsUrl = `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
       } catch {
         setConnected(false);
         scheduleReconnect(1_500);
@@ -82,7 +82,8 @@ export function useWebSocket(
       }
     }
 
-    const ws = new WebSocket(wsUrl);
+    const connection = buildWebSocketConnection(url, token);
+    const ws = new WebSocket(connection.url, connection.protocols);
     wsRef.current = ws;
 
     ws.onopen = () => {

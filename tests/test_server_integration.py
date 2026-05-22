@@ -65,6 +65,30 @@ def test_get_state_fallback_for_none():
     assert s is _state
 
 
+def test_resolve_ws_auth_prefers_subprotocol_token():
+    import src.server as srv
+
+    ws = SimpleNamespace(headers={
+        "sec-websocket-protocol": "quantatraderai-v1, auth.clerk.jwt.token, chat",
+    })
+
+    token, accepted_protocol = srv._resolve_ws_auth(ws, "legacy-query-token")
+
+    assert token == "clerk.jwt.token"
+    assert accepted_protocol == "quantatraderai-v1"
+
+
+def test_resolve_ws_auth_falls_back_to_query_token():
+    import src.server as srv
+
+    ws = SimpleNamespace(headers={})
+
+    token, accepted_protocol = srv._resolve_ws_auth(ws, "legacy-query-token")
+
+    assert token == "legacy-query-token"
+    assert accepted_protocol is None
+
+
 @pytest.mark.asyncio
 async def test_broadcast_fans_out_to_all_clients_for_same_user_only():
     import src.server as srv

@@ -2,8 +2,76 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
+import re
+
+from src.ai.redaction import redact_text
+
+_URL_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"([?&](?:token|auth|authorization|session_token|api_key|api_secret)=)[^&\s]+", re.IGNORECASE),
+    re.compile(r"(\bauth\.)[A-Za-z0-9._\-]{16,}"),
+)
+
+
+def _scrub_log_text(value: str) -> str:
+    scrubbed = redact_text(value)
+    for pattern in _URL_SECRET_PATTERNS:
+        scrubbed = pattern.sub(r"\1[REDACTED]", scrubbed)
+    return scrubbed
+
+
+def _scrub_log_value(value):
+    if isinstance(value, str):
+        return _scrub_log_text(value)
+    if isinstance(value, dict):
+        return {key: _scrub_log_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_scrub_log_value(item) for item in value)
+    if isinstance(value, list):
+        return [_scrub_log_value(item) for item in value]
+    return value
+
+
+class _SecretScrubbingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = _scrub_log_value(record.msg)
+            if record.args:
+                record.args = _scrub_log_value(record.args)
+        except Exception:
+            pass
+        return True
+
+
+def _attach_scrubber(logger: logging.Logger, scrubber: logging.Filter) -> None:
+    if not any(isinstance(existing, _SecretScrubbingFilter) for existing in logger.filters):
+        logger.addFilter(scrubber)
+    for handler in logger.handlers:
+        if not any(isinstance(existing, _SecretScrubbingFilter) for existing in handler.filters):
+            handler.addFilter(scrubber)
+
+
+def init_log_scrubbing() -> None:
+    scrubber = _SecretScrubbingFilter()
+    for logger_name in ("", "uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi", "fastapi"):
+        _attach_scrubber(logging.getLogger(logger_name), scrubber)
+
+
+def _build_optional_sentry_integrations() -> list[object]:
+    integrations: list[object] = []
+    optional_integrations = (
+        ("sentry_sdk.integrations.sqlalchemy", "SqlalchemyIntegration"),
+    )
+    for module_name, attr_name in optional_integrations:
+        try:
+            module = importlib.import_module(module_name)
+            integration_cls = getattr(module, attr_name)
+            integrations.append(integration_cls())
+        except Exception as exc:
+            logging.debug("Sentry optional integration skipped (%s): %s", module_name, exc)
+    return integrations
 
 
 def init_sentry() -> None:
@@ -15,7 +83,6 @@ def init_sentry() -> None:
         import sentry_sdk
         from sentry_sdk.integrations.fastapi   import FastApiIntegration
         from sentry_sdk.integrations.asyncio   import AsyncioIntegration
-        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
         from sentry_sdk.integrations.logging   import LoggingIntegration
 
         sentry_sdk.init(
@@ -28,11 +95,11 @@ def init_sentry() -> None:
             integrations=[
                 FastApiIntegration(transaction_style="endpoint"),
                 AsyncioIntegration(),
-                SqlalchemyIntegration(),
                 LoggingIntegration(
                     level=logging.WARNING,      # breadcrumb on WARNING
                     event_level=logging.ERROR,  # send event on ERROR
                 ),
+                *_build_optional_sentry_integrations(),
             ],
             before_send=_scrub_secrets,
         )
@@ -126,6 +193,8 @@ def init_prometheus() -> dict:
 
 def setup_all() -> dict:
     """Call once at application startup. Returns Prometheus metrics dict."""
+    init_log_scrubbing()
     init_sentry()
     init_structlog()
+    init_log_scrubbing()
     return init_prometheus()

@@ -135,6 +135,33 @@ def test_observability_log_contains_no_secrets(mock_env):
         assert secret_key not in record, "Secret leaked into log!"
 
 
+def test_observability_scrubs_query_tokens_from_logs():
+    from src.observability.setup import _scrub_log_text
+
+    raw = 'WebSocket /ws?token=eyJhbGciOiJIUzI1NiJ9.secret.payload&foo=bar'
+    scrubbed = _scrub_log_text(raw)
+
+    assert "eyJhbGciOiJIUzI1NiJ9.secret.payload" not in scrubbed
+    assert "token=[REDACTED]" in scrubbed
+
+
+def test_observability_optional_sentry_integrations_skip_missing_dependency(monkeypatch):
+    import importlib
+
+    from src.observability.setup import _build_optional_sentry_integrations
+
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str, package: str | None = None):
+        if name == "sentry_sdk.integrations.sqlalchemy":
+            raise ModuleNotFoundError("No module named 'sqlalchemy'")
+        return real_import_module(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    assert _build_optional_sentry_integrations() == []
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # TradeReceipt observability
 # ═════════════════════════════════════════════════════════════════════════════
