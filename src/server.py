@@ -47,7 +47,7 @@ import re
 import sys
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
@@ -64,6 +64,7 @@ import uvicorn
 from src.config_loader import CONFIG
 from src.ai.errors import AIError, AIErrorCode, safe_error_payload
 from src.ai.governance import AIRequestContext, governed_stream, new_trace_id
+from src.ai.limiter import counter_store_available, read_counter, reserve_counter
 from src.ai.redaction import redact_text
 from src.ai.telemetry import capture_posthog
 from src.risk_manager import RiskManager
@@ -641,6 +642,8 @@ class AgentState:
 
         self.price_cache:  dict[str, float]      = {}
         self.candle_cache: dict[str, list[dict]] = {}
+        self.readiness: dict[str, Any] | None = None
+        self.warm_snapshot_at: datetime | None = None
 
         self.start_time:     datetime | None = None
         self.initial_equity: float   | None = None
@@ -1431,6 +1434,9 @@ async def _tick_for(s: "AgentState"):
             rag_context = format_rag_context(similar)
         except Exception as e:
             s.log(f"RAG retrieval error: {e}")
+
+    if s.user_id and market_sections:
+        asyncio.create_task(_persist_warm_snapshot(s, market_sections=market_sections))
 
     context = json.dumps({
         "account":         s.account,
@@ -2229,7 +2235,7 @@ async def _on_startup():
         try:
             logger.info("Auto-resuming agent for userId=%s venue=%s symbols=%s",
                         row["userId"], venue_name, row["symbols"])
-            await _do_start(
+            result = await _do_start(
                 user_id=row["clerkId"],
                 venue_name=venue_name,
                 symbols=list(row["symbols"]),
@@ -2239,6 +2245,8 @@ async def _on_startup():
                 api_key=None,
                 api_secret=None,
             )
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "startup preflight failed")
         except Exception as e:
             logger.error("Auto-resume failed for userId=%s — marking isRunning=false", row["userId"], error=str(e))
             try:
@@ -2350,6 +2358,8 @@ async def get_status(request: Request, userId: Optional[str] = None):
         "latest_log":       latest_log,
         "daily_trade_count": s.daily_trade_count,
         "consecutive_losses": s.consecutive_losses,
+        "readiness_state":  (s.readiness or {}).get("state"),
+        "readiness_summary": (s.readiness or {}).get("summary"),
     }
 
 
@@ -2955,6 +2965,646 @@ def _apply_market_data_guards(decisions: list[dict] | None, data_status_map: dic
     return guarded
 
 
+_LIVE_PRICE_FRESHNESS_S = 120
+_WARM_SNAPSHOT_CANDLE_LIMIT = 120
+
+
+def _readiness_check(
+    key: str,
+    label: str,
+    status: str,
+    summary: str,
+    *,
+    required: bool,
+    detail: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "key": key,
+        "label": label,
+        "status": status,
+        "required": required,
+        "summary": summary,
+    }
+    if detail:
+        payload["detail"] = detail
+    if meta:
+        payload["meta"] = meta
+    return payload
+
+
+def _parse_snapshot_ts(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        ts = int(value)
+        return ts if ts > 0 else None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp())
+
+
+def _warm_snapshot_price_is_recent(snapshot_ts: int | None, now_ts: int | None = None) -> bool:
+    if not snapshot_ts:
+        return False
+    return max(0, int(now_ts or time.time()) - snapshot_ts) <= _LIVE_PRICE_FRESHNESS_S
+
+
+def _apply_warm_snapshot_to_state(s: "AgentState", warm_state: dict[str, Any] | None) -> dict[str, Any]:
+    info: dict[str, Any] = {"used": False, "age_s": None, "snapshot_at": None, "snapshot_ts": None, "restored_symbols": []}
+    if not warm_state:
+        return info
+
+    if str(warm_state.get("venue") or "").lower() != (s.venue_name or "").lower():
+        return info
+    if str(warm_state.get("market") or "").lower() != (s.market or "").lower():
+        return info
+    if str(warm_state.get("timeframe") or "").lower() != (s.timeframe or "").lower():
+        return info
+
+    snapshot_ts = _parse_snapshot_ts(warm_state.get("snapshot_at") or warm_state.get("persisted_at"))
+    info["snapshot_ts"] = snapshot_ts
+    if snapshot_ts:
+        info["snapshot_at"] = datetime.fromtimestamp(snapshot_ts, tz=timezone.utc).isoformat()
+        info["age_s"] = max(0, int(time.time()) - snapshot_ts)
+
+    stored_prices = warm_state.get("price_cache") or {}
+    stored_candles = warm_state.get("candle_cache") or {}
+
+    for sym in s.symbols:
+        norm_symbol = _normalize_market_symbol(sym)
+        key = _candle_cache_key(sym, s.timeframe)
+        restored = False
+
+        if norm_symbol in stored_prices:
+            try:
+                s.price_cache[norm_symbol] = float(stored_prices[norm_symbol])
+                restored = True
+            except Exception:
+                pass
+
+        candles = stored_candles.get(key)
+        if isinstance(candles, list) and candles:
+            s.candle_cache[key] = candles[-_WARM_SNAPSHOT_CANDLE_LIMIT:]
+            restored = True
+
+        if restored:
+            info["restored_symbols"].append(sym)
+
+    info["used"] = bool(info["restored_symbols"])
+    if info["used"] and snapshot_ts:
+        s.warm_snapshot_at = datetime.fromtimestamp(snapshot_ts, tz=timezone.utc)
+    return info
+
+
+def _build_warm_snapshot(s: "AgentState", market_sections: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    relevant_prices: dict[str, float] = {}
+    relevant_candles: dict[str, list[dict[str, Any]]] = {}
+    for sym in s.symbols:
+        norm_symbol = _normalize_market_symbol(sym)
+        price = s.price_cache.get(norm_symbol)
+        if price is not None:
+            relevant_prices[norm_symbol] = float(price)
+        key = _candle_cache_key(sym, s.timeframe)
+        candles = s.candle_cache.get(key) or []
+        if candles:
+            relevant_candles[key] = candles[-_WARM_SNAPSHOT_CANDLE_LIMIT:]
+
+    payload: dict[str, Any] = {
+        "snapshot_at": datetime.now(timezone.utc).isoformat(),
+        "venue": s.venue_name,
+        "market": s.market,
+        "timeframe": s.timeframe,
+        "symbols": list(s.symbols),
+        "price_cache": relevant_prices,
+        "candle_cache": relevant_candles,
+    }
+    if market_sections:
+        payload["market_sections"] = market_sections
+    return payload
+
+
+async def _persist_warm_snapshot(s: "AgentState", market_sections: list[dict[str, Any]] | None = None) -> None:
+    if not s.user_id:
+        return
+    try:
+        from src.services.supabase_reader import save_agent_warm_state
+
+        snapshot = _build_warm_snapshot(s, market_sections=market_sections)
+        saved = await save_agent_warm_state(s.user_id, snapshot)
+        if saved:
+            snapshot_ts = _parse_snapshot_ts(snapshot.get("snapshot_at"))
+            if snapshot_ts:
+                s.warm_snapshot_at = datetime.fromtimestamp(snapshot_ts, tz=timezone.utc)
+    except Exception as e:
+        logger.warning("Warm snapshot persist failed for %s: %s", s.user_id, e)
+
+
+async def _load_saved_warm_snapshot(user_id: str | None) -> dict[str, Any] | None:
+    if not user_id:
+        return None
+    try:
+        from src.services.supabase_reader import load_agent_warm_state
+
+        return await load_agent_warm_state(user_id)
+    except Exception as e:
+        logger.warning("Warm snapshot load failed for %s: %s", user_id, e)
+        return None
+
+
+async def _enforce_start_plan_mode(user_id: str | None, is_paper: bool) -> tuple[bool, str | None]:
+    if not user_id:
+        return is_paper, None
+    try:
+        plan = await _get_user_plan(user_id)
+        if not _plan_allows(plan, "liveTrading") and not is_paper:
+            logger.warning(
+                "Forcing paper mode: user %s on plan %s — liveTrading not allowed.",
+                user_id,
+                plan,
+            )
+            return True, (
+                f"Your {plan} plan does not include live trading. "
+                "Agent started in paper mode. Upgrade to go live."
+            )
+    except Exception as e:
+        logger.warning("Plan re-validation failed (forcing paper): %s", e)
+        return True, "Plan check failed — started in paper mode for safety."
+    return is_paper, None
+
+
+async def _prepare_agent_start_bundle(
+    *,
+    user_id: str | None,
+    venue_name: str,
+    market: str,
+    is_paper: bool,
+    api_key: str | None,
+    api_secret: str | None,
+) -> dict[str, Any]:
+    v_key = venue_name.lower().strip().split(":")[0]
+
+    api_passphrase = ""
+    account_id = ""
+    network = ""
+    meta_token = ""
+    meta_account_id = ""
+    ccxt_exchange = ""
+    saved_market = _default_market_for_backend_name(v_key)
+    matched_saved_venue: dict[str, Any] | None = None
+
+    if user_id:
+        try:
+            from src.services.supabase_reader import get_user_venues
+
+            venues = await get_user_venues(user_id)
+            for venue_row in venues:
+                name = _VENUE_TYPE_TO_NAME.get(venue_row.get("type", ""), "").lower()
+                if name != v_key:
+                    continue
+                matched_saved_venue = venue_row
+                api_key = api_key or venue_row.get("apiKey")
+                api_secret = api_secret or venue_row.get("apiSecret")
+                api_passphrase = venue_row.get("apiPassphrase") or ""
+                account_id = venue_row.get("accountId") or ""
+                network = venue_row.get("network") or ""
+                meta_token = venue_row.get("metaApiToken") or ""
+                meta_account_id = venue_row.get("metaApiAccountId") or ""
+                ccxt_exchange = venue_row.get("ccxtExchangeId") or ""
+                saved_market = str(
+                    venue_row.get("market")
+                    or _default_market_for_venue_type(venue_row.get("type"))
+                ).lower()
+                logger.info("Loaded %s credentials from Supabase for user %s", venue_name, user_id)
+                break
+        except Exception as e:
+            logger.warning("Supabase credential load failed: %s — falling back to .env", e)
+
+    normalized_market = _normalize_market_for_backend_name(v_key, (market or "").lower() or saved_market)
+
+    if not api_key and v_key == "binance":
+        api_key = CONFIG.get("binance_api_key") or ""
+        api_secret = CONFIG.get("binance_api_secret") or ""
+    elif not api_key and v_key == "hyperliquid":
+        api_key = CONFIG.get("hyperliquid_private_key") or ""
+
+    try:
+        asset_class = _infer_asset_class(v_key, normalized_market)
+        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, normalized_market)
+        if matched_saved_venue:
+            runtime_config, venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+                user_id=user_id,
+                match=matched_saved_venue,
+                requested_venue=venue_registry_name,
+                is_paper=is_paper,
+            )
+        else:
+            runtime_config = _runtime_config_from_inputs(
+                user_id=user_id,
+                venue_name=venue_match_key,
+                registry_name=venue_registry_name,
+                market=venue_market,
+                is_paper=is_paper,
+                api_key=api_key,
+                api_secret=api_secret,
+                api_passphrase=api_passphrase,
+                account_id=account_id,
+                network=network,
+                meta_token=meta_token,
+                meta_account_id=meta_account_id,
+                ccxt_exchange=ccxt_exchange,
+            )
+        venue = build_venue_from_runtime(runtime_config)
+        venue.is_paper = is_paper
+        risk_mgr = RiskManager(venue=v_key, asset_class=asset_class)
+        venue_ctx = "forex" if asset_class == "forex" else "crypto"
+        ai_agent = TradingAgent(hyperliquid=None, venue_context=venue_ctx)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": f"Venue init failed: {e}",
+            "v_key": v_key,
+            "market": normalized_market,
+        }
+
+    return {
+        "ok": True,
+        "v_key": v_key,
+        "market": venue_market,
+        "venue": venue,
+        "risk_mgr": risk_mgr,
+        "ai_agent": ai_agent,
+    }
+
+
+async def _probe_governance_store(user_id: str | None) -> tuple[bool, str]:
+    if not user_id:
+        return False, "Authenticated user context is required for AI governance."
+    if not counter_store_available():
+        return False, "AI governance counter store is unavailable."
+    probe_key = f"{user_id}:{new_trace_id()}"
+    try:
+        await reserve_counter("ai:readiness", probe_key, 1, 60)
+        current = await read_counter("ai:readiness", probe_key)
+        if current < 1:
+            return False, "AI governance probe did not confirm the counter write."
+        return True, "AI governance counters are writable."
+    except Exception as e:
+        return False, f"AI governance probe failed: {e}"
+
+
+def _finalize_readiness_payload(
+    *,
+    s: "AgentState",
+    checks: list[dict[str, Any]],
+    market_sections: list[dict[str, Any]],
+    warm_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    blocked_checks = [check for check in checks if check.get("status") == "blocked" and check.get("required")]
+    degraded_checks = [check for check in checks if check.get("status") == "degraded"]
+    if blocked_checks:
+        state = "blocked"
+        summary = blocked_checks[0]["summary"]
+    elif degraded_checks:
+        state = "degraded"
+        summary = degraded_checks[0]["summary"]
+    else:
+        state = "ready"
+        summary = f"Ready to trade {len(s.symbols)} symbol(s) with live venue access and warmed market data."
+
+    return {
+        "state": state,
+        "can_start": state != "blocked",
+        "summary": summary,
+        "checks": checks,
+        "warnings": [check["summary"] for check in degraded_checks],
+        "market": {
+            "symbols": list(s.symbols),
+            "timeframe": s.timeframe,
+            "venue": s.venue_name,
+            "market": s.market,
+            "sections": market_sections,
+        },
+        "warm_snapshot": warm_snapshot,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _evaluate_agent_readiness(
+    s: "AgentState",
+    *,
+    warm_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    now_ts = int(time.time())
+    checks: list[dict[str, Any]] = []
+    market_sections: list[dict[str, Any]] = []
+    warm_info = _apply_warm_snapshot_to_state(s, warm_state)
+    warm_snapshot_ts = warm_info.get("snapshot_ts")
+    is_forex = s.venue_name in ("oanda", "metatrader")
+
+    try:
+        balances = await s.venue.get_balances()
+        positions = await s.venue.get_positions()
+        venue_summary = f"Venue access confirmed; loaded {len(balances)} balance(s) and {len(positions)} position(s)."
+        checks.append(_readiness_check(
+            "venue_access",
+            "Venue Access",
+            "ready",
+            venue_summary,
+            required=True,
+        ))
+    except Exception as e:
+        checks.append(_readiness_check(
+            "venue_access",
+            "Venue Access",
+            "blocked",
+            "Could not authenticate or read the connected venue account.",
+            required=True,
+            detail=str(e),
+        ))
+
+    ticker_context: dict[str, dict[str, float]] = {}
+    price_failures: list[str] = []
+    price_degraded: list[str] = []
+    for sym in s.symbols:
+        norm_symbol = _normalize_market_symbol(sym)
+        try:
+            ticker = await s.venue.get_ticker(sym)
+            live_price = float(getattr(ticker, "last", 0) or 0)
+            if is_forex:
+                bid = float(getattr(ticker, "bid", 0) or 0)
+                ask = float(getattr(ticker, "ask", 0) or 0)
+                live_price = ((bid + ask) / 2) if bid and ask else live_price
+                ticker_context[sym] = {
+                    "bid": bid,
+                    "ask": ask,
+                    "spread_pips": float((getattr(ticker, "extra", {}) or {}).get("spread_pips") or 0),
+                }
+            if live_price <= 0:
+                raise ValueError("ticker returned no positive price")
+            s.price_cache[norm_symbol] = live_price
+        except Exception as e:
+            cached_price = float(s.price_cache.get(norm_symbol, 0) or 0)
+            if cached_price > 0 and _warm_snapshot_price_is_recent(warm_snapshot_ts, now_ts=now_ts):
+                price_degraded.append(sym)
+            else:
+                price_failures.append(f"{sym}: {e}")
+
+    if price_failures:
+        checks.append(_readiness_check(
+            "live_prices",
+            "Live Prices",
+            "blocked",
+            "One or more symbols do not have a fresh live price yet.",
+            required=True,
+            detail="; ".join(price_failures[:4]),
+            meta={"affected_symbols": price_failures},
+        ))
+    elif price_degraded:
+        age_s = warm_info.get("age_s")
+        checks.append(_readiness_check(
+            "live_prices",
+            "Live Prices",
+            "degraded",
+            "Using a recent warm snapshot price while one or more live tickers reconnect.",
+            required=True,
+            detail=f"Warm snapshot age: {age_s}s" if age_s is not None else None,
+            meta={"affected_symbols": price_degraded},
+        ))
+    else:
+        checks.append(_readiness_check(
+            "live_prices",
+            "Live Prices",
+            "ready",
+            f"Fresh live prices loaded for {len(s.symbols)} symbol(s).",
+            required=True,
+        ))
+
+    market_failures: list[str] = []
+    market_degraded: list[str] = []
+    for sym in s.symbols:
+        key = _candle_cache_key(sym, s.timeframe)
+        norm_symbol = _normalize_market_symbol(sym)
+        live_candles = False
+        try:
+            candles = await s.venue.get_candles(sym, s.timeframe, 100)
+            raw = [_candle_dict(candle) for candle in candles]
+            if not raw:
+                raise ValueError("venue returned no candles")
+            s.candle_cache[key] = raw
+            live_candles = True
+        except Exception as e:
+            raw = list(s.candle_cache.get(key) or [])
+            if _candles_are_fresh(raw, s.timeframe, now_ts=now_ts):
+                market_degraded.append(sym)
+            else:
+                raw = []
+                market_failures.append(f"{sym}: {e}")
+
+        indicators = compute_all(raw) if raw else {}
+        data_status = _build_market_data_status(
+            sym,
+            raw,
+            indicators,
+            s.timeframe,
+            float(s.price_cache.get(norm_symbol, 0) or 0),
+            now_ts=now_ts,
+        )
+        if not data_status["ready"]:
+            market_failures.append(f"{sym}: {data_status['fallback_rationale']}")
+
+        market_sections.append({
+            "asset": sym,
+            "current_price": round(float(s.price_cache.get(norm_symbol, 0) or 0), 5 if is_forex else 4),
+            "bid": ticker_context.get(sym, {}).get("bid") if is_forex else None,
+            "ask": ticker_context.get(sym, {}).get("ask") if is_forex else None,
+            "spread_pips": ticker_context.get(sym, {}).get("spread_pips") if is_forex else None,
+            "bars": data_status["bars_available"],
+            "data_ready": data_status["ready"],
+            "data_state": data_status["status"],
+            "latest_candle_ts": data_status["last_candle_ts"],
+            "candle_source": "live" if live_candles else "warm_snapshot",
+        })
+
+    if market_failures:
+        checks.append(_readiness_check(
+            "market_data",
+            "Market Data",
+            "blocked",
+            "Fresh candles and indicators are not fully warmed yet.",
+            required=True,
+            detail="; ".join(market_failures[:4]),
+            meta={"affected_symbols": market_failures},
+        ))
+    elif market_degraded:
+        checks.append(_readiness_check(
+            "market_data",
+            "Market Data",
+            "degraded",
+            "Warm snapshot candles are temporarily covering a live market-data reconnect.",
+            required=True,
+            meta={"affected_symbols": market_degraded},
+        ))
+    else:
+        checks.append(_readiness_check(
+            "market_data",
+            "Market Data",
+            "ready",
+            f"Fresh candles and indicators are warmed for {len(s.symbols)} symbol(s).",
+            required=True,
+        ))
+
+    provider = getattr(s.ai_agent, "provider", None)
+    if provider and getattr(provider, "name", None) and getattr(provider, "model", None):
+        checks.append(_readiness_check(
+            "ai_provider",
+            "AI Provider",
+            "ready",
+            f"{provider.name} / {provider.model} is configured for governed execution.",
+            required=True,
+        ))
+    else:
+        checks.append(_readiness_check(
+            "ai_provider",
+            "AI Provider",
+            "blocked",
+            "The trading model provider is not configured correctly.",
+            required=True,
+        ))
+
+    governance_ok, governance_summary = await _probe_governance_store(s.user_id)
+    checks.append(_readiness_check(
+        "ai_governance",
+        "AI Governance",
+        "ready" if governance_ok else "blocked",
+        governance_summary,
+        required=True,
+    ))
+
+    plan = await _get_user_plan(s.user_id) if s.user_id else "FREE"
+    intel_enabled = _plan_allows(plan, "aiCouncil") or os.getenv("ENABLE_INTEL", "false").lower() in ("1", "true", "yes")
+    if intel_enabled:
+        news_states: list[str] = []
+        news_errors: list[str] = []
+        try:
+            from src.intel.news import get_news_sentiment
+
+            for sym in s.symbols:
+                news = await get_news_sentiment(sym)
+                if news.get("stale"):
+                    news_states.append(sym)
+                elif news.get("error"):
+                    news_errors.append(f"{sym}: {news['error']}")
+            if news_errors:
+                checks.append(_readiness_check(
+                    "intel_news",
+                    "News Feed",
+                    "degraded",
+                    "News enrichment is running in degraded mode.",
+                    required=False,
+                    detail="; ".join(news_errors[:3]),
+                ))
+            elif news_states:
+                checks.append(_readiness_check(
+                    "intel_news",
+                    "News Feed",
+                    "degraded",
+                    "News enrichment is serving a recent cached snapshot while upstream recovers.",
+                    required=False,
+                    meta={"affected_symbols": news_states},
+                ))
+            else:
+                checks.append(_readiness_check(
+                    "intel_news",
+                    "News Feed",
+                    "ready",
+                    "News sentiment enrichment is healthy.",
+                    required=False,
+                ))
+        except Exception as e:
+            checks.append(_readiness_check(
+                "intel_news",
+                "News Feed",
+                "degraded",
+                "News enrichment could not be warmed during preflight.",
+                required=False,
+                detail=str(e),
+            ))
+    else:
+        checks.append(_readiness_check(
+            "intel_news",
+            "News Feed",
+            "skipped",
+            "News enrichment is disabled for this plan/runtime.",
+            required=False,
+        ))
+
+    try:
+        from src.intel.economic_calendar import get_calendar_feed_status
+
+        calendar_status = await get_calendar_feed_status(force_refresh=True)
+        calendar_state = str(calendar_status.get("state") or "ready")
+        checks.append(_readiness_check(
+            "intel_calendar",
+            "Calendar Feed",
+            "ready" if calendar_state == "ready" else "degraded" if calendar_state in {"stale", "empty"} else "skipped",
+            str(calendar_status.get("summary") or "Calendar feed checked."),
+            required=False,
+        ))
+    except Exception as e:
+        checks.append(_readiness_check(
+            "intel_calendar",
+            "Calendar Feed",
+            "degraded",
+            "Calendar feed could not be refreshed during preflight.",
+            required=False,
+            detail=str(e),
+        ))
+
+    if is_forex:
+        checks.append(_readiness_check(
+            "intel_sentiment",
+            "Fear & Greed",
+            "skipped",
+            "Crypto Fear & Greed is not used for forex venues.",
+            required=False,
+        ))
+    else:
+        try:
+            from src.intel.sentiment import get_fear_greed
+
+            fng = await get_fear_greed()
+            checks.append(_readiness_check(
+                "intel_sentiment",
+                "Fear & Greed",
+                "degraded" if fng.get("stale") else "ready",
+                "Using a cached market sentiment snapshot while the upstream refreshes." if fng.get("stale") else "Crypto market sentiment is healthy.",
+                required=False,
+            ))
+        except Exception as e:
+            checks.append(_readiness_check(
+                "intel_sentiment",
+                "Fear & Greed",
+                "degraded",
+                "Crypto market sentiment could not be refreshed during preflight.",
+                required=False,
+                detail=str(e),
+            ))
+
+    payload = _finalize_readiness_payload(
+        s=s,
+        checks=checks,
+        market_sections=market_sections,
+        warm_snapshot=warm_info,
+    )
+    s.readiness = payload
+    return payload
+
+
 def _resolve_test_venue_target(requested_venue: str, stored_market: str | None = None) -> tuple[str, str, str]:
     """Resolve a venue test target into (match_key, registry_name, market).
 
@@ -3146,24 +3796,7 @@ async def _do_start(
         return {"ok": False, "error": f"Invalid timeframe '{timeframe}'. Valid: {sorted(_VALID_TIMEFRAMES)}"}
 
     # H-G: Defense-in-depth — re-validate plan even if the Next.js proxy was bypassed.
-    forced_paper_warning: str | None = None
-    if user_id:
-        try:
-            plan = await _get_user_plan(user_id)
-            if not _plan_allows(plan, "liveTrading") and not is_paper:
-                logger.warning(
-                    "Forcing paper mode: user %s on plan %s — liveTrading not allowed.",
-                    user_id, plan,
-                )
-                is_paper = True
-                forced_paper_warning = (
-                    f"Your {plan} plan does not include live trading. "
-                    "Agent started in paper mode. Upgrade to go live."
-                )
-        except Exception as e:
-            logger.warning("Plan re-validation failed (forcing paper): %s", e)
-            is_paper = True
-            forced_paper_warning = "Plan check failed — started in paper mode for safety."
+    is_paper, forced_paper_warning = await _enforce_start_plan_mode(user_id, is_paper)
 
     # BETA LIVE CAP — hard server-side dollar ceiling during beta.
     # Set BETA_LIVE_CAP_USD=0 in .env to remove after public launch.
@@ -3171,113 +3804,91 @@ async def _do_start(
     if not is_paper and _beta_cap > 0:
         logger.info("Beta live cap active: max $%.0f per-trade allocation", _beta_cap)
 
-
+    final_state = get_state(user_id) if user_id else _state
+    previous_status = final_state.status
     # H8: idempotency lock + per-user state binding (no global _state mutation).
     # Each user gets an isolated AgentState. The global _state is only used as a
     # fallback for unauthenticated dev mode — never reassigned here.
     async with _start_lock:
-        if user_id:
-            s_check = get_state(user_id)
-            if s_check.status == "running":
-                return {"ok": False, "error": "Your agent is already running"}
-        else:
-            if _state.status == "running":
-                return {"ok": False, "error": "Agent already running"}
+        if final_state.status in ("running", "starting"):
+            return {"ok": False, "error": "Your agent is already running" if user_id else "Agent already running"}
+        final_state.status = "starting"
+        final_state.user_id = user_id
 
-    v_key = venue_name.lower().strip().split(":")[0]
+    bundle = await _prepare_agent_start_bundle(
+        user_id=user_id,
+        venue_name=venue_name,
+        market=market,
+        is_paper=is_paper,
+        api_key=api_key,
+        api_secret=api_secret,
+    )
+    if not bundle.get("ok"):
+        final_state.status = previous_status
+        final_state.error = bundle.get("error")
+        final_state.readiness = None
+        logger.error("Venue init failed — state rolled back, previous agent unaffected: %s", bundle.get("error"))
+        return {"ok": False, "error": bundle.get("error") or "Venue init failed"}
 
-    # Try Supabase credential lookup — pick the venue matching the requested type
-    api_passphrase = ""
-    account_id     = ""
-    network        = ""
-    meta_token     = ""
-    meta_account_id = ""
-    ccxt_exchange  = ""
-    saved_market   = _default_market_for_backend_name(v_key)
-    matched_saved_venue: dict[str, Any] | None = None
+    v_key = str(bundle["v_key"])
+    market = str(bundle["market"])
 
-    if user_id:
-        try:
-            from src.services.supabase_reader import get_user_venues
-            venues = await get_user_venues(user_id)
-            # find the venue whose registry name maps to our target
-            match = None
-            for v in venues:
-                name = _VENUE_TYPE_TO_NAME.get(v.get("type", ""), "").lower()
-                if name == v_key:
-                    match = v; break
-            if match:
-                matched_saved_venue = match
-                api_key        = api_key        or match.get("apiKey")
-                api_secret     = api_secret     or match.get("apiSecret")
-                api_passphrase = match.get("apiPassphrase") or ""
-                account_id     = match.get("accountId") or ""
-                network        = match.get("network") or ""
-                meta_token     = match.get("metaApiToken") or ""
-                meta_account_id = match.get("metaApiAccountId") or ""
-                ccxt_exchange  = match.get("ccxtExchangeId") or ""
-                saved_market   = str(match.get("market") or _default_market_for_venue_type(match.get("type"))).lower()
-                logger.info("Loaded %s credentials from Supabase for user %s", venue_name, user_id)
-        except Exception as e:
-            logger.warning("Supabase credential load failed: %s — falling back to .env", e)
+    candidate_state = AgentState()
+    candidate_state.venue = bundle["venue"]
+    candidate_state.risk_mgr = bundle["risk_mgr"]
+    candidate_state.ai_agent = bundle["ai_agent"]
+    candidate_state.symbols = list(symbols)
+    candidate_state.timeframe = timeframe
+    candidate_state.is_paper = is_paper
+    candidate_state.market = market
+    candidate_state.venue_name = v_key
+    candidate_state.user_id = user_id
+    candidate_state.strategy_type = strategy_type or ""
 
-    market = _normalize_market_for_backend_name(v_key, (market or "").lower() or saved_market)
-
-    # Fall back to .env
-    if not api_key and v_key == "binance":
-        api_key    = CONFIG.get("binance_api_key") or ""
-        api_secret = CONFIG.get("binance_api_secret") or ""
-    elif not api_key and v_key == "hyperliquid":
-        api_key = CONFIG.get("hyperliquid_private_key") or ""
-
-    # Resolve per-user state — never mutate the global _state for a specific user.
-    final_state = get_state(user_id) if user_id else _state
-
-    # Build venue, risk manager, and agent BEFORE touching state — if any step
-    # fails, final_state is completely unchanged (atomic swap on success only).
+    warm_state = await _load_saved_warm_snapshot(user_id)
     try:
-        asset_class = _infer_asset_class(v_key, market)
-        venue_match_key, venue_registry_name, venue_market = _resolve_test_venue_target(v_key, market)
-        if matched_saved_venue:
-            runtime_config, venue_registry_name, venue_market = _runtime_config_from_saved_venue(
-                user_id=user_id,
-                match=matched_saved_venue,
-                requested_venue=venue_registry_name,
-                is_paper=is_paper,
-            )
-        else:
-            runtime_config = _runtime_config_from_inputs(
-                user_id=user_id,
-                venue_name=venue_match_key,
-                registry_name=venue_registry_name,
-                market=venue_market,
-                is_paper=is_paper,
-                api_key=api_key,
-                api_secret=api_secret,
-                api_passphrase=api_passphrase,
-                account_id=account_id,
-                network=network,
-                meta_token=meta_token,
-                meta_account_id=meta_account_id,
-                ccxt_exchange=ccxt_exchange,
-            )
-        _new_venue = build_venue_from_runtime(runtime_config)
-        market = venue_market
-        # Propagate paper-mode flag to venue so adapters can short-circuit live API calls
-        _new_venue.is_paper = is_paper
-        _new_risk  = RiskManager(venue=v_key, asset_class=asset_class)
-        _venue_ctx = "forex" if asset_class == "forex" else "crypto"
-        _new_agent = TradingAgent(hyperliquid=None, venue_context=_venue_ctx)
+        readiness = await _evaluate_agent_readiness(candidate_state, warm_state=warm_state)
     except Exception as e:
-        # State is untouched — the previous running agent (if any) remains valid.
-        final_state.error = str(e)
-        logger.exception("Venue init failed — state rolled back, previous agent unaffected")
-        return {"ok": False, "error": f"Venue init failed: {e}"}
+        readiness = {
+            "state": "blocked",
+            "can_start": False,
+            "summary": "Startup preflight could not complete safely.",
+            "checks": [
+                _readiness_check(
+                    "startup_preflight",
+                    "Startup Preflight",
+                    "blocked",
+                    "Startup preflight could not complete safely.",
+                    required=True,
+                    detail=str(e),
+                )
+            ],
+            "warnings": [],
+            "market": {
+                "symbols": list(symbols),
+                "timeframe": timeframe,
+                "venue": v_key,
+                "market": market,
+                "sections": [],
+            },
+            "warm_snapshot": {"used": False, "age_s": None, "snapshot_at": None, "snapshot_ts": None, "restored_symbols": []},
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
 
-    # All three succeeded — commit atomically.
-    final_state.venue    = _new_venue
-    final_state.risk_mgr = _new_risk
-    final_state.ai_agent = _new_agent
+    if not readiness.get("can_start"):
+        final_state.status = previous_status
+        final_state.error = readiness.get("summary")
+        final_state.readiness = readiness
+        return {
+            "ok": False,
+            "error": readiness.get("summary") or "Startup preflight failed",
+            "readiness": readiness,
+        }
+
+    # All components succeeded and the startup preflight says we are tradable.
+    final_state.venue = candidate_state.venue
+    final_state.risk_mgr = candidate_state.risk_mgr
+    final_state.ai_agent = candidate_state.ai_agent
 
     final_state.symbols        = symbols
     final_state.timeframe      = timeframe
@@ -3286,6 +3897,7 @@ async def _do_start(
     final_state.venue_name     = v_key
     final_state.status         = "running"
     final_state.user_id        = user_id
+    final_state.readiness      = readiness
     # ── Full state reset — prevents any bleed from a previous session ────────
     final_state.decisions.clear()
     final_state.trade_log.clear()
@@ -3295,14 +3907,15 @@ async def _do_start(
     final_state.positions           = []
     final_state.initial_equity      = None   # set fresh on first tick
     final_state.prev_position_pnl   = {}     # prevents ghost close-events from old positions
-    final_state.price_cache         = {}     # stale prices skew first-tick equity
-    final_state.candle_cache        = {}
+    final_state.price_cache         = dict(candidate_state.price_cache)
+    final_state.candle_cache        = {key: list(value) for key, value in candidate_state.candle_cache.items()}
     final_state.tick_count          = 0
     final_state.error               = None
     final_state.last_tick_at        = datetime.now(timezone.utc)
     final_state.connected_account_cache = None
     final_state.connected_positions_cache = []
     final_state.connected_snapshot_at = None
+    final_state.warm_snapshot_at    = candidate_state.warm_snapshot_at
     final_state.min_confidence_pct  = min_confidence_pct
     final_state.max_daily_loss_pct  = max_daily_loss_pct
     final_state.max_trades_per_day  = max_trades_per_day
@@ -3333,7 +3946,11 @@ async def _do_start(
         except Exception as e:
             logger.warning("Strategy persona load failed: %s", e)
 
-    final_state._loop_task = asyncio.create_task(_run_loop_for(final_state))
+    final_state.log(
+        "Startup preflight passed — venue, prices, candles, indicators, and AI governance are ready."
+    )
+    for warning in readiness.get("warnings", []):
+        final_state.log(f"Startup readiness warning: {warning}")
 
     # Persist to DB so server restart can resume
     if user_id:
@@ -3342,6 +3959,7 @@ async def _do_start(
             final_state.agent_run_id = await upsert_agent_run(user_id, v_key, symbols, timeframe, is_paper, market, True)
         except Exception as e:
             logger.warning("AgentRun persist failed: %s", e)
+        await _persist_warm_snapshot(final_state, market_sections=readiness.get("market", {}).get("sections"))
         asyncio.create_task(_persist_audit(
             user_id, "agent_start", None, None,
             {"venue": v_key, "symbols": symbols, "timeframe": timeframe, "is_paper": is_paper},
@@ -3369,7 +3987,16 @@ async def _do_start(
             "reason_code": "mode_started",
         }))
 
-    result: dict = {"ok": True, "venue": v_key, "symbols": symbols, "timeframe": timeframe, "paper": is_paper}
+    final_state._loop_task = asyncio.create_task(_run_loop_for(final_state))
+
+    result: dict = {
+        "ok": True,
+        "venue": v_key,
+        "symbols": symbols,
+        "timeframe": timeframe,
+        "paper": is_paper,
+        "readiness": readiness,
+    }
     if forced_paper_warning:
         result["warning"] = forced_paper_warning
     return result
@@ -3401,6 +4028,92 @@ async def start_agent(request: Request, req: StartRequest):
     if not result.get("ok", False):
         raise HTTPException(status_code=409, detail=result.get("error") or "Could not start agent")
     return result
+
+
+@app.get("/api/agent/readiness")
+async def get_agent_readiness(
+    request: Request,
+    venue: str = "binance",
+    symbols: str = "BTC/USDT",
+    timeframe: str = "1h",
+    market: str = "",
+    isPaper: bool = True,
+    userId: Optional[str] = None,
+):
+    resolved_user_id = await _resolve_request_user_id(request, userId)
+    if userId and not resolved_user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    requested_symbols = [part.strip().upper() for part in symbols.split(",") if part.strip()]
+    if not requested_symbols:
+        requested_symbols = ["BTC/USDT"]
+    try:
+        validated = StartRequest(
+            userId=resolved_user_id,
+            venue=venue,
+            symbols=requested_symbols,
+            timeframe=timeframe,
+            isPaper=isPaper,
+            market=market,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    effective_is_paper, forced_paper_warning = await _enforce_start_plan_mode(resolved_user_id, validated.isPaper)
+    bundle = await _prepare_agent_start_bundle(
+        user_id=resolved_user_id,
+        venue_name=validated.venue,
+        market=validated.market,
+        is_paper=effective_is_paper,
+        api_key=validated.apiKey,
+        api_secret=validated.apiSecret,
+    )
+
+    if not bundle.get("ok"):
+        payload = {
+            "state": "blocked",
+            "can_start": False,
+            "summary": bundle.get("error") or "Venue init failed",
+            "checks": [
+                _readiness_check(
+                    "venue_init",
+                    "Venue Setup",
+                    "blocked",
+                    bundle.get("error") or "Venue init failed",
+                    required=True,
+                )
+            ],
+            "warnings": [forced_paper_warning] if forced_paper_warning else [],
+            "market": {
+                "symbols": validated.symbols,
+                "timeframe": validated.timeframe,
+                "venue": bundle.get("v_key") or validated.venue,
+                "market": bundle.get("market") or validated.market,
+                "sections": [],
+            },
+            "warm_snapshot": {"used": False, "age_s": None, "snapshot_at": None, "snapshot_ts": None, "restored_symbols": []},
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+        get_state(resolved_user_id).readiness = payload
+        return payload
+
+    candidate_state = AgentState()
+    candidate_state.venue = bundle["venue"]
+    candidate_state.risk_mgr = bundle["risk_mgr"]
+    candidate_state.ai_agent = bundle["ai_agent"]
+    candidate_state.symbols = list(validated.symbols)
+    candidate_state.timeframe = validated.timeframe
+    candidate_state.is_paper = effective_is_paper
+    candidate_state.market = str(bundle["market"])
+    candidate_state.venue_name = str(bundle["v_key"])
+    candidate_state.user_id = resolved_user_id
+
+    warm_state = await _load_saved_warm_snapshot(resolved_user_id)
+    readiness = await _evaluate_agent_readiness(candidate_state, warm_state=warm_state)
+    if forced_paper_warning:
+        readiness["warnings"] = [*readiness.get("warnings", []), forced_paper_warning]
+    get_state(resolved_user_id).readiness = readiness
+    return readiness
 
 
 @app.get("/api/agent/personas")

@@ -103,11 +103,11 @@ def _score_headline(title: str, is_forex: bool = False) -> float:
     return (bull - bear) / total
 
 
-async def _fetch_forex_newsapi(base_ccy: str, quote_ccy: str, limit: int) -> list[str]:
+async def _fetch_forex_newsapi(base_ccy: str, quote_ccy: str, limit: int) -> tuple[list[str], str | None]:
     """Fetch FOREX-relevant headlines from NewsAPI.org."""
     api_key = os.getenv("NEWSAPI_KEY", "")
     if not api_key:
-        return []
+        return [], "newsapi_key_missing"
 
     # Build a query from the most specific terms for both currencies
     base_terms  = _CURRENCY_SEARCH.get(base_ccy,  [base_ccy])
@@ -125,16 +125,16 @@ async def _fetch_forex_newsapi(base_ccy: str, quote_ccy: str, limit: int) -> lis
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                 if resp.status != 200:
-                    return []
+                    return [], f"newsapi_http_{resp.status}"
                 data = await resp.json()
         articles = data.get("articles", [])
-        return [a.get("title", "") for a in articles if a.get("title")][:limit]
+        return [a.get("title", "") for a in articles if a.get("title")][:limit], None
     except Exception as e:
         logger.warning("NewsAPI FOREX fetch (%s/%s) failed: %s", base_ccy, quote_ccy, e)
-        return []
+        return [], str(e)
 
 
-async def _fetch_forex_fallback(base_ccy: str, quote_ccy: str, limit: int) -> list[str]:
+async def _fetch_forex_fallback(base_ccy: str, quote_ccy: str, limit: int) -> tuple[list[str], str | None]:
     """Fallback: use CryptoCompare's Forex category when NewsAPI key is absent."""
     api_key = os.getenv("CRYPTOCOMPARE_API_KEY", "")
     # CryptoCompare categories: Forex, Commodities, Economics
@@ -169,10 +169,11 @@ async def _fetch_forex_fallback(base_ccy: str, quote_ccy: str, limit: int) -> li
             headlines = [a.get("title", "") for a in articles if a.get("title")][:limit]
     except Exception as e:
         logger.warning("CryptoCompare FOREX fallback (%s/%s) failed: %s", base_ccy, quote_ccy, e)
-    return headlines
+        return [], str(e)
+    return headlines, None
 
 
-async def _fetch_crypto_news(coin: str, limit: int) -> list[str]:
+async def _fetch_crypto_news(coin: str, limit: int) -> tuple[list[str], str | None]:
     """Fetch crypto headlines from CryptoCompare."""
     api_key = os.getenv("CRYPTOCOMPARE_API_KEY", "")
     url = (
@@ -185,11 +186,13 @@ async def _fetch_crypto_news(coin: str, limit: int) -> list[str]:
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return [], f"cryptocompare_http_{resp.status}"
                 data = await resp.json()
-        return [a.get("title", "") for a in data.get("Data", []) if a.get("title")][:limit]
+        return [a.get("title", "") for a in data.get("Data", []) if a.get("title")][:limit], None
     except Exception as e:
         logger.warning("CryptoCompare news fetch (%s) failed: %s", coin, e)
-        return []
+        return [], str(e)
 
 
 async def get_news_sentiment(symbol: str, limit: int = 10) -> dict[str, Any]:
@@ -207,32 +210,47 @@ async def get_news_sentiment(symbol: str, limit: int = 10) -> dict[str, Any]:
     cache_key = f"news:{symbol.upper()}"
     cached = _cache.get(cache_key)
     if cached and time.monotonic() - cached[0] < _CACHE_TTL:
-        return cached[1]
+        payload = dict(cached[1])
+        payload["stale"] = False
+        payload.pop("error", None)
+        return payload
 
     is_fx = _is_forex_symbol(symbol)
+    error_detail: str | None = None
 
     if is_fx:
         base_ccy, quote_ccy = _extract_currencies(symbol)
         # Try NewsAPI first; fall back to CryptoCompare finance category
-        headlines = await _fetch_forex_newsapi(base_ccy, quote_ccy, limit)
+        headlines, error_detail = await _fetch_forex_newsapi(base_ccy, quote_ccy, limit)
         source = "newsapi"
         if not headlines:
-            headlines = await _fetch_forex_fallback(base_ccy, quote_ccy, limit)
+            headlines, fallback_error = await _fetch_forex_fallback(base_ccy, quote_ccy, limit)
             source = "cryptocompare_forex"
+            error_detail = fallback_error or error_detail
     else:
         coin = symbol.replace("/USDT", "").replace("/USD", "").upper()
-        headlines = await _fetch_crypto_news(coin, limit)
+        headlines, error_detail = await _fetch_crypto_news(coin, limit)
         source = "cryptocompare_crypto"
         base_ccy = coin   # for scoring
 
     if not headlines:
+        if cached:
+            stale_payload = dict(cached[1])
+            stale_payload["stale"] = True
+            if error_detail:
+                stale_payload["error"] = error_detail
+            stale_payload["cache_age_s"] = int(time.monotonic() - cached[0])
+            return stale_payload
         result = {
             "symbol":    symbol.upper(),
             "score":     0.0,
             "label":     "Neutral",
             "headlines": [],
             "source":    source,
+            "stale":     False,
         }
+        if error_detail:
+            result["error"] = error_detail
         _cache[cache_key] = (time.monotonic(), result)
         return result
 
@@ -249,6 +267,7 @@ async def get_news_sentiment(symbol: str, limit: int = 10) -> dict[str, Any]:
         "label":     label,
         "headlines": headlines[:3],
         "source":    source,
+        "stale":     False,
     }
     _cache[cache_key] = (time.monotonic(), result)
     logger.debug("News sentiment %s → %.3f (%s) via %s", symbol, avg, label, source)

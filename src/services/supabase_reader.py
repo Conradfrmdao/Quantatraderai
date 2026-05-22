@@ -6,6 +6,7 @@ decrypts them before returning.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -150,6 +151,55 @@ async def upsert_agent_run(
     except Exception as e:
         logger.warning("upsert_agent_run failed: %s", e)
         return None
+    finally:
+        await conn.close()
+
+
+async def load_agent_warm_state(clerk_user_id: str) -> dict[str, Any] | None:
+    """Return the most recent warm startup snapshot stored on AgentRun."""
+    conn = await _connect()
+    try:
+        user_id = await _resolve_db_user_id(conn, clerk_user_id)
+        if not user_id:
+            return None
+        row = await conn.fetchrow(
+            'SELECT "warmState", "warmStateUpdatedAt" FROM "AgentRun" WHERE "userId" = $1',
+            user_id,
+        )
+        if not row or not row["warmState"]:
+            return None
+        payload = json.loads(str(row["warmState"]))
+        if row["warmStateUpdatedAt"]:
+            payload.setdefault("persisted_at", row["warmStateUpdatedAt"].isoformat())
+        return payload
+    except Exception as e:
+        logger.warning("load_agent_warm_state failed: %s", e)
+        return None
+    finally:
+        await conn.close()
+
+
+async def save_agent_warm_state(clerk_user_id: str, warm_state: dict[str, Any]) -> bool:
+    """Persist the latest warm startup snapshot on AgentRun."""
+    conn = await _connect()
+    try:
+        user_id = await _resolve_db_user_id(conn, clerk_user_id)
+        if not user_id:
+            return False
+        status = await conn.execute(
+            """
+            UPDATE "AgentRun"
+            SET "warmState" = $2,
+                "warmStateUpdatedAt" = NOW()
+            WHERE "userId" = $1
+            """,
+            user_id,
+            json.dumps(warm_state),
+        )
+        return status.endswith("1")
+    except Exception as e:
+        logger.warning("save_agent_warm_state failed: %s", e)
+        return False
     finally:
         await conn.close()
 

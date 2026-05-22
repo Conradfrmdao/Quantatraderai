@@ -34,7 +34,10 @@ async def get_fear_greed() -> dict[str, Any]:
     global _fng_cache, _fng_cache_ts
     now = time.monotonic()
     if _fng_cache and now - _fng_cache_ts < _FNG_TTL:
-        return _fng_cache
+        payload = dict(_fng_cache)
+        payload["stale"] = False
+        payload.pop("error", None)
+        return payload
 
     try:
         import aiohttp
@@ -62,6 +65,7 @@ async def get_fear_greed() -> dict[str, Any]:
             "label":         label,
             "normalized":    normalized,
             "sentiment_bias": bias,
+            "stale":         False,
         }
         _fng_cache_ts = now
         logger.debug("Fear/Greed: %s (%s) → %s", value, label, bias)
@@ -69,4 +73,17 @@ async def get_fear_greed() -> dict[str, Any]:
 
     except Exception as e:
         logger.warning("Fear/Greed fetch failed: %s", e)
-        return {"value": 50, "label": "Neutral", "normalized": 0.5, "sentiment_bias": "neutral"}
+        if _fng_cache:
+            payload = dict(_fng_cache)
+            payload["stale"] = True
+            payload["error"] = str(e)
+            payload["cache_age_s"] = int(now - _fng_cache_ts)
+            return payload
+        return {
+            "value": 50,
+            "label": "Neutral",
+            "normalized": 0.5,
+            "sentiment_bias": "neutral",
+            "stale": True,
+            "error": str(e),
+        }

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Shield, AlertTriangle, TrendingUp, Target, Brain,
-  ChevronRight, X, Check, Play, Zap,
+  ChevronRight, X, Check, Play, Zap, RefreshCw,
 } from "lucide-react";
 import { getStartConfirmActionState } from "@/lib/start-confirm";
 
@@ -22,10 +22,33 @@ export interface StartConfig {
   symbols:          string[];
 }
 
+export interface StartReadinessCheck {
+  key: string;
+  label: string;
+  status: string;
+  required: boolean;
+  summary: string;
+  detail?: string;
+}
+
+export interface StartReadiness {
+  state: string;
+  can_start: boolean;
+  summary: string;
+  warnings?: string[];
+  checks?: StartReadinessCheck[];
+  warm_snapshot?: {
+    used?: boolean;
+    age_s?: number | null;
+  } | null;
+}
+
 interface Props {
   config:    StartConfig;
   onConfirm: () => void;
   onCancel:  () => void;
+  readiness?: StartReadiness | null;
+  readinessLoading?: boolean;
 }
 
 const PERSONA_COLOR: Record<string, string> = {
@@ -53,16 +76,29 @@ function Row({ icon: Icon, label, value, color = "#fff", sub }:
   );
 }
 
-export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
+function readinessTone(state: string | undefined) {
+  if (state === "ready") return { bg: "rgba(74,222,128,0.08)", border: "rgba(74,222,128,0.24)", text: "#86efac" };
+  if (state === "degraded") return { bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.24)", text: "#fcd34d" };
+  if (state === "blocked") return { bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.24)", text: "#fca5a5" };
+  return { bg: "rgba(255,255,255,0.04)", border: "rgba(255,255,255,0.1)", text: "rgba(255,255,255,0.7)" };
+}
+
+export function StartConfirmModal({ config, onConfirm, onCancel, readiness, readinessLoading = false }: Props) {
   const [acked, setAcked] = useState(false);
   const [pulse, setPulse] = useState(false);
 
   const personaColor = PERSONA_COLOR[config.strategyType] ?? "#4ade80";
   const isLive = !config.isPaper;
-  const actionState = getStartConfirmActionState(isLive, acked);
+  const readinessBlocked = readinessLoading || !readiness || readiness.can_start === false;
+  const actionState = getStartConfirmActionState(isLive, acked && !readinessBlocked);
   const ActionIcon = isLive ? Zap : Play;
+  const ReadinessIcon = readinessLoading ? RefreshCw : readiness?.can_start === false ? AlertTriangle : ActionIcon;
+  const readinessStyle = readinessTone(readiness?.state);
 
   function tryConfirm() {
+    if (readinessLoading || !readiness || readiness.can_start === false) {
+      return;
+    }
     if (!acked) {
       // Shake the checkbox to draw attention
       setPulse(true);
@@ -205,8 +241,79 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
               <Row icon={ChevronRight}
                 label="Loss cooldown"
                 value={`After ${config.lossCooldownCount} consecutive losses`}
-                color="#fbbf24" />
+              color="#fbbf24" />
             )}
+          </div>
+
+          {/* ── Startup readiness ───────────────────────────────────────── */}
+          <div style={{
+            marginBottom: 18,
+            padding: "12px 12px 10px",
+            borderRadius: 12,
+            background: readinessStyle.bg,
+            border: `1px solid ${readinessStyle.border}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 8 }}>
+              <div>
+                <p style={{ fontSize: 11, color: "rgba(255,255,255,0.38)", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
+                  Startup Readiness
+                </p>
+                <p style={{ fontSize: 13, fontWeight: 700, color: readinessStyle.text, marginTop: 3 }}>
+                  {readinessLoading ? "Checking live venue, market data, and AI health…" : readiness?.summary ?? "Readiness unavailable"}
+                </p>
+              </div>
+              <span style={{
+                padding: "5px 8px",
+                borderRadius: 999,
+                fontSize: 10,
+                fontWeight: 800,
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: readinessStyle.text,
+                border: `1px solid ${readinessStyle.border}`,
+                background: "rgba(0,0,0,0.12)",
+                flexShrink: 0,
+              }}>
+                {readinessLoading ? "Checking" : readiness?.state ?? "Unknown"}
+              </span>
+            </div>
+
+            {!readinessLoading && readiness?.warm_snapshot?.used && (
+              <p style={{ fontSize: 11, color: "rgba(255,255,255,0.48)", marginBottom: 8 }}>
+                Warm market snapshot restored{typeof readiness.warm_snapshot.age_s === "number" ? ` (${readiness.warm_snapshot.age_s}s old)` : ""}.
+              </p>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(readiness?.checks ?? []).map((check) => {
+                const tone = readinessTone(check.status);
+                return (
+                  <div key={check.key} style={{
+                    padding: "8px 9px",
+                    borderRadius: 10,
+                    border: `1px solid ${tone.border}`,
+                    background: "rgba(0,0,0,0.12)",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: "#fff" }}>{check.label}</span>
+                      <span style={{
+                        fontSize: 9,
+                        fontWeight: 800,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: tone.text,
+                      }}>
+                        {check.required ? "Required" : "Optional"} · {check.status}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: 11, color: "rgba(255,255,255,0.62)", marginTop: 4 }}>{check.summary}</p>
+                    {check.detail && (
+                      <p style={{ fontSize: 10, color: "rgba(255,255,255,0.36)", marginTop: 4 }}>{check.detail}</p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {/* ── Acknowledgment checkbox ─────────────────────────────────── */}
@@ -271,6 +378,7 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
                 fontSize: 13,
                 fontWeight: 800,
                 transition: "all 0.2s",
+                opacity: readinessBlocked && !acked ? 0.9 : readinessBlocked ? 0.7 : 1,
               }}>
               <span style={{
                 width: 30,
@@ -282,10 +390,12 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
                 justifyContent: "center",
                 flexShrink: 0,
               }}>
-                <ActionIcon size={15} fill={acked && !isLive ? "#050505" : "none"} style={{ color: actionState.iconColor }} />
+                <ReadinessIcon size={15} fill={acked && !isLive && !readinessBlocked ? "#050505" : "none"} style={{ color: actionState.iconColor }} />
               </span>
               <span style={{ minWidth: 0, textAlign: "left", lineHeight: 1.15 }}>
-                <span style={{ display: "block", whiteSpace: "normal" }}>{actionState.label}</span>
+                <span style={{ display: "block", whiteSpace: "normal" }}>
+                  {readinessLoading ? "Checking Readiness" : readiness?.can_start === false ? "Resolve Blocked Checks" : actionState.label}
+                </span>
                 <span style={{
                   display: "block",
                   fontSize: 10,
@@ -294,7 +404,11 @@ export function StartConfirmModal({ config, onConfirm, onCancel }: Props) {
                   opacity: acked ? 0.65 : 0.75,
                   whiteSpace: "normal",
                 }}>
-                  {actionState.subcopy}
+                  {readinessLoading
+                    ? "Fetching fresh venue, data, and AI health before enabling start"
+                    : readiness?.can_start === false
+                      ? readiness.summary
+                      : actionState.subcopy}
                 </span>
               </span>
             </button>

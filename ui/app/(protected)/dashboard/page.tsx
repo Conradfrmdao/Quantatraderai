@@ -18,7 +18,7 @@ import { PositionsTable }    from "@/components/PositionsTable";
 import { DecisionsFeed }          from "@/components/DecisionsFeed";
 import { DecisionTimeline }       from "@/components/DecisionTimeline";
 import { GettingStartedChecklist } from "@/components/GettingStartedChecklist";
-import { StartConfirmModal, type StartConfig } from "@/components/StartConfirmModal";
+import { StartConfirmModal, type StartConfig, type StartReadiness } from "@/components/StartConfirmModal";
 import { FirstTradeReaction } from "@/components/FirstTradeReaction";
 import { RiskPanel }         from "@/components/RiskPanel";
 import { EquityChart }       from "@/components/EquityChart";
@@ -105,7 +105,7 @@ function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null,
 
 interface AccountData   { balance: number; equity: number; initial_equity: number; total_return_pct: number; open_positions: number; sharpe: number }
 interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage?: number; liquidation_price?: number }[]; is_paper?: boolean }
-interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; market?: string; asset_class?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number }
+interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; market?: string; asset_class?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number; readiness_state?: string | null; readiness_summary?: string | null }
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface CommitteeOpinionData { role?: string; provider: string; action: string; rationale: string; confidence: number; veto?: boolean }
 interface CommitteeSummaryData { asset: string; opinions: CommitteeOpinionData[]; vote: string; confidence: number; deadlock: boolean }
@@ -222,6 +222,18 @@ export default function Dashboard() {
   const venueRegistryName = activeCapability.registryName;
   const symbolPlaceholder = activeCapability.symbols.placeholder;
   const [symbol, setSymbol] = useState("BTCUSDT");
+  const readinessEnabled =
+    pollingEnabled
+    && showStartConfirm
+    && Boolean(activeVenue)
+    && !["running", "paused", "stopping"].includes(status.data?.status ?? "idle");
+  const readinessPath =
+    `/api/readiness?venue=${encodeURIComponent(venueRegistryName)}`
+    + `&symbols=${encodeURIComponent(symbol)}`
+    + `&timeframe=${encodeURIComponent(timeframe)}`
+    + `&market=${encodeURIComponent(market)}`
+    + `&isPaper=${String(activeVenue?.isPaper ?? true)}`;
+  const readiness = usePolled<StartReadiness>(readinessPath, 12000, sessionKey, readinessEnabled);
 
   // When the active venue changes (or loads for the first time), sync the default
   // symbol and chart venue type so a FOREX user sees EUR/USD not BTC/USDT.
@@ -549,6 +561,10 @@ export default function Dashboard() {
 
   // Actual start — called after the safety gate is confirmed
   const doStartAgent = useCallback(async () => {
+    if (!readiness.data?.can_start) {
+      toast(readiness.data?.summary ?? "The agent is not ready to trade yet.", "warning");
+      return;
+    }
     setShowStartConfirm(false);
     setAgentLoading(true);
     try {
@@ -601,7 +617,7 @@ export default function Dashboard() {
       toast("Failed to reach the trading backend. Check your connection.", "error");
     }
   }, [activeCapability.assetClass, activeVenue, lossCooldown, market, maxDailyLoss, maxTradesDay, minConfidence,
-      paperCapital, status, strategyType, symbol, timeframe, toast, venueLabel, venueRegistryName]);
+      paperCapital, readiness.data, status, strategyType, symbol, timeframe, toast, venueLabel, venueRegistryName]);
 
   const handleAgentToggle = useCallback(async () => {
     const currentStatus = status.data?.status ?? "idle";
@@ -729,6 +745,8 @@ export default function Dashboard() {
             lossCooldownCount: lossCooldown,
             symbols:           [symbol],
           } as StartConfig}
+          readiness={readiness.data}
+          readinessLoading={readinessEnabled && !readiness.loaded}
           onConfirm={doStartAgent}
           onCancel={() => setShowStartConfirm(false)}
         />

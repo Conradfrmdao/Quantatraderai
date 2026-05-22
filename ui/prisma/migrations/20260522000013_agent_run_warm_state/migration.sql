@@ -1,0 +1,3 @@
+ALTER TABLE "AgentRun"
+    ADD COLUMN IF NOT EXISTS "warmState" TEXT,
+    ADD COLUMN IF NOT EXISTS "warmStateUpdatedAt" TIMESTAMP(3);

@@ -219,6 +219,8 @@ model AgentRun {
   isRunning Boolean   @default(true)
   startedAt DateTime  @default(now())
   stoppedAt DateTime?
+  warmState String?   @db.Text
+  warmStateUpdatedAt DateTime?
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   aiUsageLogs AIUsageLog[]
   aiDecisions AIDecision[]

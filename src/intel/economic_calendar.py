@@ -24,6 +24,8 @@ logger = logging.getLogger("quantatraderai.intel.calendar")
 _cache: list[dict[str, Any]] = []
 _cache_ts: float = 0.0
 _CACHE_TTL = 3600.0  # refresh hourly
+_last_fetch_state = "idle"
+_last_fetch_error = ""
 
 # High-impact event keywords → relevant currencies.
 # None means "always relevant regardless of pair" (e.g. broad USD events affect all USD pairs).
@@ -90,10 +92,10 @@ def _event_affects_symbols(event_name: str, traded_currencies: set[str]) -> bool
     return False
 
 
-async def _fetch_events() -> list[dict[str, Any]]:
+async def _fetch_events() -> tuple[list[dict[str, Any]], str | None]:
     api_key = os.getenv("TWELVEDATA_API_KEY")
     if not api_key:
-        return []
+        return [], "calendar_key_missing"
     url = (
         f"https://api.twelvedata.com/economic_calendar"
         f"?apikey={api_key}&importance=high&outputsize=50"
@@ -102,22 +104,65 @@ async def _fetch_events() -> list[dict[str, Any]]:
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                if resp.status != 200:
+                    return [], f"twelvedata_http_{resp.status}"
                 data = await resp.json()
-        return data.get("result", data.get("data", []))
+        return data.get("result", data.get("data", [])), None
     except Exception as e:
         logger.warning("Economic calendar fetch failed: %s", e)
-        return []
+        return [], str(e)
 
 
 async def get_upcoming_events(force_refresh: bool = False) -> list[dict[str, Any]]:
     """Return the cached list of upcoming high-impact events."""
-    global _cache, _cache_ts
+    global _cache, _cache_ts, _last_fetch_error, _last_fetch_state
     now = time.monotonic()
     if not force_refresh and _cache and now - _cache_ts < _CACHE_TTL:
+        _last_fetch_state = "ready"
+        _last_fetch_error = ""
         return _cache
-    _cache = await _fetch_events()
+    events, error = await _fetch_events()
+    if error:
+        _last_fetch_error = error
+        if _cache:
+            _last_fetch_state = "stale"
+            return _cache
+        _last_fetch_state = "skipped" if error == "calendar_key_missing" else "empty"
+        return []
+    _cache = events
     _cache_ts = now
+    _last_fetch_state = "ready" if events else "empty"
+    _last_fetch_error = ""
     return _cache
+
+
+async def get_calendar_feed_status(force_refresh: bool = False) -> dict[str, Any]:
+    events = await get_upcoming_events(force_refresh=force_refresh)
+    if _last_fetch_state == "ready":
+        return {
+            "state": "ready",
+            "summary": f"Economic calendar ready with {len(events)} upcoming event(s).",
+            "count": len(events),
+        }
+    if _last_fetch_state == "stale":
+        return {
+            "state": "stale",
+            "summary": "Using cached economic calendar events while the upstream refreshes.",
+            "count": len(events),
+            "error": _last_fetch_error or None,
+        }
+    if _last_fetch_state == "skipped":
+        return {
+            "state": "skipped",
+            "summary": "Economic calendar key is not configured.",
+            "count": len(events),
+        }
+    return {
+        "state": "empty",
+        "summary": "Economic calendar returned no upcoming high-impact events.",
+        "count": len(events),
+        "error": _last_fetch_error or None,
+    }
 
 
 def _event_ts(event: dict) -> float | None:

@@ -757,6 +757,198 @@ async def test_start_agent_returns_http_409_on_start_failure():
 
 
 @pytest.mark.asyncio
+async def test_evaluate_agent_readiness_uses_recent_warm_snapshot_when_live_feeds_temporarily_fail(monkeypatch):
+    import src.server as srv
+
+    class StubVenue:
+        async def get_balances(self):
+            return [SimpleNamespace(currency="USDT", total=1000.0)]
+
+        async def get_positions(self):
+            return []
+
+        async def get_ticker(self, symbol):
+            raise RuntimeError("ticker reconnecting")
+
+        async def get_candles(self, symbol, timeframe, limit):
+            raise RuntimeError("candles reconnecting")
+
+    state = srv.AgentState()
+    state.user_id = "clerk_readiness_snapshot"
+    state.venue = StubVenue()
+    state.risk_mgr = MagicMock()
+    state.ai_agent = SimpleNamespace(provider=SimpleNamespace(name="groq", model="llama-test"))
+    state.symbols = ["BTC/USDT"]
+    state.timeframe = "1h"
+    state.is_paper = True
+    state.market = "spot"
+    state.venue_name = "binance"
+
+    now_bucket = (int(time.time()) // 3600) * 3600
+    candles = [{
+        "time": now_bucket - ((39 - idx) * 3600),
+        "open": 68000.0 + idx,
+        "high": 68005.0 + idx,
+        "low": 67995.0 + idx,
+        "close": 68001.0 + idx,
+        "volume": 10.0 + idx,
+    } for idx in range(40)]
+    warm_state = {
+        "snapshot_at": srv.datetime.fromtimestamp(time.time() - 30, tz=srv.timezone.utc).isoformat(),
+        "venue": "binance",
+        "market": "spot",
+        "timeframe": "1h",
+        "symbols": ["BTC/USDT"],
+        "price_cache": {"BTCUSDT": 68123.45},
+        "candle_cache": {"BTCUSDT:1h": candles},
+    }
+
+    monkeypatch.setattr("src.server._probe_governance_store", AsyncMock(return_value=(True, "AI governance counters are writable.")))
+    monkeypatch.setattr("src.server._get_user_plan", AsyncMock(return_value="FREE"))
+
+    with patch("src.intel.economic_calendar.get_calendar_feed_status", AsyncMock(return_value={"state": "ready", "summary": "Calendar healthy"})):
+        with patch("src.intel.sentiment.get_fear_greed", AsyncMock(return_value={"stale": False, "value": 60})):
+            readiness = await srv._evaluate_agent_readiness(state, warm_state=warm_state)
+
+    assert readiness["can_start"] is True
+    assert readiness["state"] == "degraded"
+    assert readiness["warm_snapshot"]["used"] is True
+    assert readiness["warm_snapshot"]["restored_symbols"] == ["BTC/USDT"]
+    assert state.price_cache["BTCUSDT"] == pytest.approx(68123.45)
+    assert state.candle_cache["BTCUSDT:1h"][-1]["time"] == candles[-1]["time"]
+
+
+@pytest.mark.asyncio
+async def test_do_start_returns_blocked_preflight_without_launching_loop(monkeypatch):
+    import src.server as srv
+
+    state = srv.get_state("clerk_start_blocked")
+    state.status = "idle"
+    state._loop_task = None
+    state.readiness = None
+
+    bundle = {
+        "ok": True,
+        "v_key": "binance",
+        "market": "spot",
+        "venue": SimpleNamespace(),
+        "risk_mgr": MagicMock(),
+        "ai_agent": SimpleNamespace(provider=SimpleNamespace(name="groq", model="llama-test")),
+    }
+    blocked = {
+        "state": "blocked",
+        "can_start": False,
+        "summary": "One or more symbols do not have a fresh live price yet.",
+        "checks": [],
+        "warnings": [],
+        "market": {"sections": []},
+    }
+
+    monkeypatch.setattr("src.server._prepare_agent_start_bundle", AsyncMock(return_value=bundle))
+    monkeypatch.setattr("src.server._load_saved_warm_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr("src.server._evaluate_agent_readiness", AsyncMock(return_value=blocked))
+
+    result = await srv._do_start(
+        user_id="clerk_start_blocked",
+        venue_name="binance",
+        symbols=["BTC/USDT"],
+        timeframe="1h",
+        is_paper=True,
+        market="spot",
+        api_key=None,
+        api_secret=None,
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == blocked["summary"]
+    assert state.status == "idle"
+    assert state._loop_task is None
+    assert state.readiness == blocked
+
+
+@pytest.mark.asyncio
+async def test_do_start_seeds_warm_caches_before_launching_loop(monkeypatch):
+    import src.server as srv
+
+    state = srv.get_state("clerk_start_ready")
+    state.status = "idle"
+    state._loop_task = None
+    state.logs.clear()
+
+    bundle = {
+        "ok": True,
+        "v_key": "binance",
+        "market": "spot",
+        "venue": SimpleNamespace(),
+        "risk_mgr": MagicMock(config={}),
+        "ai_agent": SimpleNamespace(
+            provider=SimpleNamespace(name="groq", model="llama-test"),
+            system_prompt_addendum="",
+        ),
+    }
+
+    async def fake_readiness(candidate_state, *, warm_state=None):
+        candidate_state.price_cache["BTCUSDT"] = 68250.0
+        candidate_state.candle_cache["BTCUSDT:1h"] = [{
+            "time": 1,
+            "open": 1.0,
+            "high": 1.0,
+            "low": 1.0,
+            "close": 1.0,
+            "volume": 1.0,
+        }]
+        candidate_state.warm_snapshot_at = srv.datetime.now(srv.timezone.utc)
+        return {
+            "state": "ready",
+            "can_start": True,
+            "summary": "Ready to trade 1 symbol(s) with live venue access and warmed market data.",
+            "checks": [],
+            "warnings": [],
+            "market": {"sections": [{"asset": "BTC/USDT", "data_ready": True, "data_state": "ready"}]},
+        }
+
+    real_create_task = asyncio.create_task
+    created_tasks: list[asyncio.Task] = []
+
+    def fake_create_task(coro):
+        task = real_create_task(coro)
+        created_tasks.append(task)
+        return task
+
+    monkeypatch.setattr("src.server._prepare_agent_start_bundle", AsyncMock(return_value=bundle))
+    monkeypatch.setattr("src.server._load_saved_warm_snapshot", AsyncMock(return_value=None))
+    monkeypatch.setattr("src.server._evaluate_agent_readiness", fake_readiness)
+    monkeypatch.setattr("src.server._persist_warm_snapshot", AsyncMock())
+    monkeypatch.setattr("src.server._get_user_plan", AsyncMock(return_value="PRO"))
+
+    with patch("src.services.supabase_reader.upsert_agent_run", new=AsyncMock(return_value="run_123")):
+        with patch("src.server._persist_audit", new=AsyncMock()):
+            with patch("src.server.capture_posthog", new=AsyncMock()):
+                with patch("src.server._run_loop_for", new=AsyncMock(return_value=None)):
+                    with patch("src.server.asyncio.create_task", side_effect=fake_create_task):
+                        result = await srv._do_start(
+                            user_id="clerk_start_ready",
+                            venue_name="binance",
+                            symbols=["BTC/USDT"],
+                            timeframe="1h",
+                            is_paper=True,
+                            market="spot",
+                            api_key=None,
+                            api_secret=None,
+                        )
+
+    if created_tasks:
+        await asyncio.gather(*created_tasks)
+
+    assert result["ok"] is True
+    assert state.status == "running"
+    assert state.agent_run_id == "run_123"
+    assert state.price_cache["BTCUSDT"] == pytest.approx(68250.0)
+    assert state.candle_cache["BTCUSDT:1h"][0]["close"] == 1.0
+    assert any("Startup preflight passed" in entry["msg"] for entry in state.logs)
+
+
+@pytest.mark.asyncio
 async def test_stop_agent_uses_authenticated_user_not_spoofed_body_user_id():
     import src.server as srv
 

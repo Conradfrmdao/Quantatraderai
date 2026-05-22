@@ -11,7 +11,7 @@ const PYTHON_API = process.env.PYTHON_API_URL || "http://localhost:8000";
 const AGENT_VERBS = new Set([
   "start", "stop", "killswitch",
   "timeline", "personas", "pending-order", "trust",
-  "execute-signal", "strategies",
+  "execute-signal", "strategies", "readiness",
 ]);
 
 function buildPythonPath(subpath: string): string {
