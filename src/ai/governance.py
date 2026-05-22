@@ -384,9 +384,27 @@ async def governed_complete(
     context.provider = provider.name
     context.model = provider.model
     bounded_max_tokens = clamp_max_output_tokens(context.plan, max_tokens)
-
-    await _enforce_rate_limits(context)
-    usage = await _reserve_budget(context, system, messages, bounded_max_tokens, tools)
+    governance_started_at = time.perf_counter()
+    try:
+        await _enforce_rate_limits(context)
+        usage = await _reserve_budget(context, system, messages, bounded_max_tokens, tools)
+    except AIError:
+        raise
+    except Exception as exc:
+        latency_ms = int((time.perf_counter() - governance_started_at) * 1000)
+        await record_ai_failure(
+            ctx=context,
+            usage=None,
+            exc=exc,
+            latency_ms=latency_ms,
+            reason_code="ai_governance_unavailable",
+        )
+        raise AIError(
+            AIErrorCode.AI_GOVERNANCE_UNAVAILABLE,
+            trace_id=context.trace_id,
+            metadata={"reason_code": "ai_governance_unavailable"},
+            cause=exc,
+        ) from exc
     started_at = time.perf_counter()
 
     await capture_posthog("ai_decision_started" if context.action == "agent_decision" else "ai_request_started", {

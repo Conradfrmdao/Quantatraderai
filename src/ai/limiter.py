@@ -13,9 +13,15 @@ import aiohttp
 
 from src.ai.budgets import current_budget_periods
 
+_UTC_NAIVE_NOW_SQL = "TIMEZONE('UTC', NOW())"
+
 
 def _is_local_env() -> bool:
     return os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")).lower() in {"local", "development", "dev", "test"}
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass(frozen=True)
@@ -139,24 +145,24 @@ class PostgresCounterStore(CounterStore):
 
     async def incr(self, key: str, amount: int, ttl_s: int) -> int:
         pool = await self._pool_or_init()
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(1, int(ttl_s)))
+        expires_at = _utc_now_naive() + timedelta(seconds=max(1, int(ttl_s)))
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 INSERT INTO "RuntimeCounter" ("id","value","expiresAt","updatedAt")
-                VALUES ($1,$2,$3,NOW())
+                VALUES ($1,$2,$3,{_UTC_NAIVE_NOW_SQL})
                 ON CONFLICT ("id") DO UPDATE SET
                     "value" = CASE
-                        WHEN "RuntimeCounter"."expiresAt" <= NOW()
+                        WHEN "RuntimeCounter"."expiresAt" <= {_UTC_NAIVE_NOW_SQL}
                             THEN GREATEST(0, EXCLUDED."value")
                         ELSE GREATEST(0, "RuntimeCounter"."value" + EXCLUDED."value")
                     END,
                     "expiresAt" = CASE
-                        WHEN "RuntimeCounter"."expiresAt" <= NOW()
+                        WHEN "RuntimeCounter"."expiresAt" <= {_UTC_NAIVE_NOW_SQL}
                             THEN EXCLUDED."expiresAt"
                         ELSE GREATEST("RuntimeCounter"."expiresAt", EXCLUDED."expiresAt")
                     END,
-                    "updatedAt" = NOW()
+                    "updatedAt" = {_UTC_NAIVE_NOW_SQL}
                 RETURNING "value"
                 """,
                 key,
@@ -168,7 +174,10 @@ class PostgresCounterStore(CounterStore):
     async def get(self, key: str) -> int:
         pool = await self._pool_or_init()
         async with pool.acquire() as conn:
-            await conn.execute('DELETE FROM "RuntimeCounter" WHERE "id" = $1 AND "expiresAt" <= NOW()', key)
+            await conn.execute(
+                f'DELETE FROM "RuntimeCounter" WHERE "id" = $1 AND "expiresAt" <= {_UTC_NAIVE_NOW_SQL}',
+                key,
+            )
             row = await conn.fetchrow('SELECT "value" FROM "RuntimeCounter" WHERE "id" = $1', key)
         return int(row["value"] if row else 0)
 

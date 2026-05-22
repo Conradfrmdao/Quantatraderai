@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -247,7 +248,7 @@ async def test_governed_complete_prefers_async_provider(monkeypatch):
 def test_counter_store_uses_postgres_fallback_when_database_url_present(monkeypatch):
     import src.ai.limiter as limiter
 
-    limiter._STORE = None
+    monkeypatch.setattr(limiter, "_STORE", None)
     monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
     monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
     monkeypatch.delenv("REDIS_URL", raising=False)
@@ -257,3 +258,177 @@ def test_counter_store_uses_postgres_fallback_when_database_url_present(monkeypa
     store = limiter.get_counter_store()
 
     assert isinstance(store, limiter.PostgresCounterStore)
+
+
+class _FakePoolAcquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakePostgresCounterConn:
+    def __init__(self):
+        self.rows: dict[str, dict[str, object]] = {}
+        self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
+        self.execute_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    @staticmethod
+    def _utc_now_naive() -> datetime:
+        return datetime.now(timezone.utc).replace(tzinfo=None)
+
+    async def fetchrow(self, query, *args):
+        self.fetchrow_calls.append((query, args))
+        if query.lstrip().startswith('INSERT INTO "RuntimeCounter"'):
+            key, amount, expires_at = args
+            assert isinstance(expires_at, datetime)
+            assert expires_at.tzinfo is None
+            current = self.rows.get(key)
+            now = self._utc_now_naive()
+            if current and current["expiresAt"] <= now:
+                current = None
+                self.rows.pop(key, None)
+            if current is None:
+                value = max(0, int(amount))
+                self.rows[key] = {"value": value, "expiresAt": expires_at}
+            else:
+                value = max(0, int(current["value"]) + int(amount))
+                self.rows[key] = {
+                    "value": value,
+                    "expiresAt": max(current["expiresAt"], expires_at),
+                }
+            return {"value": self.rows[key]["value"]}
+        if query == 'SELECT "value" FROM "RuntimeCounter" WHERE "id" = $1':
+            current = self.rows.get(args[0])
+            return {"value": current["value"]} if current else None
+        raise AssertionError(f"Unexpected fetchrow query: {query}")
+
+    async def execute(self, query, *args):
+        self.execute_calls.append((query, args))
+        if query.startswith('DELETE FROM "RuntimeCounter"'):
+            key = args[0]
+            current = self.rows.get(key)
+            now = self._utc_now_naive()
+            if current and current["expiresAt"] <= now:
+                self.rows.pop(key, None)
+                return "DELETE 1"
+            return "DELETE 0"
+        raise AssertionError(f"Unexpected execute query: {query}")
+
+
+class _FakePostgresCounterPool:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def acquire(self):
+        return _FakePoolAcquire(self.conn)
+
+
+@pytest.mark.asyncio
+async def test_postgres_counter_store_uses_naive_utc_runtime_counter_expiry(monkeypatch):
+    import src.ai.limiter as limiter
+
+    conn = _FakePostgresCounterConn()
+    pool = _FakePostgresCounterPool(conn)
+    store = limiter.PostgresCounterStore("postgresql://mock:mock@localhost/mock")
+
+    async def fake_pool_or_init():
+        return pool
+
+    monkeypatch.setattr(store, "_pool_or_init", fake_pool_or_init)
+
+    assert await store.incr("ai:test", 7, 120) == 7
+    assert await store.get("ai:test") == 7
+
+    insert_query, insert_args = conn.fetchrow_calls[0]
+    assert "TIMEZONE('UTC', NOW())" in insert_query
+    assert isinstance(insert_args[2], datetime)
+    assert insert_args[2].tzinfo is None
+
+    conn.rows["ai:test"]["expiresAt"] = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=1)
+    assert await store.get("ai:test") == 0
+
+    delete_query, _ = conn.execute_calls[-1]
+    assert "TIMEZONE('UTC', NOW())" in delete_query
+
+
+@pytest.mark.asyncio
+async def test_governed_complete_executes_with_postgres_counter_store(monkeypatch):
+    import src.ai.limiter as limiter
+    from src.ai.governance import governed_complete
+
+    async def fake_usage(*args, **kwargs):
+        return None
+
+    async def fake_posthog(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("src.ai.governance.write_ai_usage_log", fake_usage)
+    monkeypatch.setattr("src.ai.governance.capture_posthog", fake_posthog)
+
+    conn = _FakePostgresCounterConn()
+    pool = _FakePostgresCounterPool(conn)
+    store = limiter.PostgresCounterStore("postgresql://mock:mock@localhost/mock")
+
+    async def fake_pool_or_init():
+        return pool
+
+    monkeypatch.setattr(store, "_pool_or_init", fake_pool_or_init)
+    monkeypatch.setattr(limiter, "_STORE", store)
+
+    response = await governed_complete(
+        provider=AsyncOnlyDummyProvider('{"trade_decisions":[{"asset":"BTC/USDT","action":"hold"}]}'),
+        system="sys",
+        messages=[{"role": "user", "content": "ctx"}],
+        max_tokens=50,
+        context=_ctx("pg-user"),
+    )
+
+    day_id, month_id = limiter.current_budget_periods()
+    assert '"action":"hold"' in response.content
+    assert await limiter.read_counter("ai:budget:day", f"pg-user:{day_id}") > 0
+    assert await limiter.read_counter("ai:budget:month", f"pg-user:{month_id}") > 0
+
+
+@pytest.mark.asyncio
+async def test_governed_complete_wraps_counter_store_failures(monkeypatch):
+    from src.ai.errors import AIError, AIErrorCode
+    from src.ai.governance import governed_complete
+    import src.ai.limiter as limiter
+
+    async def fake_usage(*args, **kwargs):
+        return None
+
+    async def fake_posthog(*args, **kwargs):
+        return None
+
+    async def fake_record_failure(*args, **kwargs):
+        return None
+
+    class BrokenCounterStore(limiter.CounterStore):
+        async def incr(self, key: str, amount: int, ttl_s: int) -> int:
+            raise RuntimeError("counter db boom")
+
+        async def get(self, key: str) -> int:
+            raise RuntimeError("counter db boom")
+
+    monkeypatch.setattr("src.ai.governance.write_ai_usage_log", fake_usage)
+    monkeypatch.setattr("src.ai.governance.capture_posthog", fake_posthog)
+    monkeypatch.setattr("src.ai.governance.record_ai_failure", fake_record_failure)
+    monkeypatch.setattr(limiter, "_STORE", BrokenCounterStore())
+
+    with pytest.raises(AIError) as exc:
+        await governed_complete(
+            provider=DummyProvider('{"trade_decisions":[]}'),
+            system="sys",
+            messages=[{"role": "user", "content": "ctx"}],
+            max_tokens=50,
+            context=_ctx("broken-pg"),
+        )
+
+    assert exc.value.code == AIErrorCode.AI_GOVERNANCE_UNAVAILABLE
+    assert exc.value.metadata["reason_code"] == "ai_governance_unavailable"
