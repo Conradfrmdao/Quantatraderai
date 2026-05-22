@@ -25,7 +25,7 @@ const NAV_LINKS = [
 
 const SLIDER_ITEMS = [
   "Hyperliquid", "Binance Futures", "OANDA Forex", "Polymarket",
-  "100+ via CCXT", "Groq LLaMA", "Claude Sonnet", "Gemini Pro",
+  "100+ via CCXT", "Groq LLaMA", "Gemini Flash", "Reserved Bedrock Slot",
   "Risk-First Architecture", "Multi-Venue", "Live PnL Tracking",
   "Automated Stop-Loss", "Backtesting Engine", "Prediction Markets",
 ];
@@ -41,7 +41,7 @@ const FEATURES = [
   },
   {
     title: "AI Council — Collective Intelligence",
-    body: "Claude 4, Groq LLaMA, Gemini Pro, and local Ollama models — each trained on years of distinct market data — independently analyse every signal. Their outputs are weighted, cross-checked, and aggregated into a single consensus decision. A supermajority is required to act; if the council disagrees, the system holds and protects your capital.",
+    body: "Groq and Gemini form the active council core today, with a reserved Bedrock slot for premium escalation later. Their outputs are cross-checked, weighted conservatively, and aggregated into a single decision. If the council disagrees, the system holds and protects your capital.",
   },
   {
     title: "Demo & Paper Trading",
@@ -304,7 +304,7 @@ export function HeroSection() {
                 "Paper trading & testnet only",
                 "1 venue (Hyperliquid testnet)",
                 "Up to 2 assets",
-                "1 AI agent (Groq LLaMA)",
+                "1 AI model (Groq)",
                 "30-day backtesting",
                 "Community support",
               ],
@@ -321,7 +321,7 @@ export function HeroSection() {
               features: [
                 "Live trading on 1 venue",
                 "Up to 5 assets",
-                "2 AI agents (Groq + Gemini)",
+                "Groq primary + Gemini verifier",
                 "90-day backtesting",
                 "Email alerts",
                 "Dashboard access",
@@ -339,7 +339,7 @@ export function HeroSection() {
               features: [
                 "Live trading on 3 venues",
                 "Up to 15 assets",
-                "Full AI council (3 agents)",
+                "2-model AI council (Groq + Gemini)",
                 "1-year backtesting",
                 "Telegram + email alerts",
                 "Per-venue risk config",
@@ -358,8 +358,8 @@ export function HeroSection() {
               features: [
                 "Unlimited venues",
                 "Unlimited assets",
-                "Full AI council (5+ agents)",
-                "Custom model weighting",
+                "3-model architecture",
+                "Bedrock slot reserved until enabled",
                 "Unlimited backtesting",
                 "All alert channels",
                 "Dedicated support",

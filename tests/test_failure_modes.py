@@ -503,6 +503,94 @@ async def test_invalid_no_tool_response_uses_generic_safe_message(monkeypatch):
     assert "no trade was executed" in result["trade_decisions"][0]["rationale"]
 
 
+@pytest.mark.asyncio
+async def test_agent_salvages_json_wrapped_in_prose(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class MessyProvider:
+        name = "groq"
+        model = "messy-json"
+        supports_tools = False
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            return LLMResponse(
+                content=(
+                    "Here is the decision.\n"
+                    '{"reasoning":"Trend and momentum align","trade_decisions":['
+                    '{"symbol":"BTC/USDT","action":"BUY","allocation_usd":"125",'
+                    '"take_profit":64000,"stop_loss":61000,"reason":"Breakout confirmed"}]}'
+                ),
+                model=self.model,
+                stop_reason="stop",
+            )
+
+    provider = MessyProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda *args, **kwargs: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", False)
+
+    agent = TradingAgent(hyperliquid=None, venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], '{"market_data":[{"asset":"BTC/USDT","data_ready":true}]}')
+
+    assert result["trade_decisions"][0]["action"] == "buy"
+    assert result["trade_decisions"][0]["asset"] == "BTC/USDT"
+    assert result["trade_decisions"][0]["allocation_usd"] == 125.0
+    assert result["trade_decisions"][0]["tp_price"] == 64000.0
+    assert result["trade_decisions"][0]["sl_price"] == 61000.0
+
+
+@pytest.mark.asyncio
+async def test_agent_normalizes_single_trade_object_without_trade_decisions(monkeypatch):
+    import src.agent.decision_maker as dm
+    from src.agent.decision_maker import TradingAgent
+    from src.agent.providers.base import LLMResponse
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_URL", raising=False)
+    monkeypatch.delenv("UPSTASH_REDIS_REST_TOKEN", raising=False)
+
+    class FlatObjectProvider:
+        name = "groq"
+        model = "flat-object"
+        supports_tools = False
+
+        def complete(self, system, messages, max_tokens=4096, tools=None):
+            return LLMResponse(
+                content=(
+                    '{"analysis":"Pullback buy","asset":"BTC/USDT","signal":"buy","allocation_usd":95,'
+                    '"tp":64250,"sl":61880,"exit":"Exit on failed retest","why":"Momentum recovered"}'
+                ),
+                model=self.model,
+                stop_reason="stop",
+            )
+
+    provider = FlatObjectProvider()
+    monkeypatch.setattr("src.agent.decision_maker.get_provider", lambda *args, **kwargs: provider)
+    monkeypatch.setitem(dm.CONFIG, "enable_tool_calling", False)
+
+    agent = TradingAgent(hyperliquid=None, venue_context="crypto")
+    agent._fallback_chain = [provider]
+    agent._sanitize_provider = provider
+
+    result = await agent.decide_trade_async(["BTC/USDT"], '{"market_data":[{"asset":"BTC/USDT","data_ready":true}]}')
+
+    assert result["trade_decisions"][0]["action"] == "buy"
+    assert result["trade_decisions"][0]["exit_plan"] == "Exit on failed retest"
+    assert result["trade_decisions"][0]["rationale"] == "Momentum recovered"
+
+
 # ── Duplicate webhook signal ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio

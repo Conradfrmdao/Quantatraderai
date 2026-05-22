@@ -33,6 +33,7 @@ from typing import Any
 from src.ai.budgets import estimate_cost_usd
 from src.ai.errors import AIError
 from src.ai.governance import AIRequestContext, governed_complete, new_trace_id
+from src.ai.plan_policy import get_ai_plan_policy
 from src.config_loader import CONFIG
 
 logger = logging.getLogger("quantatraderai.council")
@@ -192,19 +193,30 @@ def _provider_model(name: str) -> str:
     return os.getenv(env_name) or DEFAULT_MODELS[name]
 
 
-def _role_candidates(role_cfg: RoleConfig) -> list[dict[str, str]]:
+def _role_candidates(role_cfg: RoleConfig, plan: str | None = None) -> list[dict[str, str]]:
+    policy = get_ai_plan_policy(plan or "PRO")
+    allowed = set(policy.council_providers)
+    seen: set[str] = set()
     out: list[dict[str, str]] = []
     for pname in role_cfg.provider_order:
-        if _provider_is_available(pname):
+        if pname in allowed and pname not in seen and _provider_is_available(pname):
             out.append({"name": pname, "model": _provider_model(pname)})
+            seen.add(pname)
+        if len(out) >= max(1, policy.council_active_models):
+            break
     return out
 
 
-def _chair_candidates() -> list[dict[str, str]]:
+def _chair_candidates(plan: str | None = None) -> list[dict[str, str]]:
+    policy = get_ai_plan_policy(plan or "PRO")
     out: list[dict[str, str]] = []
-    if not _truthy(os.getenv("ENABLE_COUNCIL_CHAIR"), True):
+    if not policy.dormant_providers:
+        return out
+    if not _truthy(os.getenv("ENABLE_COUNCIL_CHAIR"), False):
         return out
     for pname in CHAIR_PROVIDER_ORDER:
+        if pname not in policy.dormant_providers:
+            continue
         if _provider_is_available(pname):
             out.append({"name": pname, "model": _provider_model(pname)})
     return out
@@ -301,7 +313,7 @@ async def _ask_role(
     """Ask one specialist role, with provider fallback inside that role."""
     from src.agent.providers.factory import get_provider
 
-    candidates = _role_candidates(role_cfg)
+    candidates = _role_candidates(role_cfg, ai_context.plan if ai_context else None)
     if not candidates:
         logger.warning("No provider available for council role %s", role_cfg.role)
         return [
@@ -417,7 +429,7 @@ async def _ask_chair(
     """Ask an optional chair model to break deadlocks or elevated-risk disputes."""
     from src.agent.providers.factory import get_provider
 
-    candidates = _chair_candidates()
+    candidates = _chair_candidates(ai_context.plan if ai_context else None)
     if not candidates:
         return None
 
@@ -606,7 +618,22 @@ async def council_decide(
     if not assets:
         return []
 
-    if not any(_provider_is_available(name) for name in ("groq", "gemini", "ollama", "bedrock", "anthropic", "openrouter")):
+    policy = get_ai_plan_policy(ai_context.plan if ai_context else "PRO")
+    if not policy.council_enabled:
+        return [
+            CouncilDecision(
+                asset=asset,
+                action="hold",
+                allocation_usd=0.0,
+                confidence=0.0,
+                opinions=[],
+                rationale="AI council is not enabled for this plan",
+                deadlock=True,
+            )
+            for asset in assets
+        ]
+
+    if not any(_provider_is_available(name) for name in policy.council_providers):
         logger.warning("No council providers configured — holding all")
         return [
             CouncilDecision(

@@ -11,16 +11,19 @@ Supports multiple LLM providers via src/agent/providers/:
 Set LLM_PROVIDER and LLM_MODEL in .env.
 """
 
+import ast
 import asyncio
 import json
 import logging
 import os
 import pathlib
+import re
 from datetime import datetime
 from typing import Any
 
 from src.ai.errors import AIError, AIErrorCode
 from src.ai.governance import AIRequestContext, governed_complete, new_trace_id
+from src.ai.plan_policy import get_ai_plan_policy
 from src.ai.redaction import redact_text
 from src.agent.providers.factory import get_provider
 from src.config_loader import CONFIG
@@ -272,9 +275,70 @@ class TradingAgent:
                 f.write(f"Last message role: {last.get('role')}\n")
                 f.write(f"Last message content (truncated): {content_str}\n")
 
+        def _provider_is_usable(name: str) -> bool:
+            if name == "groq":
+                key = CONFIG.get("groq_api_key") or ""
+                return bool(key and not key.startswith("dummy") and not key.startswith("your-"))
+            if name == "gemini":
+                key = CONFIG.get("gemini_api_key") or ""
+                return bool(key and not key.startswith("dummy") and not key.startswith("your-"))
+            if name == "anthropic":
+                key = CONFIG.get("anthropic_api_key") or ""
+                return bool(key and not key.startswith("dummy") and not key.startswith("your-"))
+            if name == "bedrock":
+                key = CONFIG.get("aws_access_key_id") or ""
+                secret = CONFIG.get("aws_secret_access_key") or ""
+                profile = CONFIG.get("aws_profile") or ""
+                return bool(profile or (key and secret and not key.startswith("your-") and not secret.startswith("your-")))
+            if name == "openrouter":
+                key = CONFIG.get("openrouter_api_key") or ""
+                return bool(key and not key.startswith("dummy") and not key.startswith("your-"))
+            if name == "ollama":
+                return True
+            return False
+
+        def _provider_for_name(name: str):
+            if name == self.provider.name:
+                return self.provider
+            if name == self._sanitize_provider.name:
+                return self._sanitize_provider
+            for provider in self._fallback_chain:
+                if provider.name == name:
+                    return provider
+            if not _provider_is_usable(name):
+                return None
+            try:
+                return get_provider(provider_name=name)
+            except Exception:
+                return None
+
+        def _runtime_provider_chain(plan: str | None) -> list[Any]:
+            policy = get_ai_plan_policy(plan)
+            ordered_names = list(policy.primary_providers) + list(policy.fallback_providers)
+            providers: list[Any] = []
+            seen: set[str] = set()
+            for name in ordered_names:
+                provider = _provider_for_name(name)
+                if provider is None or provider.name in seen:
+                    continue
+                providers.append(provider)
+                seen.add(provider.name)
+            if providers:
+                return providers
+            return self._fallback_chain
+
+        def _sanitize_provider_for_plan(plan: str | None):
+            policy = get_ai_plan_policy(plan)
+            for name in policy.sanitize_providers:
+                provider = _provider_for_name(name)
+                if provider is not None:
+                    return provider
+            return self._sanitize_provider
+
         async def _call_llm(msgs: list[dict[str, Any]], use_tools: bool = True):
             last_err: Exception | None = None
-            for attempt, prov in enumerate(self._fallback_chain):
+            runtime_chain = _runtime_provider_chain(base_ctx.plan)
+            for attempt, prov in enumerate(runtime_chain):
                 _log_request(prov.model, msgs)
                 call_ctx = AIRequestContext(
                     user_id=base_ctx.user_id,
@@ -318,7 +382,7 @@ class TradingAgent:
                         "LLM provider %s failed safely (attempt %d/%d): %s",
                         prov.name,
                         attempt + 1,
-                        len(self._fallback_chain),
+                        len(runtime_chain),
                         exc.code.value,
                     )
                 except Exception as exc:
@@ -327,7 +391,7 @@ class TradingAgent:
                         "LLM provider %s failed (attempt %d/%d): %s — trying next",
                         prov.name,
                         attempt + 1,
-                        len(self._fallback_chain),
+                        len(runtime_chain),
                         exc,
                     )
             if isinstance(last_err, AIError):
@@ -398,13 +462,14 @@ class TradingAgent:
                 return json.dumps({"error": str(ex)})
 
         async def _sanitize_output(raw_content: str, assets_list):
+            sanitize_provider = _sanitize_provider_for_plan(base_ctx.plan)
             sanitize_ctx = AIRequestContext(
                 user_id=base_ctx.user_id,
                 trace_id=base_ctx.trace_id,
                 plan=base_ctx.plan,
                 action="sanitize_output",
-                provider=self._sanitize_provider.name,
-                model=self._sanitize_provider.model,
+                provider=sanitize_provider.name,
+                model=sanitize_provider.model,
                 mode=base_ctx.mode,
                 venue=base_ctx.venue,
                 symbol=base_ctx.symbol,
@@ -415,7 +480,7 @@ class TradingAgent:
             )
             try:
                 sanitize_resp = await governed_complete(
-                    provider=self._sanitize_provider,
+                    provider=sanitize_provider,
                     system=(
                         "You are a strict JSON normalizer. Return ONLY a JSON object with two keys: "
                         "\"reasoning\" (string) and \"trade_decisions\" (array). "
@@ -437,6 +502,196 @@ class TradingAgent:
             except Exception as se:
                 logging.error("Sanitize failed: %s", se)
                 return {"reasoning": "", "trade_decisions": []}
+
+        def _safe_float(value: Any, default: float | None = None) -> float | None:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw or raw.endswith("%"):
+                    return default
+                raw = raw.replace("$", "").replace(",", "")
+                value = raw
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        def _normalize_action(value: Any) -> str:
+            raw = str(value or "hold").strip().lower()
+            aliases = {
+                "long": "buy",
+                "short": "sell",
+                "wait": "hold",
+                "no_trade": "hold",
+                "none": "hold",
+            }
+            action = aliases.get(raw, raw)
+            if action not in {"buy", "sell", "hold"}:
+                return "hold"
+            return action
+
+        def _asset_key(value: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+        def _strip_code_fences(text: str) -> str:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned, count=1)
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3].rstrip()
+            return cleaned.strip()
+
+        def _json_candidates(text: str) -> list[str]:
+            cleaned = _strip_code_fences(text)
+            candidates: list[str] = []
+            if cleaned:
+                candidates.append(cleaned)
+            for opener, closer in (("{", "}"), ("[", "]")):
+                start = cleaned.find(opener)
+                end = cleaned.rfind(closer)
+                if start != -1 and end > start:
+                    candidates.append(cleaned[start:end + 1])
+            seen: set[str] = set()
+            unique: list[str] = []
+            for candidate in candidates:
+                if candidate and candidate not in seen:
+                    seen.add(candidate)
+                    unique.append(candidate)
+            return unique
+
+        def _parse_loose_payload(text: str) -> Any | None:
+            for candidate in _json_candidates(text):
+                try:
+                    return json.loads(candidate)
+                except Exception:
+                    pass
+                try:
+                    return ast.literal_eval(candidate)
+                except Exception:
+                    pass
+            return None
+
+        def _normalize_trade_item(item: dict[str, Any], fallback_asset: str) -> dict[str, Any]:
+            asset = str(
+                item.get("asset")
+                or item.get("symbol")
+                or item.get("ticker")
+                or fallback_asset
+                or ""
+            ).strip()
+            requested_by_key = {_asset_key(asset_name): asset_name for asset_name in assets}
+            asset = requested_by_key.get(_asset_key(asset), asset)
+            action = _normalize_action(item.get("action") or item.get("decision") or item.get("signal"))
+            order_type_raw = str(item.get("order_type") or item.get("entry_type") or "").strip().lower()
+            limit_price = _safe_float(item.get("limit_price"))
+            order_type = order_type_raw or ("limit" if limit_price is not None and action != "hold" else "market")
+            tp_price = _safe_float(item.get("tp_price", item.get("take_profit", item.get("tp"))))
+            sl_price = _safe_float(item.get("sl_price", item.get("stop_loss", item.get("sl"))))
+            allocation_usd = _safe_float(
+                item.get("allocation_usd", item.get("size_usd", item.get("position_usd"))),
+                0.0,
+            ) or 0.0
+            confidence = _safe_float(item.get("confidence"))
+            rationale = str(
+                item.get("rationale")
+                or item.get("reason")
+                or item.get("why")
+                or item.get("explanation")
+                or ""
+            ).strip()
+            exit_plan = str(
+                item.get("exit_plan")
+                or item.get("exit")
+                or item.get("exit_strategy")
+                or item.get("invalidation")
+                or ""
+            ).strip()
+
+            if action == "hold":
+                allocation_usd = 0.0
+                order_type = "market"
+                limit_price = None
+
+            normalized: dict[str, Any] = {
+                "asset": asset,
+                "action": action,
+                "allocation_usd": round(max(0.0, allocation_usd), 2),
+                "order_type": order_type if order_type in {"market", "limit"} else "market",
+                "limit_price": limit_price,
+                "tp_price": tp_price,
+                "sl_price": sl_price,
+                "exit_plan": exit_plan,
+                "rationale": rationale,
+            }
+            if confidence is not None:
+                normalized["confidence"] = max(0.0, min(1.0, confidence))
+            if "reason_code" in item and item.get("reason_code"):
+                normalized["reason_code"] = str(item.get("reason_code"))
+            return normalized
+
+        def _normalize_payload(parsed: Any, assets_list: list[str]) -> dict[str, Any]:
+            reasoning = ""
+            reason_code = None
+            raw_decisions: Any = None
+
+            if isinstance(parsed, list):
+                raw_decisions = parsed
+            elif isinstance(parsed, dict):
+                reasoning = str(
+                    parsed.get("reasoning")
+                    or parsed.get("analysis")
+                    or parsed.get("summary")
+                    or parsed.get("message")
+                    or ""
+                ).strip()
+                reason_code = parsed.get("reason_code")
+                raw_decisions = (
+                    parsed.get("trade_decisions")
+                    if "trade_decisions" in parsed
+                    else parsed.get("trade_decision", parsed.get("decisions"))
+                )
+                if raw_decisions is None and any(key in parsed for key in ("asset", "symbol", "action", "decision", "signal")):
+                    raw_decisions = [parsed]
+
+            if isinstance(raw_decisions, dict):
+                raw_decisions = [raw_decisions]
+            if not isinstance(raw_decisions, list):
+                return {"reasoning": reasoning, "reason_code": reason_code, "trade_decisions": []}
+
+            normalized: list[dict[str, Any]] = []
+            used_asset_keys: set[str] = set()
+            for index, item in enumerate(raw_decisions):
+                if not isinstance(item, dict):
+                    continue
+                fallback_asset = assets_list[index] if index < len(assets_list) else (assets_list[0] if len(assets_list) == 1 else "")
+                trade = _normalize_trade_item(item, fallback_asset)
+                if not trade["asset"]:
+                    continue
+                normalized.append(trade)
+                used_asset_keys.add(_asset_key(trade["asset"]))
+
+            for asset in assets_list:
+                if _asset_key(asset) in used_asset_keys:
+                    continue
+                normalized.append({
+                    "asset": asset,
+                    "action": "hold",
+                    "allocation_usd": 0.0,
+                    "order_type": "market",
+                    "limit_price": None,
+                    "tp_price": None,
+                    "sl_price": None,
+                    "exit_plan": "",
+                    "rationale": "No explicit decision was returned for this asset.",
+                    "reason_code": "asset_decision_missing",
+                })
+
+            return {
+                "reasoning": reasoning,
+                "reason_code": reason_code,
+                "trade_decisions": normalized,
+            }
 
         tool_rounds = 0
         force_no_tools = False
@@ -552,77 +807,43 @@ class TradingAgent:
                     )
                 break
 
-            cleaned = raw_text.strip()
-            if cleaned.startswith("```"):
-                first_newline = cleaned.index("\n")
-                cleaned = cleaned[first_newline + 1:]
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].rstrip()
-
-            try:
-                parsed = json.loads(cleaned)
-                if not isinstance(parsed, dict):
-                    logging.error("Expected dict, got: %s; attempting sanitize", type(parsed))
-                    parsed = await _sanitize_output(raw_text, assets)
-
-                reasoning_text = parsed.get("reasoning", "") or ""
-                decisions = parsed.get("trade_decisions")
-
-                if isinstance(decisions, list):
-                    normalized = []
-                    for item in decisions:
-                        if isinstance(item, dict):
-                            item.setdefault("allocation_usd", 0.0)
-                            item.setdefault("order_type", "market")
-                            item.setdefault("limit_price", None)
-                            item.setdefault("tp_price", None)
-                            item.setdefault("sl_price", None)
-                            item.setdefault("exit_plan", "")
-                            item.setdefault("rationale", "")
-                            normalized.append(item)
-                    return {
-                        "reasoning": reasoning_text,
-                        "reason_code": parsed.get("reason_code"),
-                        "trade_decisions": normalized,
-                        "trace_id": final_ctx.trace_id,
-                        "provider": final_ctx.provider,
-                        "model": response.model or final_ctx.model,
-                    }
-
-                logging.error("trade_decisions missing or invalid; attempting sanitize")
-                sanitized = await _sanitize_output(raw_text, assets)
-                if sanitized.get("trade_decisions"):
-                    sanitized["trace_id"] = final_ctx.trace_id
-                    sanitized["provider"] = final_ctx.provider
-                    sanitized["model"] = response.model or final_ctx.model
-                    return sanitized
-                return {"reasoning": reasoning_text, "trade_decisions": [], "trace_id": final_ctx.trace_id, "provider": final_ctx.provider, "model": response.model or final_ctx.model}
-
-            except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                logging.error("JSON parse error: %s, content: %s", e, redact_text(raw_text[:200]))
-                sanitized = await _sanitize_output(raw_text, assets)
-                if sanitized.get("trade_decisions"):
-                    sanitized["trace_id"] = final_ctx.trace_id
-                    sanitized["provider"] = final_ctx.provider
-                    sanitized["model"] = response.model or final_ctx.model
-                    return sanitized
+            normalized = _normalize_payload(_parse_loose_payload(raw_text), assets)
+            if normalized.get("trade_decisions"):
                 return {
-                    "reasoning": "Parse error",
-                    "reason_code": "ai_output_invalid",
+                    "reasoning": normalized.get("reasoning", ""),
+                    "reason_code": normalized.get("reason_code"),
+                    "trade_decisions": normalized.get("trade_decisions", []),
                     "trace_id": final_ctx.trace_id,
                     "provider": final_ctx.provider,
                     "model": response.model or final_ctx.model,
-                    "trade_decisions": [{
-                        "asset": a,
-                        "action": "hold",
-                        "allocation_usd": 0.0,
-                        "tp_price": None,
-                        "sl_price": None,
-                        "exit_plan": "",
-                        "rationale": "The AI response could not be validated safely, so no trade was executed.",
-                        "reason_code": "ai_output_invalid",
-                    } for a in assets],
                 }
+
+            logging.error("Could not normalize model JSON safely, attempting sanitize. content=%s", redact_text(raw_text[:200]))
+            sanitized = await _sanitize_output(raw_text, assets)
+            sanitized_normalized = _normalize_payload(sanitized, assets)
+            if sanitized_normalized.get("trade_decisions"):
+                sanitized_normalized["trace_id"] = final_ctx.trace_id
+                sanitized_normalized["provider"] = final_ctx.provider
+                sanitized_normalized["model"] = response.model or final_ctx.model
+                return sanitized_normalized
+
+            return {
+                "reasoning": "Parse error",
+                "reason_code": "ai_output_invalid",
+                "trace_id": final_ctx.trace_id,
+                "provider": final_ctx.provider,
+                "model": response.model or final_ctx.model,
+                "trade_decisions": [{
+                    "asset": a,
+                    "action": "hold",
+                    "allocation_usd": 0.0,
+                    "tp_price": None,
+                    "sl_price": None,
+                    "exit_plan": "",
+                    "rationale": "The AI response could not be validated safely, so no trade was executed.",
+                    "reason_code": "ai_output_invalid",
+                } for a in assets],
+            }
 
         if tool_rounds > 0:
             return _safe_hold_payload(

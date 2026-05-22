@@ -11,6 +11,10 @@ export interface PlanLimits {
   liveTrading:  boolean;
   backtesting:  boolean;
   aiCouncil:    boolean;
+  aiModels:     number;
+  aiPrimary:    string;
+  aiSecondary:  string | null;
+  aiDormant:    string | null;
   ragMemory:    boolean;
   copyTrading:  boolean;
   marketplace:  boolean;
@@ -21,22 +25,22 @@ export interface PlanLimits {
 export const PLAN_LIMITS: Record<Plan, PlanLimits> = {
   FREE: {
     maxVenues: 1, maxAssets: 1,
-    liveTrading: false, backtesting: false, aiCouncil: false, ragMemory: false,
+    liveTrading: false, backtesting: false, aiCouncil: false, aiModels: 1, aiPrimary: "Groq", aiSecondary: null, aiDormant: null, ragMemory: false,
     copyTrading: false, marketplace: false, whiteLabel: false, apiAccess: false,
   },
   STARTER: {
     maxVenues: 2, maxAssets: 3,
-    liveTrading: true, backtesting: true,  aiCouncil: false, ragMemory: false,
+    liveTrading: true, backtesting: true,  aiCouncil: false, aiModels: 1, aiPrimary: "Groq", aiSecondary: "Gemini verifier", aiDormant: null, ragMemory: false,
     copyTrading: false, marketplace: false, whiteLabel: false, apiAccess: false,
   },
   PRO: {
     maxVenues: 999, maxAssets: 999,
-    liveTrading: true, backtesting: true, aiCouncil: true, ragMemory: true,
+    liveTrading: true, backtesting: true, aiCouncil: true, aiModels: 2, aiPrimary: "Groq", aiSecondary: "Gemini", aiDormant: null, ragMemory: true,
     copyTrading: true, marketplace: true, whiteLabel: false, apiAccess: false,
   },
   ENTERPRISE: {
     maxVenues: 999, maxAssets: 999,
-    liveTrading: true, backtesting: true, aiCouncil: true, ragMemory: true,
+    liveTrading: true, backtesting: true, aiCouncil: true, aiModels: 3, aiPrimary: "Groq", aiSecondary: "Gemini", aiDormant: "Bedrock reserved", ragMemory: true,
     copyTrading: true, marketplace: true, whiteLabel: true, apiAccess: true,
   },
 };
@@ -54,8 +58,8 @@ export function checkLimit(plan: Plan, feature: keyof PlanLimits, value?: number
 }
 
 export const PLAN_PRICING = [
-  { plan: "FREE",       price: 0,    label: "Free",       features: ["Paper trading only", "1 venue", "1 asset", "Groq AI"] },
-  { plan: "STARTER",    price: 20,   label: "Starter",    features: ["Live trading", "2 venues", "3 assets", "Telegram alerts", "Backtesting"] },
-  { plan: "PRO",        price: 99,   label: "Pro",        features: ["Unlimited venues + assets", "AI council (3 LLMs)", "RAG memory", "Copy trading", "TradingView webhooks"] },
-  { plan: "ENTERPRISE", price: 199,  label: "Enterprise", features: ["Everything in Pro", "White-label", "API access", "Priority support", "Custom models"] },
+  { plan: "FREE",       price: 0,    label: "Free",       features: ["Paper trading only", "1 venue", "1 asset", "1 AI model: Groq"] },
+  { plan: "STARTER",    price: 20,   label: "Starter",    features: ["Live trading", "2 venues", "3 assets", "Groq primary + Gemini verifier", "Backtesting"] },
+  { plan: "PRO",        price: 99,   label: "Pro",        features: ["Unlimited venues + assets", "2-model AI council: Groq + Gemini", "RAG memory", "Copy trading", "TradingView webhooks"] },
+  { plan: "ENTERPRISE", price: 199,  label: "Enterprise", features: ["Everything in Pro", "3-model architecture", "Groq + Gemini active", "Bedrock reserved until enabled", "Priority support"] },
 ];

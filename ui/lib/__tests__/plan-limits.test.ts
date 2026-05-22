@@ -33,6 +33,7 @@ describe("getPlanLimits", () => {
 
   it("PRO plan enables AI council", () => {
     expect(getPlanLimits("PRO").aiCouncil).toBe(true);
+    expect(getPlanLimits("PRO").aiModels).toBe(2);
   });
 
   it("STARTER plan no AI council", () => {
@@ -61,6 +62,8 @@ describe("getPlanLimits", () => {
 
   it("ENTERPRISE plan has API access", () => {
     expect(getPlanLimits("ENTERPRISE").apiAccess).toBe(true);
+    expect(getPlanLimits("ENTERPRISE").aiModels).toBe(3);
+    expect(getPlanLimits("ENTERPRISE").aiDormant).toContain("Bedrock");
   });
 });
 

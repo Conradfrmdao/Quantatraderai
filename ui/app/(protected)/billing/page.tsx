@@ -13,26 +13,26 @@ const PLANS = [
   {
     plan: "FREE" as Plan, label: "Free", price: "$0",
     description: "Try the platform with paper trading",
-    features: ["Paper trading only", "1 venue", "1 asset", "Groq AI decisions", "Basic dashboard"],
+    features: ["Paper trading only", "1 venue", "1 asset", "1 AI model: Groq", "Basic dashboard"],
     cta: "Current plan",
   },
   {
     plan: "STARTER" as Plan, label: "Starter", price: "$20/mo",
     description: "Go live with real money",
-    features: ["Live trading", "2 venues", "3 assets", "Telegram alerts", "Backtesting", "Trade journal"],
+    features: ["Live trading", "2 venues", "3 assets", "Groq primary + Gemini verifier", "Backtesting", "Trade journal"],
     cta: "Upgrade to Starter",
   },
   {
     plan: "PRO" as Plan, label: "Pro", price: "$99/mo",
-    description: "Everything, no limits",
-    features: ["Unlimited venues + assets", "AI council (3 LLMs)", "RAG trade memory", "Copy trading", "TradingView webhooks", "MTF confluence + news intel"],
+    description: "Dual-model council with stronger automation",
+    features: ["Unlimited venues + assets", "2-model AI council: Groq + Gemini", "RAG trade memory", "Copy trading", "TradingView webhooks", "MTF confluence + news intel"],
     cta: "Upgrade to Pro",
     highlight: true,
   },
   {
     plan: "ENTERPRISE" as Plan, label: "Enterprise", price: "$199/mo",
-    description: "White-label + API for institutions",
-    features: ["Everything in Pro", "White-label branding", "REST API access", "VaR / compliance reports", "Priority support", "Custom AI models"],
+    description: "Full control with a reserved premium model slot",
+    features: ["Everything in Pro", "Groq + Gemini active", "Reserved Bedrock slot", "REST API access", "Priority support", "Custom rollout controls"],
     cta: "Contact us",
   },
 ];

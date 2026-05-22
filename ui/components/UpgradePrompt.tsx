@@ -22,8 +22,8 @@ const PLAN_COLOR: Record<string, string> = {
 
 const PLAN_FEATURES: Record<string, string[]> = {
   STARTER:    ["Live trading", "2 venues", "3 assets", "Telegram alerts", "Backtesting"],
-  PRO:        ["AI Council (3 LLMs)", "RAG trade memory", "Copy trading", "TradingView webhooks", "Unlimited venues"],
-  ENTERPRISE: ["White-label branding", "API access", "VaR compliance reports", "Priority support"],
+  PRO:        ["2-model AI council: Groq + Gemini", "RAG trade memory", "Copy trading", "TradingView webhooks", "Unlimited venues"],
+  ENTERPRISE: ["Groq + Gemini active", "Reserved Bedrock slot", "API access", "Priority support"],
 };
 
 export function UpgradePrompt({ feature, planRequired = "PRO", message, compact = false }: Props) {

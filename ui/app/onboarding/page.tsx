@@ -444,9 +444,9 @@ export default function OnboardingPage() {
                 {mode === "beginner" && step === 3 && (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {[
-                      { plan: "FREE",    label: "Free",    price: "$0",     desc: "Paper trading, 1 venue, Groq AI" },
-                      { plan: "STARTER", label: "Starter", price: "$20/mo", desc: "Live trading, 2 venues, alerts" },
-                      { plan: "PRO",     label: "Pro",     price: "$99/mo", desc: "Everything, AI council, RAG memory", hot: true },
+                      { plan: "FREE",    label: "Free",    price: "$0",     desc: "Paper trading, 1 venue, 1 Groq model" },
+                      { plan: "STARTER", label: "Starter", price: "$20/mo", desc: "Live trading, Groq primary, Gemini verifier" },
+                      { plan: "PRO",     label: "Pro",     price: "$99/mo", desc: "Groq + Gemini council, RAG memory", hot: true },
                     ].map(p => {
                       const selected = planChoice === p.plan;
                       return (
