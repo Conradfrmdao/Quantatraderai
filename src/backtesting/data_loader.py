@@ -13,6 +13,7 @@ import logging
 import os
 from pathlib import Path
 
+from src.services.market_context import load_market_history_for_backtest
 from src.venues.models import Candle
 from src.venues.registry import get_venue
 
@@ -39,7 +40,16 @@ async def load_candles(
         return [Candle(**c) for c in raw]
 
     venue = get_venue(venue_name)
-    candles = await venue.get_candles(symbol, timeframe, lookback)
+    candles = await load_market_history_for_backtest(
+        venue_name=venue_name,
+        symbol=symbol,
+        timeframe=timeframe,
+        lookback=lookback,
+        market="futures" if "futures" in venue_name else "spot",
+        venue=venue,
+    )
+    if not candles:
+        candles = await venue.get_candles(symbol, timeframe, lookback)
     if candles:
         cache_file.write_text(
             json.dumps([c.__dict__ for c in candles])

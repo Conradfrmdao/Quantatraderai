@@ -143,9 +143,12 @@ function PublishCta({ result, symbol, venue, timeframe }: {
   );
 }
 
-function ReplayVisualizer({ trades, capital }: {
+function ReplayVisualizer({ trades, capital, symbol, venue, timeframe }: {
   trades: BacktestResult["trades"];
   capital: number;
+  symbol: string;
+  venue: string;
+  timeframe: string;
 }) {
   const [step, setStep]       = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -197,6 +200,20 @@ function ReplayVisualizer({ trades, capital }: {
           <p style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
             Step through every AI decision — see exactly what happened and why
           </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Source Historical market cache
+            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Venue {venue}
+            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Timeframe {timeframe}
+            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Symbol {symbol}
+            </span>
+          </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={() => { setStep(0); setPlaying(false); }}
@@ -505,7 +522,7 @@ export default function BacktestPage() {
               </div>
 
               {/* Replay Visualizer */}
-              <ReplayVisualizer trades={result.trades} capital={parseFloat(capital)} />
+              <ReplayVisualizer trades={result.trades} capital={parseFloat(capital)} symbol={symbol} venue={venue} timeframe={timeframe} />
 
               {/* B3: Publish to Marketplace — auto-fills metrics from this backtest */}
               <PublishCta result={result} symbol={symbol} venue={venue} timeframe={timeframe} />

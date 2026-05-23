@@ -80,7 +80,7 @@ interface Props {
   onChange:  (symbol: string, venueType: string) => void;
 }
 
-export function MarketPicker({ value, onChange }: Props) {
+export function MarketPicker({ value, venueType, onChange }: Props) {
   const [open,   setOpen]   = useState(false);
   const [cat,    setCat]    = useState("All");
   const [query,  setQuery]  = useState("");
@@ -92,6 +92,7 @@ export function MarketPicker({ value, onChange }: Props) {
   );
 
   const current = ALL_MARKETS.find(m => m.symbol === value);
+  const currentVenue = MARKET_VENUE_TYPE[current?.category ?? "Crypto"] ?? venueType ?? "BINANCE";
 
   return (
     <div style={{ position: "relative" }}>
@@ -116,6 +117,9 @@ export function MarketPicker({ value, onChange }: Props) {
               {current.label}
             </>
           ) : value}
+        </span>
+        <span style={{ fontSize: 9, color: "rgba(255,255,255,0.35)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "2px 6px" }}>
+          {currentVenue}
         </span>
         <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", transform: open ? "rotate(180deg)" : undefined, display: "inline-block", transition: "transform 0.2s" }}>▼</span>
       </button>
@@ -233,6 +237,14 @@ export function MarketPicker({ value, onChange }: Props) {
                 color: "rgba(255,255,255,0.6)", fontSize: 12, outline: "none",
               }}
             />
+          </div>
+          <div style={{ padding: "0 12px 10px", display: "flex", flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Selected venue {currentVenue}
+            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+              Charts use backend market API
+            </span>
           </div>
         </div>
       )}

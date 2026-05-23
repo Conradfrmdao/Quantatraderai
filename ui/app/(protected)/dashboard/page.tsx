@@ -1279,6 +1279,7 @@ export default function Dashboard() {
                   venueType={venueType}
                   venueLabel={venueLabel}
                   assetClass={activeCapability.assetClass}
+                  market={market}
                   liveEvent={liveEvent}
                   appRealtimeConnected={connected}
                 />
@@ -1494,7 +1495,16 @@ export default function Dashboard() {
                 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
                 style={{ marginTop: 16 }}
               >
-                <DecisionTimeline userId={sessionKey} />
+                <DecisionTimeline
+                  userId={sessionKey}
+                  venueLabel={venueLabel}
+                  timeframe={timeframe}
+                  market={market}
+                  marketSession={readiness.data?.market?.sections?.[0]?.session ?? null}
+                  readinessState={readiness.data?.state ?? status.data?.readiness_state ?? null}
+                  readinessSummary={readiness.data?.summary ?? status.data?.readiness_summary ?? null}
+                  dataSource={readiness.data?.market?.sections?.[0]?.candle_source ?? null}
+                />
               </motion.section>
             )}
           </div>

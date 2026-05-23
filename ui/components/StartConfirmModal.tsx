@@ -36,6 +36,15 @@ export interface StartReadiness {
   can_start: boolean;
   summary: string;
   warnings?: string[];
+  market?: {
+    sections?: {
+      asset?: string;
+      session?: string;
+      candle_source?: string;
+      data_state?: string;
+      warnings?: string[];
+    }[];
+  };
   checks?: StartReadinessCheck[];
   warm_snapshot?: {
     used?: boolean;

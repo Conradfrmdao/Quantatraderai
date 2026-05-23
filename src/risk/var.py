@@ -18,8 +18,13 @@ def _daily_returns(equity_curve: list[float]) -> list[float]:
     """Convert equity values to daily log-returns."""
     returns = []
     for i in range(1, len(equity_curve)):
-        if equity_curve[i - 1] > 0:
-            returns.append(math.log(equity_curve[i] / equity_curve[i - 1]))
+        prev = float(equity_curve[i - 1] or 0)
+        cur = float(equity_curve[i] or 0)
+        if prev <= 0 or cur <= 0:
+            continue
+        if not math.isfinite(prev) or not math.isfinite(cur):
+            continue
+        returns.append(math.log(cur / prev))
     return returns
 
 
@@ -44,9 +49,11 @@ def monte_carlo_var(
         return {"error": "Not enough equity history (need ≥ 10 data points)"}
 
     current_equity = equity_curve[-1]
+    if current_equity <= 0 or not math.isfinite(current_equity):
+        return {"error": "Current equity must be positive"}
     returns        = _daily_returns(equity_curve)
-    if not returns:
-        return {"error": "Could not compute returns"}
+    if len(returns) < 2:
+        return {"error": "Could not compute enough valid returns"}
 
     mu    = statistics.mean(returns)
     sigma = statistics.stdev(returns) if len(returns) > 1 else 0.01
@@ -101,7 +108,11 @@ def parametric_var(
         return {"error": "Not enough history"}
 
     current  = equity_curve[-1]
+    if current <= 0 or not math.isfinite(current):
+        return {"error": "Current equity must be positive"}
     returns  = _daily_returns(equity_curve)
+    if len(returns) < 2:
+        return {"error": "Could not compute enough valid returns"}
     mu       = statistics.mean(returns)
     sigma    = statistics.stdev(returns) if len(returns) > 1 else 0.01
 

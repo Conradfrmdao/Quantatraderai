@@ -228,6 +228,61 @@ model AgentRun {
   @@index([isRunning])
 }
 
+model MarketCandle {
+  id         String   @id @default(cuid())
+  venue      String
+  assetClass String
+  symbol     String
+  timeframe  String
+  timestamp  DateTime @db.Timestamptz(3)
+  open       Float
+  high       Float
+  low        Float
+  close      Float
+  volume     Float
+  source     String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([venue, symbol, timeframe, timestamp])
+  @@index([venue, symbol, timeframe, timestamp])
+  @@index([assetClass, symbol, timeframe, timestamp])
+}
+
+model MarketDataBackfillJob {
+  id            String    @id @default(cuid())
+  venue         String
+  assetClass    String
+  symbol        String
+  timeframe     String
+  startDate     DateTime  @db.Timestamptz(3)
+  endDate       DateTime  @db.Timestamptz(3)
+  status        String    @default("pending")
+  lastFetchedAt DateTime? @db.Timestamptz(3)
+  errorMessage  String?   @db.Text
+  source        String?
+  isLiveSync    Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([venue, symbol, timeframe])
+  @@index([venue, symbol, timeframe, status])
+}
+
+model MarketIndicatorSnapshot {
+  id             String   @id @default(cuid())
+  venue          String
+  assetClass     String
+  symbol         String
+  timeframe      String
+  timestamp      DateTime @db.Timestamptz(3)
+  indicatorsJson String   @db.Text
+  createdAt      DateTime @default(now())
+
+  @@unique([venue, symbol, timeframe, timestamp])
+  @@index([venue, symbol, timeframe, timestamp])
+}
+
 model AIUsageLog {
   id                 String    @id @default(cuid())
   userId             String

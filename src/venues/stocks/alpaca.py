@@ -38,7 +38,7 @@ def _require_alpaca():
 
 class AlpacaVenue(Venue):
     name = "alpaca"
-    asset_class: AssetClass = "crypto_spot"  # broadened to stocks later
+    asset_class: AssetClass = "stocks"
 
     def __init__(self, api_key: str | None = None, api_secret: str | None = None, paper: bool | None = None):
         _require_alpaca()
@@ -110,7 +110,7 @@ class AlpacaVenue(Venue):
 
     async def get_symbol_info(self, symbol: str) -> SymbolMeta:
         return SymbolMeta(
-            symbol=symbol, asset_class="crypto_spot",
+            symbol=symbol, asset_class="stocks",
             tick_size=0.01, lot_size=1.0, min_notional=1.0, max_leverage=4.0,
         )
 

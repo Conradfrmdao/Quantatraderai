@@ -48,7 +48,7 @@ class IBKRVenue(Venue):
     """Interactive Brokers adapter — stocks, options, futures, FX."""
 
     name = "ibkr"
-    asset_class: AssetClass = "crypto_spot"  # used loosely for stocks
+    asset_class: AssetClass = "stocks"
 
     def __init__(self):
         _require_ib()
@@ -118,7 +118,7 @@ class IBKRVenue(Venue):
 
     async def get_symbol_info(self, symbol: str) -> SymbolMeta:
         return SymbolMeta(
-            symbol=symbol, asset_class="crypto_spot",
+            symbol=symbol, asset_class="stocks",
             tick_size=0.01, lot_size=1.0, min_notional=1.0, max_leverage=4.0,
         )
 

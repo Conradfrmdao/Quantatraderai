@@ -48,7 +48,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
@@ -69,6 +69,15 @@ from src.ai.redaction import redact_text
 from src.ai.telemetry import capture_posthog
 from src.risk_manager import RiskManager
 from src.agent.decision_maker import TradingAgent
+from src.services.market_context import (
+    _DEFAULT_BOOTSTRAP_BARS,
+    _MIN_READY_BARS,
+    ensure_live_market_sync,
+    get_market_context,
+    market_context_for_agent,
+    repair_market_gaps,
+    sync_market_history,
+)
 from src.venues.base import Venue
 from src.venues.crypto.spot_portfolio import PREFERRED_SPOT_QUOTES
 from src.venues.crypto.spot_portfolio import base_currency_from_symbol
@@ -1251,7 +1260,9 @@ async def _tick_for(s: "AgentState"):
             except Exception as fc_err:
                 s.log(f"Force-close error {sym}: {fc_err}")
 
-    _is_forex = s.venue_name in ("oanda", "metatrader")
+    asset_class = _infer_asset_class(s.venue_name, s.market)
+    _is_forex = asset_class == "forex"
+    _is_stocks = asset_class == "stocks"
 
     # ── FOREX market hours guard — skip ticks during weekend close ────────
     if _is_forex:
@@ -1289,34 +1300,38 @@ async def _tick_for(s: "AgentState"):
     market_data_status: dict[str, dict] = {}
     for sym in s.symbols:
         try:
-            candles = await s.venue.get_candles(sym, s.timeframe, 100)
-            raw     = [_candle_dict(c) for c in candles]
-            key     = _candle_cache_key(sym, s.timeframe)
-            s.candle_cache[key] = raw
-            inds   = compute_all(raw)
-            px_key = sym.replace("/", "")
-            # For crypto: stream provides real-time price; only fill gap from candle.
-            # For FOREX: ticker polling above already set the price; candle is fallback.
-            if px_key not in s.price_cache and candles:
-                s.price_cache[px_key] = candles[-1].close
-            data_status = _build_market_data_status(
-                sym,
-                raw,
-                inds,
-                s.timeframe,
-                float(s.price_cache.get(px_key, 0) or 0),
-            )
+            ctx = await _load_symbol_market_context(s, sym, ensure_live_sync_task=True, force_refresh=False)
+            key = _candle_cache_key(sym, s.timeframe)
+            raw = list(s.candle_cache.get(key) or [])
+            inds = ctx.get("indicators") or {}
+            ticker = ctx.get("ticker") or {}
+            px_key = _normalize_market_symbol(sym)
+            current_price = float(ticker.get("last") or s.price_cache.get(px_key, 0) or 0)
+            if current_price > 0:
+                s.price_cache[px_key] = current_price
+            freshness = ctx.get("freshness") or {}
+            data_status = {
+                "symbol": sym,
+                "status": freshness.get("state") or "missing",
+                "ready": bool(freshness.get("ready")),
+                "bars_available": len(raw),
+                "last_candle_ts": int(freshness.get("latest_candle_ts") or 0),
+                "candles_fresh": bool(freshness.get("ready")),
+                "indicators_ready": bool(inds),
+                "price_available": current_price > 0,
+                "fallback_rationale": freshness.get("summary") or "Market data is not ready.",
+            }
             market_data_status[sym] = data_status
             market_data_status[_normalize_market_symbol(sym)] = data_status
-            rsi_val  = round_or_none(latest(inds.get("rsi14", [])), 2)
-            macd_val = round_or_none(latest(inds.get("macd",  [])), 2)
-            ema_val  = round_or_none(latest(inds.get("ema20", [])), 2)
+            rsi_val  = round_or_none(((inds.get("rsi14") or {}).get("latest")), 2)
+            macd_val = round_or_none(((inds.get("macd") or {}).get("latest")), 2)
+            ema_val  = round_or_none(((inds.get("ema20") or {}).get("latest")), 2)
             market_sections.append({
                 "asset":         sym,
-                "current_price": round(s.price_cache.get(px_key, 0), 5 if _is_forex else 4),
-                "bid":           ticker_context.get(sym, {}).get("bid") if _is_forex else None,
-                "ask":           ticker_context.get(sym, {}).get("ask") if _is_forex else None,
-                "spread_pips":   ticker_context.get(sym, {}).get("spread_pips") if _is_forex else None,
+                "current_price": round(s.price_cache.get(px_key, 0), 5 if _is_forex else 2 if _is_stocks else 4),
+                "bid":           ticker.get("bid") if _is_forex else None,
+                "ask":           ticker.get("ask") if _is_forex else None,
+                "spread_pips":   (ticker.get("extra") or {}).get("spread_pips") if _is_forex else None,
                 "rsi14":         rsi_val,
                 "ema20":         ema_val,
                 "macd":          macd_val,
@@ -1324,6 +1339,9 @@ async def _tick_for(s: "AgentState"):
                 "data_ready":    data_status["ready"],
                 "data_state":    data_status["status"],
                 "latest_candle_ts": data_status["last_candle_ts"],
+                "data_source":   ctx.get("source"),
+                "market_session": ((ctx.get("market_session") or {}).get("label")),
+                "warnings":      ctx.get("warnings") or [],
             })
             if rsi_val is not None:
                 if rsi_val < 30:
@@ -1349,7 +1367,7 @@ async def _tick_for(s: "AgentState"):
             market_data_status[_normalize_market_symbol(sym)] = failed_status
             market_sections.append({
                 "asset": sym,
-                "current_price": round(s.price_cache.get(sym.replace("/", ""), 0), 5 if _is_forex else 4),
+                "current_price": round(s.price_cache.get(_normalize_market_symbol(sym), 0), 5 if _is_forex else 2 if _is_stocks else 4),
                 "rsi14": None,
                 "ema20": None,
                 "macd": None,
@@ -2582,6 +2600,120 @@ async def get_trust_metrics(request: Request, userId: Optional[str] = None):
     }
 
 
+def _market_source_label(source: Any) -> str:
+    text = str(source or "").strip().lower()
+    if not text:
+        return "store"
+    if text.startswith("venue"):
+        return "venue"
+    if text in {"stored_candle", "store"}:
+        return "store"
+    return text
+
+
+def _serialize_candle_rows(candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for candle in candles:
+        rows.append({
+            "time": int(candle.get("time") or 0),
+            "open": float(candle.get("open") or 0),
+            "high": float(candle.get("high") or 0),
+            "low": float(candle.get("low") or 0),
+            "close": float(candle.get("close") or 0),
+            "volume": float(candle.get("volume") or 0),
+        })
+    return rows
+
+
+def _build_cached_ticker_from_state(s: "AgentState" | None, symbol: str) -> dict[str, Any] | None:
+    if s is None:
+        return None
+    last_price = float(s.price_cache.get(_normalize_market_symbol(symbol), 0) or 0)
+    if last_price <= 0:
+        return None
+    return {
+        "symbol": symbol,
+        "last": last_price,
+        "bid": None,
+        "ask": None,
+        "extra": {},
+        "timestamp": int(time.time()),
+    }
+
+
+async def _get_request_market_context(
+    request: Request,
+    *,
+    symbol: str,
+    timeframe: str,
+    venue: str | None,
+    market: str | None,
+    user_id_hint: str | None,
+    candles_limit: int,
+    min_ready_bars: int,
+    bootstrap_bars: int | None,
+    force_refresh: bool,
+) -> tuple[str | None, AgentState | None, str, str, str, dict[str, Any]]:
+    user_id = await _resolve_request_user_id(request, user_id_hint)
+    state = get_state(user_id) if user_id else None
+    runtime_venue = venue or (state.venue_name if state else None) or "binance"
+    runtime_market = market or (state.market if state else None) or _default_market_for_backend_name(runtime_venue)
+    runtime_asset_class = _infer_asset_class(runtime_venue, runtime_market)
+    runtime_venue_obj = None
+    venue_factory = None
+
+    if state and state.venue is not None and str(state.venue_name or "").lower().split(":", 1)[0] == str(runtime_venue or "").lower().split(":", 1)[0]:
+        runtime_venue_obj = state.venue
+
+        async def _factory() -> Venue | None:
+            return state.venue
+
+        venue_factory = _factory
+    else:
+        runtime_venue_obj, runtime_venue, runtime_market, runtime_asset_class, venue_factory = await _resolve_market_request_runtime(
+            user_id,
+            runtime_venue,
+            runtime_market,
+        )
+
+    cache_key = _candle_cache_key(symbol, timeframe)
+    cached_candles = list(state.candle_cache.get(cache_key) or []) if state else None
+    cached_ticker = _build_cached_ticker_from_state(state, symbol)
+    had_fresh_state_cache = _candles_are_fresh(cached_candles, timeframe) if cached_candles else False
+    allow_public_fallback = runtime_venue_obj is None
+    context = await get_market_context(
+        venue_name=runtime_venue,
+        symbol=symbol,
+        timeframe=timeframe,
+        market=runtime_market,
+        asset_class=runtime_asset_class,
+        venue=runtime_venue_obj,
+        candles_limit=min(candles_limit, 500),
+        allow_public_fallback=allow_public_fallback,
+        force_refresh=force_refresh,
+        ensure_live_sync_task=False,
+        venue_factory=venue_factory,
+        cached_candles=cached_candles,
+        cached_ticker=cached_ticker,
+        min_ready_bars=min_ready_bars,
+        bootstrap_bars=bootstrap_bars,
+        prefer_venue_recent=runtime_venue_obj is not None,
+    )
+
+    if state:
+        candles = list(context.get("candles") or [])
+        if candles:
+            state.candle_cache[cache_key] = candles[-max(min(candles_limit, 500), _MIN_READY_BARS):]
+        ticker = context.get("ticker") or {}
+        last_price = float(ticker.get("last") or 0)
+        if last_price > 0:
+            state.price_cache[_normalize_market_symbol(symbol)] = last_price
+
+    context["_request_used_fresh_state_cache"] = had_fresh_state_cache
+    context["_request_runtime_has_venue"] = runtime_venue_obj is not None
+    return user_id, state, runtime_venue, runtime_market, runtime_asset_class, context
+
+
 @app.get("/api/candles")
 async def get_candles(
     request: Request,
@@ -2589,95 +2721,275 @@ async def get_candles(
     timeframe: str = "1h",
     limit:     int = 200,
     venue:     Optional[str] = None,
+    market:    Optional[str] = None,
     userId:    Optional[str] = None,
 ):
-    """Return candle data for any configured venue.
+    _user_id, _state, runtime_venue, runtime_market, runtime_asset_class, context = await _get_request_market_context(
+        request,
+        symbol=symbol,
+        timeframe=timeframe,
+        venue=venue,
+        market=market,
+        user_id_hint=userId,
+        candles_limit=min(limit, 500),
+        min_ready_bars=1,
+        bootstrap_bars=min(limit, 500),
+        force_refresh=False,
+    )
 
-    Order of resolution:
-      1. In-memory cache (if the agent is running and has fetched these bars)
-      2. Live venue adapter (if agent is running and matches requested venue)
-      3. User-bound saved venue adapter (works even when agent is idle)
-      4. Binance public REST fallback (crypto symbols only)
-    """
-    user_id = await _resolve_request_user_id(request, userId)
-    state = get_state(user_id) if user_id else None
+    source_label = _market_source_label(context.get("source"))
+    if (
+        source_label == "cache"
+        and bool(context.get("_request_runtime_has_venue"))
+        and not bool(context.get("_request_used_fresh_state_cache"))
+    ):
+        source_label = "venue"
 
-    key = _candle_cache_key(symbol, timeframe)
-    cached = state.candle_cache.get(key) if state else None
-    stale_cached = cached[-limit:] if cached else None
-    v = (venue or (state.venue_name if state else None) or "binance").lower()
-    if _candles_are_fresh(cached, timeframe):
-        return {"candles": cached[-limit:], "source": "cache", **_candle_response_meta(v)}
+    return {
+        "candles": _serialize_candle_rows(list(context.get("candles") or [])[-min(limit, 500):]),
+        "source": source_label,
+        "venue": runtime_venue,
+        "market": runtime_market,
+        "asset_class": runtime_asset_class,
+        "freshness": context.get("freshness"),
+        "market_session": context.get("market_session"),
+        "warnings": context.get("warnings") or [],
+        "gap_report": context.get("gap_report"),
+        "ticker": context.get("ticker"),
+        **_candle_response_meta(runtime_venue),
+    }
 
-    # If agent is live and the venue matches, use its adapter
-    if state and state.venue is not None and v == state.venue_name:
-        try:
-            bars = await state.venue.get_candles(symbol, timeframe, min(limit, 500))
-            candles = [
-                {"time": c.ts, "open": c.open, "high": c.high,
-                 "low": c.low, "close": c.close, "volume": c.volume}
-                for c in bars
-            ]
-            state.candle_cache[key] = candles
-            return {"candles": candles[-limit:], "source": "agent", **_candle_response_meta(v)}
-        except Exception as e:
-            logger.warning("Venue candle fetch failed, falling back to Binance: %s", e)
 
-    # If a user has a connected venue, fetch real candles from saved credentials
-    if user_id and v:
-        try:
-            bound = await _build_user_bound_venue(user_id, v)
-            if bound:
-                venue_obj, _match, _registry_name, _venue_market = bound
-                bars = await venue_obj.get_candles(symbol, timeframe, min(limit, 500))
-                candles = [
-                    {"time": c.ts, "open": c.open, "high": c.high,
-                     "low": c.low, "close": c.close, "volume": c.volume}
-                    for c in bars
-                ]
-                if candles:
-                    if state:
-                        state.candle_cache[key] = candles
-                    return {"candles": candles[-limit:], "source": "venue", **_candle_response_meta(v)}
-        except Exception as e:
-            logger.warning("Saved venue candle fetch failed for %s on %s: %s", symbol, v, e)
+class MarketBackfillRequest(BaseModel):
+    venue: str = "binance"
+    symbol: str
+    timeframe: str = "1h"
+    market: str = "spot"
+    asset_class: str = ""
+    years: int = 2
+    live_sync: bool = True
+    run_async: bool = True
+    start_date: str | None = None
+    end_date: str | None = None
 
-    # Fallback: Binance public REST for crypto symbols
-    try:
-        import aiohttp as ah
-        tf_map = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-                  "1h": "1h", "4h": "4h", "1d": "1d"}
-        tf  = tf_map.get(timeframe, "1h")
-        binance_symbol = symbol.replace("/", "").replace("-", "").replace("_", "").upper()
-        url = (
-            f"https://api.binance.com/api/v3/klines"
-            f"?symbol={binance_symbol}&interval={tf}&limit={min(limit, 1000)}"
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_timeframe(cls, value: str) -> str:
+        if value not in _TIMEFRAME_SECONDS:
+            raise ValueError("Unsupported timeframe")
+        return value
+
+
+class MarketRepairRequest(BaseModel):
+    venue: str = "binance"
+    symbol: str
+    timeframe: str = "1h"
+    market: str = "spot"
+    asset_class: str = ""
+
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_timeframe(cls, value: str) -> str:
+        if value not in _TIMEFRAME_SECONDS:
+            raise ValueError("Unsupported timeframe")
+        return value
+
+
+@app.get("/api/market/candles")
+async def get_market_candles(
+    request: Request,
+    symbol: str,
+    timeframe: str = "1h",
+    limit: int = 200,
+    venue: str = "binance",
+    market: str = "spot",
+    userId: Optional[str] = None,
+):
+    return await get_candles(
+        request,
+        symbol=symbol,
+        timeframe=timeframe,
+        limit=limit,
+        venue=venue,
+        market=market,
+        userId=userId,
+    )
+
+
+@app.get("/api/market/context")
+async def get_market_context_api(
+    request: Request,
+    symbol: str,
+    timeframe: str = "1h",
+    venue: str = "binance",
+    market: str = "spot",
+    userId: Optional[str] = None,
+    forceRefresh: bool = False,
+):
+    _user_id, _state, runtime_venue, runtime_market, runtime_asset_class, context = await _get_request_market_context(
+        request,
+        symbol=symbol,
+        timeframe=timeframe,
+        venue=venue,
+        market=market,
+        user_id_hint=userId,
+        candles_limit=200,
+        min_ready_bars=_MIN_READY_BARS,
+        bootstrap_bars=_DEFAULT_BOOTSTRAP_BARS,
+        force_refresh=forceRefresh,
+    )
+    return {
+        "venue": runtime_venue,
+        "market": runtime_market,
+        "asset_class": runtime_asset_class,
+        **context,
+        **_candle_response_meta(runtime_venue),
+    }
+
+
+@app.get("/api/market/status")
+async def get_market_status_api(
+    request: Request,
+    symbol: str,
+    timeframe: str = "1h",
+    venue: str = "binance",
+    market: str = "spot",
+    userId: Optional[str] = None,
+):
+    payload = await get_market_context_api(
+        request,
+        symbol=symbol,
+        timeframe=timeframe,
+        venue=venue,
+        market=market,
+        userId=userId,
+        forceRefresh=False,
+    )
+    freshness = payload.get("freshness") or {}
+    return {
+        "ready": freshness.get("ready"),
+        "state": freshness.get("state"),
+        "summary": freshness.get("summary"),
+        "latest_candle_ts": freshness.get("latest_candle_ts"),
+        "venue": payload.get("venue"),
+        "market": payload.get("market"),
+        "asset_class": payload.get("asset_class"),
+        "source": payload.get("source"),
+        "market_session": payload.get("market_session"),
+        "warnings": payload.get("warnings") or [],
+        "gap_report": payload.get("gap_report"),
+        "ticker": payload.get("ticker"),
+    }
+
+
+@app.post("/api/market/backfill")
+async def post_market_backfill(
+    request: Request,
+    body: MarketBackfillRequest,
+):
+    user_id = await _require_request_user_id(request, None)
+    venue_obj, runtime_venue, runtime_market, runtime_asset_class, venue_factory = await _resolve_market_request_runtime(
+        user_id,
+        body.venue,
+        body.market,
+    )
+
+    def _parse_optional_date(value: str | None) -> int | None:
+        if not value:
+            return None
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+
+    end_ts = _parse_optional_date(body.end_date) or int(time.time())
+    start_ts = _parse_optional_date(body.start_date) or max(0, end_ts - min(max(body.years, 1), 3) * 365 * 86400)
+
+    async def _run() -> dict[str, Any]:
+        current_venue = venue_obj
+        if current_venue is None and venue_factory:
+            current_venue = await venue_factory()
+        result = await sync_market_history(
+            venue_name=runtime_venue,
+            asset_class=runtime_asset_class or body.asset_class,
+            symbol=body.symbol,
+            timeframe=body.timeframe,
+            market=runtime_market,
+            venue=current_venue,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            bars=max(200, int((end_ts - start_ts) / max(_timeframe_seconds(body.timeframe), 60))),
+            allow_public_fallback=True,
+            live_sync=body.live_sync,
         )
-        async with ah.ClientSession() as session:
-            async with session.get(url) as resp:
-                data = await resp.json()
-        if not isinstance(data, list):
-            return {"candles": [], "source": "public", **_candle_response_meta("binance")}
-        candles = [
-            {"time": int(row[0]) // 1000,
-             "open": float(row[1]), "high": float(row[2]),
-             "low":  float(row[3]), "close": float(row[4]),
-             "volume": float(row[5])}
-            for row in data
-        ]
-        if state:
-            state.candle_cache[key] = candles
-        return {"candles": candles[-limit:], "source": "public", **_candle_response_meta("binance")}
-    except Exception as e:
-        if stale_cached:
-            logger.warning(
-                "Returning stale candle cache after live fetch failure for %s %s on %s",
-                symbol,
-                timeframe,
-                v,
+        if body.live_sync:
+            await ensure_live_market_sync(
+                venue_name=runtime_venue,
+                asset_class=runtime_asset_class or body.asset_class,
+                symbol=body.symbol,
+                timeframe=body.timeframe,
+                market=runtime_market,
+                venue_factory=venue_factory,
+                allow_public_fallback=True,
             )
-            return {"candles": stale_cached, "source": "stale_cache", **_candle_response_meta(v)}
-        raise HTTPException(status_code=502, detail=f"Candle fetch failed: {e}")
+        return result
+
+    if body.run_async:
+        asyncio.create_task(_run())
+        return {
+            "ok": True,
+            "scheduled": True,
+            "venue": runtime_venue,
+            "market": runtime_market,
+            "asset_class": runtime_asset_class,
+            "symbol": body.symbol,
+            "timeframe": body.timeframe,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        }
+
+    result = await _run()
+    return {
+        "ok": bool(result.get("ok")),
+        "scheduled": False,
+        "venue": runtime_venue,
+        "market": runtime_market,
+        "asset_class": runtime_asset_class,
+        "symbol": body.symbol,
+        "timeframe": body.timeframe,
+        **result,
+    }
+
+
+@app.post("/api/market/repair-gaps")
+async def post_market_repair_gaps(
+    request: Request,
+    body: MarketRepairRequest,
+):
+    user_id = await _require_request_user_id(request, None)
+    venue_obj, runtime_venue, runtime_market, runtime_asset_class, _venue_factory = await _resolve_market_request_runtime(
+        user_id,
+        body.venue,
+        body.market,
+    )
+    result = await repair_market_gaps(
+        venue_name=runtime_venue,
+        asset_class=runtime_asset_class or body.asset_class,
+        symbol=body.symbol,
+        timeframe=body.timeframe,
+        market=runtime_market,
+        venue=venue_obj,
+        allow_public_fallback=True,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "venue": runtime_venue,
+        "market": runtime_market,
+        "asset_class": runtime_asset_class,
+        "symbol": body.symbol,
+        "timeframe": body.timeframe,
+        **result,
+    }
 
 
 @app.get("/api/logs")
@@ -2772,7 +3084,7 @@ def _infer_asset_class(venue_name: str, market: str) -> str:
     if v in ("oanda", "metatrader", "mt4", "mt5"):
         return "forex"
     if v in ("alpaca", "ibkr"):
-        return "crypto_spot"
+        return "stocks"
     if v == "polymarket":
         return "prediction"
     if v == "hyperliquid":
@@ -3278,7 +3590,7 @@ def _finalize_readiness_payload(
 
     return {
         "state": state,
-        "can_start": state != "blocked",
+        "can_start": state == "ready",
         "summary": summary,
         "checks": checks,
         "warnings": [check["summary"] for check in degraded_checks],
@@ -3304,7 +3616,9 @@ async def _evaluate_agent_readiness(
     market_sections: list[dict[str, Any]] = []
     warm_info = _apply_warm_snapshot_to_state(s, warm_state)
     warm_snapshot_ts = warm_info.get("snapshot_ts")
-    is_forex = s.venue_name in ("oanda", "metatrader")
+    asset_class = _infer_asset_class(s.venue_name, s.market)
+    is_forex = asset_class == "forex"
+    is_stocks = asset_class == "stocks"
 
     try:
         balances = await s.venue.get_balances()
@@ -3330,50 +3644,84 @@ async def _evaluate_agent_readiness(
     ticker_context: dict[str, dict[str, float]] = {}
     price_failures: list[str] = []
     price_degraded: list[str] = []
+    market_failures: list[str] = []
+    market_degraded: list[str] = []
     for sym in s.symbols:
-        norm_symbol = _normalize_market_symbol(sym)
         try:
-            ticker = await s.venue.get_ticker(sym)
-            live_price = float(getattr(ticker, "last", 0) or 0)
+            ctx = await _load_symbol_market_context(
+                s,
+                sym,
+                ensure_live_sync_task=True,
+                force_refresh=True,
+            )
+            ticker = ctx.get("ticker") or {}
+            live_price = float(ticker.get("last") or 0)
+            bid = ticker.get("bid")
+            ask = ticker.get("ask")
+            extra = ticker.get("extra") or {}
             if is_forex:
-                bid = float(getattr(ticker, "bid", 0) or 0)
-                ask = float(getattr(ticker, "ask", 0) or 0)
-                live_price = ((bid + ask) / 2) if bid and ask else live_price
                 ticker_context[sym] = {
                     "bid": bid,
                     "ask": ask,
-                    "spread_pips": float((getattr(ticker, "extra", {}) or {}).get("spread_pips") or 0),
+                    "spread_pips": float(extra.get("spread_pips") or 0),
                 }
             if live_price <= 0:
-                raise ValueError("ticker returned no positive price")
-            s.price_cache[norm_symbol] = live_price
+                price_failures.append(f"{sym}: ticker returned no positive price")
+            elif not (ctx.get("freshness") or {}).get("ticker_fresh"):
+                price_degraded.append(sym)
+
+            freshness = ctx.get("freshness") or {}
+            if not freshness.get("ready"):
+                market_failures.append(f"{sym}: {freshness.get('summary') or 'market context not ready'}")
+
+            market_sections.append({
+                "asset": sym,
+                "current_price": round(live_price, 5 if is_forex else 2 if is_stocks else 4),
+                "bid": bid if is_forex else None,
+                "ask": ask if is_forex else None,
+                "spread_pips": ticker_context.get(sym, {}).get("spread_pips") if is_forex else None,
+                "bars": len(ctx.get("candles") or []),
+                "data_ready": bool(freshness.get("ready")),
+                "data_state": freshness.get("state"),
+                "latest_candle_ts": freshness.get("latest_candle_ts"),
+                "candle_source": ctx.get("source"),
+                "session": ((ctx.get("market_session") or {}).get("label")),
+                "warnings": ctx.get("warnings") or [],
+            })
         except Exception as e:
+            norm_symbol = _normalize_market_symbol(sym)
             cached_price = float(s.price_cache.get(norm_symbol, 0) or 0)
             if cached_price > 0 and _warm_snapshot_price_is_recent(warm_snapshot_ts, now_ts=now_ts):
                 price_degraded.append(sym)
+                market_degraded.append(sym)
+                market_sections.append({
+                    "asset": sym,
+                    "current_price": round(cached_price, 5 if is_forex else 2 if is_stocks else 4),
+                    "bid": ticker_context.get(sym, {}).get("bid") if is_forex else None,
+                    "ask": ticker_context.get(sym, {}).get("ask") if is_forex else None,
+                    "spread_pips": ticker_context.get(sym, {}).get("spread_pips") if is_forex else None,
+                    "bars": len(s.candle_cache.get(_candle_cache_key(sym, s.timeframe)) or []),
+                    "data_ready": False,
+                    "data_state": "degraded",
+                    "latest_candle_ts": int((s.candle_cache.get(_candle_cache_key(sym, s.timeframe)) or [{}])[-1].get("time") or 0) if s.candle_cache.get(_candle_cache_key(sym, s.timeframe)) else 0,
+                    "candle_source": "warm_snapshot",
+                    "session": "Warm snapshot",
+                    "warnings": [str(e)],
+                })
             else:
                 price_failures.append(f"{sym}: {e}")
+                market_failures.append(f"{sym}: {e}")
 
-    if price_failures:
+    if price_failures or price_degraded:
+        affected = price_failures if price_failures else price_degraded
         checks.append(_readiness_check(
             "live_prices",
             "Live Prices",
-            "blocked",
-            "One or more symbols do not have a fresh live price yet.",
+            "blocked" if price_failures else "degraded",
+            "One or more symbols do not have a fresh live price yet." if price_failures else "Using a recent warm snapshot price while one or more live tickers reconnect.",
             required=True,
-            detail="; ".join(price_failures[:4]),
-            meta={"affected_symbols": price_failures},
-        ))
-    elif price_degraded:
-        age_s = warm_info.get("age_s")
-        checks.append(_readiness_check(
-            "live_prices",
-            "Live Prices",
-            "degraded",
-            "Using a recent warm snapshot price while one or more live tickers reconnect.",
-            required=True,
-            detail=f"Warm snapshot age: {age_s}s" if age_s is not None else None,
-            meta={"affected_symbols": price_degraded},
+            detail="; ".join(affected[:4]) if price_failures else (f"Warm snapshot age: {warm_info.get('age_s')}s" if warm_info.get("age_s") is not None else None),
+            meta={"affected_symbols": affected},
         ))
     else:
         checks.append(_readiness_check(
@@ -3383,52 +3731,6 @@ async def _evaluate_agent_readiness(
             f"Fresh live prices loaded for {len(s.symbols)} symbol(s).",
             required=True,
         ))
-
-    market_failures: list[str] = []
-    market_degraded: list[str] = []
-    for sym in s.symbols:
-        key = _candle_cache_key(sym, s.timeframe)
-        norm_symbol = _normalize_market_symbol(sym)
-        live_candles = False
-        try:
-            candles = await s.venue.get_candles(sym, s.timeframe, 100)
-            raw = [_candle_dict(candle) for candle in candles]
-            if not raw:
-                raise ValueError("venue returned no candles")
-            s.candle_cache[key] = raw
-            live_candles = True
-        except Exception as e:
-            raw = list(s.candle_cache.get(key) or [])
-            if _candles_are_fresh(raw, s.timeframe, now_ts=now_ts):
-                market_degraded.append(sym)
-            else:
-                raw = []
-                market_failures.append(f"{sym}: {e}")
-
-        indicators = compute_all(raw) if raw else {}
-        data_status = _build_market_data_status(
-            sym,
-            raw,
-            indicators,
-            s.timeframe,
-            float(s.price_cache.get(norm_symbol, 0) or 0),
-            now_ts=now_ts,
-        )
-        if not data_status["ready"]:
-            market_failures.append(f"{sym}: {data_status['fallback_rationale']}")
-
-        market_sections.append({
-            "asset": sym,
-            "current_price": round(float(s.price_cache.get(norm_symbol, 0) or 0), 5 if is_forex else 4),
-            "bid": ticker_context.get(sym, {}).get("bid") if is_forex else None,
-            "ask": ticker_context.get(sym, {}).get("ask") if is_forex else None,
-            "spread_pips": ticker_context.get(sym, {}).get("spread_pips") if is_forex else None,
-            "bars": data_status["bars_available"],
-            "data_ready": data_status["ready"],
-            "data_state": data_status["status"],
-            "latest_candle_ts": data_status["last_candle_ts"],
-            "candle_source": "live" if live_candles else "warm_snapshot",
-        })
 
     if market_failures:
         checks.append(_readiness_check(
@@ -3767,10 +4069,89 @@ _ASSET_CLASS: dict[str, str] = {
     "ccxt":        "crypto_spot",
     "oanda":       "forex",
     "metatrader":  "forex",
-    "alpaca":      "crypto_spot",   # used loosely for stocks
-    "ibkr":        "crypto_spot",
+    "alpaca":      "stocks",
+    "ibkr":        "stocks",
     "polymarket":  "prediction",
 }
+
+
+def _allow_public_market_fallback(is_paper: bool) -> bool:
+    return bool(is_paper)
+
+
+async def _load_symbol_market_context(
+    s: "AgentState",
+    symbol: str,
+    *,
+    ensure_live_sync_task: bool = False,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    key = _candle_cache_key(symbol, s.timeframe)
+    norm_symbol = _normalize_market_symbol(symbol)
+
+    async def _venue_factory() -> Venue | None:
+        return s.venue
+
+    cached_candles = list(s.candle_cache.get(key) or [])
+    cached_ticker = _build_cached_ticker_from_state(s, symbol)
+    context = await get_market_context(
+        venue_name=s.venue_name,
+        symbol=symbol,
+        timeframe=s.timeframe,
+        market=s.market,
+        asset_class=_infer_asset_class(s.venue_name, s.market),
+        venue=s.venue,
+        candles_limit=200,
+        allow_public_fallback=_allow_public_market_fallback(s.is_paper) if s.venue is None else False,
+        force_refresh=force_refresh,
+        ensure_live_sync_task=ensure_live_sync_task,
+        venue_factory=_venue_factory,
+        cached_candles=cached_candles,
+        cached_ticker=cached_ticker,
+        min_ready_bars=_MIN_READY_BARS,
+        bootstrap_bars=_DEFAULT_BOOTSTRAP_BARS,
+        prefer_venue_recent=s.venue is not None,
+        raise_on_refresh_failure=force_refresh,
+    )
+    candles = list(context.get("candles") or [])
+    if candles:
+        s.candle_cache[key] = candles
+    ticker = context.get("ticker") or {}
+    last_price = float(ticker.get("last") or 0)
+    if last_price > 0:
+        s.price_cache[norm_symbol] = last_price
+    return context
+
+
+async def _resolve_market_request_runtime(
+    user_id: str | None,
+    venue_name: str | None,
+    market: str | None,
+) -> tuple[Venue | None, str, str, str, Callable[[], Awaitable[Venue | None]] | None]:
+    requested_venue = (venue_name or "binance").lower().strip().split(":", 1)[0]
+    requested_market = _normalize_market_for_backend_name(requested_venue, market or "")
+
+    if user_id:
+        try:
+            bound = await _build_user_bound_venue(user_id, requested_venue)
+        except Exception:
+            bound = None
+        if bound:
+            venue_obj, _match, _registry_name, venue_market = bound
+
+            async def _factory() -> Venue | None:
+                rebound = await _build_user_bound_venue(user_id, requested_venue)
+                return rebound[0] if rebound else None
+
+            return (
+                venue_obj,
+                requested_venue,
+                venue_market,
+                _infer_asset_class(requested_venue, venue_market),
+                _factory,
+            )
+
+    return None, requested_venue, requested_market, _infer_asset_class(requested_venue, requested_market), None
 
 
 async def _do_start(
@@ -4718,7 +5099,7 @@ async def get_var(request: Request, simulations: int = 10000, userId: Optional[s
                         'WHERE u."clerkId" = $1 ORDER BY ep."createdAt" DESC LIMIT 500',
                         clerk_user_id,
                     )
-                    equity_vals = [float(r["equity"]) for r in rows]
+                    equity_vals = [float(r["equity"]) for r in reversed(rows)]
                 finally:
                     await conn.close()
         except Exception:

@@ -30,9 +30,23 @@ function fmt(ts: string) {
 export function DecisionTimeline({
   userId,
   maxVisible = 8,
+  venueLabel,
+  timeframe,
+  market,
+  marketSession,
+  readinessState,
+  readinessSummary,
+  dataSource,
 }: {
   userId?: string | null;
   maxVisible?: number;
+  venueLabel?: string | null;
+  timeframe?: string | null;
+  market?: string | null;
+  marketSession?: string | null;
+  readinessState?: string | null;
+  readinessSummary?: string | null;
+  dataSource?: string | null;
 }) {
   const [events, setEvents]     = useState<TimelineEvent[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -59,10 +73,44 @@ export function DecisionTimeline({
       borderRadius: 14, padding: "14px 16px",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.4)",
-          textTransform: "uppercase", letterSpacing: "0.07em" }}>
-          Decision Timeline
-        </span>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,0.4)",
+            textTransform: "uppercase", letterSpacing: "0.07em" }}>
+            Decision Timeline
+          </span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {venueLabel && (
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+                Venue {venueLabel}
+              </span>
+            )}
+            {timeframe && (
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+                Timeframe {timeframe}
+              </span>
+            )}
+            {market && (
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px", textTransform: "capitalize" }}>
+                Market {market}
+              </span>
+            )}
+            {dataSource && (
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+                Source {dataSource}
+              </span>
+            )}
+            {marketSession && (
+              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>
+                Session {marketSession}
+              </span>
+            )}
+          </div>
+          {readinessSummary && (
+            <p style={{ fontSize: 10, color: readinessState === "ready" ? "#86efac" : readinessState === "degraded" ? "#fcd34d" : "#fca5a5", margin: 0 }}>
+              {readinessSummary}
+            </p>
+          )}
+        </div>
         {events.length > maxVisible && (
           <button onClick={() => setExpanded(e => !e)}
             style={{ background: "none", border: "none", cursor: "pointer",

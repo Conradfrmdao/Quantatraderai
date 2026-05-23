@@ -23,6 +23,23 @@ interface TrustMetrics {
   running:            boolean;
 }
 
+interface AgentStatus {
+  venue?: string | null;
+  timeframe?: string | null;
+  market?: string | null;
+  assets?: string[];
+  readiness_state?: string | null;
+  readiness_summary?: string | null;
+}
+
+interface MarketStatus {
+  state?: string | null;
+  source?: string | null;
+  summary?: string | null;
+  market_session?: { label?: string | null } | null;
+  warnings?: string[];
+}
+
 function ScoreRing({ value, label, color }: { value: number; label: string; color: string }) {
   const r = 36;
   const circ = 2 * Math.PI * r;
@@ -102,14 +119,35 @@ function MiniChart({ curve }: { curve: { i: number; equity: number }[] }) {
 export default function TrustDashboard() {
   const { session } = useSession();
   const [metrics, setMetrics] = useState<TrustMetrics | null>(null);
+  const [status, setStatus] = useState<AgentStatus | null>(null);
+  const [marketStatus, setMarketStatus] = useState<MarketStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!session) return;
     try {
-      const res  = await fetch("/api/agent/trust/metrics", { credentials: "same-origin" });
-      const data = await res.json();
+      const [metricsRes, statusRes] = await Promise.all([
+        fetch("/api/agent/trust/metrics", { credentials: "same-origin" }),
+        fetch("/api/status", { credentials: "same-origin" }),
+      ]);
+      const data = await metricsRes.json();
+      const nextStatus = await statusRes.json().catch(() => ({}));
       setMetrics(data);
+      setStatus(nextStatus);
+      const firstAsset = Array.isArray(nextStatus.assets) ? nextStatus.assets[0] : null;
+      if (firstAsset && nextStatus.timeframe && nextStatus.venue) {
+        const params = new URLSearchParams({
+          symbol: firstAsset,
+          timeframe: nextStatus.timeframe,
+          venue: nextStatus.venue,
+          market: nextStatus.market || "spot",
+        });
+        const marketRes = await fetch(`/api/market/status?${params.toString()}`, { credentials: "same-origin" });
+        const marketData = await marketRes.json().catch(() => ({}));
+        setMarketStatus(marketData);
+      } else {
+        setMarketStatus(null);
+      }
     } catch { /* backend may be offline */ }
     setLoading(false);
   }, [session]);
@@ -155,6 +193,34 @@ export default function TrustDashboard() {
 
       {!loading && m && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+          {(status || marketStatus) && (
+            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
+              borderRadius: 14, padding: "14px 16px", marginBottom: 18 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+                {status?.venue && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>Venue {status.venue}</span>}
+                {status?.timeframe && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>Timeframe {status.timeframe}</span>}
+                {status?.market && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px", textTransform: "capitalize" }}>Market {status.market}</span>}
+                {marketStatus?.source && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>Source {marketStatus.source}</span>}
+                {marketStatus?.market_session?.label && <span style={{ fontSize: 10, color: "rgba(255,255,255,0.55)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "3px 8px" }}>Session {marketStatus.market_session.label}</span>}
+              </div>
+              {status?.readiness_summary && (
+                <p style={{ fontSize: 11, margin: 0, color: status.readiness_state === "ready" ? "#86efac" : status.readiness_state === "degraded" ? "#fcd34d" : "#fca5a5" }}>
+                  {status.readiness_summary}
+                </p>
+              )}
+              {!status?.readiness_summary && marketStatus?.summary && (
+                <p style={{ fontSize: 11, margin: 0, color: marketStatus.state === "ready" ? "#86efac" : marketStatus.state === "stale" ? "#fcd34d" : "#fca5a5" }}>
+                  {marketStatus.summary}
+                </p>
+              )}
+              {!!marketStatus?.warnings?.length && (
+                <p style={{ fontSize: 11, color: "#fca5a5", margin: "8px 0 0" }}>
+                  {marketStatus.warnings[0]}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Trust Score */}
           <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)",
             borderRadius: 16, padding: "20px 24px", marginBottom: 20,

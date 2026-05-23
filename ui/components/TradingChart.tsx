@@ -16,6 +16,7 @@ import {
   type CandleValidation,
   type ChartTimezoneMode,
 } from "@/lib/chart-sync";
+import { buildMarketCandlesUrl } from "@/lib/market-query";
 
 const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const;
 type TF = (typeof TIMEFRAMES)[number];
@@ -37,6 +38,7 @@ interface Props {
   venueType?: string;
   venueLabel?: string;
   assetClass?: string;
+  market?: string;
   liveEvent?: LiveChartEvent | null;
   appRealtimeConnected?: boolean;
 }
@@ -47,6 +49,17 @@ interface HistoryResponse {
   timeBasis: string;
   exchangeTimezone: string;
   asOf: number | null;
+  freshness?: {
+    ready?: boolean;
+    state?: string;
+    summary?: string;
+  };
+  marketSession?: {
+    open?: boolean;
+    label?: string;
+  };
+  warnings?: string[];
+  ticker?: PriceResponse | null;
 }
 
 interface PriceResponse {
@@ -122,21 +135,18 @@ export function TradingChart({
   venueType = "BINANCE",
   venueLabel,
   assetClass,
+  market = "spot",
   liveEvent,
   appRealtimeConnected = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const historyPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const reconnectTimerRef = useRef<number | null>(null);
   const lastBarTimeRef = useRef<number>(0);
   const currentBarsRef = useRef<Bar[]>([]);
 
   const resolvedAssetClass = assetClass ?? inferAssetClassFromVenueType(venueType);
-  const isCrypto = resolvedAssetClass === "crypto";
-  const isBinanceVenue = venueType.toUpperCase() === "BINANCE";
   const continuousMarket = resolvedAssetClass === "crypto" || resolvedAssetClass === "prediction";
 
   const [ready, setReady] = useState(false);
@@ -161,6 +171,8 @@ export function TradingChart({
   const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const [feedTransport, setFeedTransport] = useState("rest");
   const [feedConnection, setFeedConnection] = useState("offline");
+  const [marketSessionLabel, setMarketSessionLabel] = useState("Loading session…");
+  const [marketWarnings, setMarketWarnings] = useState<string[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [validation, setValidation] = useState<CandleValidation>(EMPTY_VALIDATION);
@@ -228,6 +240,8 @@ export function TradingChart({
     setFeedSource(result.source);
     setExchangeTimeZone(result.exchangeTimezone || "UTC");
     setTimeBasis(result.timeBasis || "utc_epoch");
+    setMarketSessionLabel(result.marketSession?.label ?? "Session status unavailable");
+    setMarketWarnings(result.warnings ?? []);
     setLastUpdatedAt(Date.now());
     setLastPollAt(Date.now());
     setLive(liveMode);
@@ -431,9 +445,7 @@ export function TradingChart({
   useEffect(() => {
     if (!ready) return;
 
-    wsRef.current?.close();
     if (historyPollRef.current) clearInterval(historyPollRef.current);
-    if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current);
 
     seriesRef.current?.setData([]);
     setLoading(true);
@@ -453,6 +465,8 @@ export function TradingChart({
     setLatencyMs(null);
     setFeedTransport("rest");
     setFeedConnection("offline");
+    setMarketSessionLabel("Loading session…");
+    setMarketWarnings([]);
     setValidation(EMPTY_VALIDATION);
     lastBarTimeRef.current = 0;
     currentBarsRef.current = [];
@@ -461,7 +475,13 @@ export function TradingChart({
     let pricePollId: ReturnType<typeof setInterval> | null = null;
 
     const loadFromBackend = async (): Promise<HistoryResponse> => {
-      const url = `/api/agent/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${tf}&limit=500&venue=${venueType.toLowerCase()}`;
+      const url = buildMarketCandlesUrl({
+        symbol,
+        timeframe: tf,
+        venue: venueType,
+        market,
+        limit: 500,
+      });
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
       const data = await res.json() as {
@@ -470,6 +490,10 @@ export function TradingChart({
         time_basis?: string;
         exchange_timezone?: string;
         server_ts?: number;
+        freshness?: HistoryResponse["freshness"];
+        market_session?: HistoryResponse["marketSession"];
+        warnings?: string[];
+        ticker?: PriceResponse | null;
       };
       return {
         bars: data.candles ?? [],
@@ -477,104 +501,10 @@ export function TradingChart({
         timeBasis: data.time_basis ?? "utc_epoch",
         exchangeTimezone: data.exchange_timezone ?? "UTC",
         asOf: data.server_ts ?? null,
-      };
-    };
-
-    const loadFromYahoo = async (): Promise<HistoryResponse> => {
-      try {
-        const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&interval=${tf}`, { cache: "no-store" });
-        if (!res.ok) return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
-        const data = await res.json() as {
-          bars?: Bar[];
-          source?: string;
-          error?: string;
-          time_basis?: string;
-          exchange_timezone?: string;
-          as_of?: number | null;
-        };
-        if (data.error || !data.bars?.length) {
-          return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
-        }
-        return {
-          bars: data.bars,
-          source: data.source ?? "yahoo",
-          timeBasis: data.time_basis ?? "utc_epoch",
-          exchangeTimezone: data.exchange_timezone ?? "UTC",
-          asOf: data.as_of ?? null,
-        };
-      } catch {
-        return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
-      }
-    };
-
-    const loadFromBinance = async (): Promise<HistoryResponse> => {
-      const sym = normaliseBinanceSymbol(symbol);
-      const url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${tf}&limit=500`;
-      const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
-      if (!Array.isArray(data)) {
-        return { bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null };
-      }
-      const bars = data.map((row: any[]) => ({
-        time: Math.floor(row[0] / 1000),
-        open: parseFloat(row[1]),
-        high: parseFloat(row[2]),
-        low: parseFloat(row[3]),
-        close: parseFloat(row[4]),
-        volume: parseFloat(row[5]),
-      }));
-      return {
-        bars,
-        source: "binance_public",
-        timeBasis: "utc_epoch",
-        exchangeTimezone: "UTC",
-        asOf: bars[bars.length - 1]?.time ?? null,
-      };
-    };
-
-    const startBinanceLiveWS = (mode: "live" | "public" = "live", attempt = 0) => {
-      if (cancelled) return;
-      const sym = normaliseBinanceSymbol(symbol).toLowerCase();
-      const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@kline_${tf}`);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (cancelled) return;
-        setLive(true);
-        setDataSource(mode);
-        setFeedTransport("websocket");
-        setFeedConnection("connected");
-      };
-
-      ws.onclose = () => {
-        if (cancelled) return;
-        setFeedConnection("reconnecting");
-        setLive(false);
-        const delay = Math.min(10_000, 1_000 * (attempt + 1));
-        reconnectTimerRef.current = window.setTimeout(() => startBinanceLiveWS(mode, attempt + 1), delay);
-      };
-
-      ws.onmessage = (event: MessageEvent) => {
-        if (cancelled || !seriesRef.current) return;
-        const payload = JSON.parse(event.data as string) as { E?: number; k?: any };
-        const kline = payload.k;
-        if (!kline) return;
-        applyRealtimeUpdate({
-          price: parseFloat(kline.c),
-          sourceTs: typeof payload.E === "number" ? Math.floor(payload.E / 1000) : Math.floor(Date.now() / 1000),
-          exchangeTs: typeof payload.E === "number" ? Math.floor(payload.E / 1000) : null,
-          candle: {
-            time: Math.floor(kline.t / 1000),
-            open: parseFloat(kline.o),
-            high: parseFloat(kline.h),
-            low: parseFloat(kline.l),
-            close: parseFloat(kline.c),
-            volume: parseFloat(kline.v),
-          },
-          transport: "websocket",
-          source: "binance_ws",
-          connection: "connected",
-        });
+        freshness: data.freshness,
+        marketSession: data.market_session,
+        warnings: data.warnings ?? [],
+        ticker: data.ticker ?? null,
       };
     };
 
@@ -639,14 +569,6 @@ export function TradingChart({
         if (backend.bars.length) {
           applyHistoryBars(backend, backend.source === "agent" || backend.source === "venue");
           setDataSource(backend.source);
-          return;
-        }
-        if (!isCrypto) {
-          const freshBars = await loadFromYahoo().catch(() => ({ bars: [], source: "", timeBasis: "utc_epoch", exchangeTimezone: "UTC", asOf: null }));
-          if (freshBars.bars.length) {
-            applyHistoryBars(freshBars, false);
-            setDataSource("public");
-          }
         }
       }, historyInterval);
     };
@@ -658,28 +580,7 @@ export function TradingChart({
         if (backend.bars.length) {
           applyHistoryBars(backend, backend.source === "agent" || backend.source === "venue");
           setDataSource(backend.source);
-          if (isCrypto && isBinanceVenue) startBinanceLiveWS(backend.source === "agent" || backend.source === "venue" ? "live" : "public");
-          else startVenuePolling(10_000);
-          return;
-        }
-
-        if (isCrypto) {
-          const publicBars = await loadFromBinance();
-          if (cancelled) return;
-          if (publicBars.bars.length) {
-            applyHistoryBars(publicBars, false);
-            setDataSource("public");
-            startBinanceLiveWS("public");
-            return;
-          }
-        }
-
-        const yahooBars = await loadFromYahoo();
-        if (cancelled) return;
-        if (yahooBars.bars.length) {
-          applyHistoryBars(yahooBars, false);
-          setDataSource("public");
-          startVenuePolling(20_000);
+          startVenuePolling(10_000);
           return;
         }
 
@@ -697,12 +598,10 @@ export function TradingChart({
 
     return () => {
       cancelled = true;
-      wsRef.current?.close();
       if (historyPollRef.current) clearInterval(historyPollRef.current);
       if (pricePollId) clearInterval(pricePollId);
-      if (reconnectTimerRef.current != null) window.clearTimeout(reconnectTimerRef.current);
     };
-  }, [ready, symbol, tf, venueType, isCrypto, isBinanceVenue]);
+  }, [ready, symbol, tf, venueType, market]);
 
   const localNow = formatTimestamp(Math.floor(nowMs / 1000), {
     mode: "local",
@@ -755,26 +654,36 @@ export function TradingChart({
           </div>
 
           {!loading && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700, color: feedColor, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                <span style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: feedColor,
-                  boxShadow: feedFreshness === "live" ? "0 0 0 0 rgba(34,197,94,0.6)" : undefined,
-                  animation: feedFreshness === "live" ? "pulse-ring 1.4s ease-out infinite" : undefined,
-                }} />
-                {freshnessLabel}
-              </span>
-              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>{freshnessText}</span>
-              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
-                {transportLabel(feedTransport, feedSource)} · {feedConnection}
-              </span>
-              <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
-                TZ: {timezoneLabel(timezoneMode, browserTimeZone, exchangeTimeZone)}
-              </span>
-            </div>
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 700, color: feedColor, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                  <span style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: feedColor,
+                    boxShadow: feedFreshness === "live" ? "0 0 0 0 rgba(34,197,94,0.6)" : undefined,
+                    animation: feedFreshness === "live" ? "pulse-ring 1.4s ease-out infinite" : undefined,
+                  }} />
+                  {freshnessLabel}
+                </span>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)" }}>{freshnessText}</span>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                  {transportLabel(feedTransport, feedSource)} · {feedConnection}
+                </span>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                  Session: {marketSessionLabel}
+                </span>
+                <span style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                  TZ: {timezoneLabel(timezoneMode, browserTimeZone, exchangeTimeZone)}
+                </span>
+              </div>
+              {marketWarnings[0] && (
+                <div style={{ fontSize: 11, color: "#fca5a5", lineHeight: 1.4 }}>
+                  {marketWarnings[0]}
+                </div>
+              )}
+            </>
           )}
         </div>
 

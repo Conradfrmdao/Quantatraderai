@@ -757,7 +757,7 @@ async def test_start_agent_returns_http_409_on_start_failure():
 
 
 @pytest.mark.asyncio
-async def test_evaluate_agent_readiness_uses_recent_warm_snapshot_when_live_feeds_temporarily_fail(monkeypatch):
+async def test_evaluate_agent_readiness_marks_recent_warm_snapshot_as_degraded_until_live_feeds_recover(monkeypatch):
     import src.server as srv
 
     class StubVenue:
@@ -810,7 +810,7 @@ async def test_evaluate_agent_readiness_uses_recent_warm_snapshot_when_live_feed
         with patch("src.intel.sentiment.get_fear_greed", AsyncMock(return_value={"stale": False, "value": 60})):
             readiness = await srv._evaluate_agent_readiness(state, warm_state=warm_state)
 
-    assert readiness["can_start"] is True
+    assert readiness["can_start"] is False
     assert readiness["state"] == "degraded"
     assert readiness["warm_snapshot"]["used"] is True
     assert readiness["warm_snapshot"]["restored_symbols"] == ["BTC/USDT"]
