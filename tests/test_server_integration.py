@@ -979,6 +979,92 @@ async def test_stop_agent_uses_authenticated_user_not_spoofed_body_user_id():
     assert result["ok"] is True
     assert attacker.status == "stopped"
     assert victim.status == "running"
+    assert "open_positions_remaining" in result
+    assert "message" in result
+
+
+@pytest.mark.asyncio
+async def test_get_trade_receipts_endpoint_uses_authenticated_user_and_filters():
+    import src.server as srv
+
+    req = SimpleNamespace(headers={})
+    expected = [{"trade_id": "trade_1", "symbol": "BTC/USDT", "action": "buy"}]
+
+    with patch("src.server._resolve_request_user_id", AsyncMock(return_value="clerk_receipts_user")):
+        with patch("src.services.persistence.list_trade_receipts", AsyncMock(return_value=expected)) as mocked_list:
+            data = await srv.get_trade_receipts(
+                req,
+                userId="ignored",
+                symbol="BTC/USDT",
+                action="buy",
+                limit=25,
+                from_ts="2026-05-01T00:00:00Z",
+                to_ts="2026-05-02T00:00:00Z",
+            )
+
+    assert data == {"receipts": expected}
+    assert mocked_list.await_args.args[0] == "clerk_receipts_user"
+    assert mocked_list.await_args.kwargs["symbol"] == "BTC/USDT"
+    assert mocked_list.await_args.kwargs["action"] == "buy"
+    assert mocked_list.await_args.kwargs["limit"] == 25
+
+
+@pytest.mark.asyncio
+async def test_notify_user_redacts_secrets_before_sending(monkeypatch):
+    import src.server as srv
+    from src.alerts.notifier import TradingEvent
+
+    monkeypatch.setattr(srv, "_TG_TOKEN", "bot-token")
+
+    class FakePool:
+        async def fetchrow(self, query, user_id):
+            return {"telegramChatId": "12345"}
+
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def read(self):
+            return b"ok"
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, json, timeout):
+            captured["json"] = json
+            return FakeResponse()
+
+    fake_aiohttp = SimpleNamespace(
+        ClientSession=lambda: FakeSession(),
+        ClientTimeout=lambda total: SimpleNamespace(total=total),
+    )
+
+    with patch("src.server._get_pool", AsyncMock(return_value=FakePool())):
+        with patch.dict("sys.modules", {"aiohttp": fake_aiohttp}):
+            ok = await srv._notify_user(
+                "clerk_secret_user",
+                TradingEvent(
+                    kind="order_rejected",
+                    venue="binance",
+                    symbol="BTC/USDT",
+                    message="apiKey=live-secret-12345678 should never appear",
+                    trace_id="trace-redact-1",
+                ),
+            )
+
+    assert ok is True
+    assert "live-secret-12345678" not in captured["json"]["text"]
 
 
 @pytest.mark.asyncio

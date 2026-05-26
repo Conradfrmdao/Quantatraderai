@@ -6,7 +6,14 @@ export async function GET() {
   const userId = await getUserId();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const settings = await prisma.userSettings.findUnique({ where: { userId } });
+  const settings = await prisma.userSettings.findUnique({
+    where: { userId },
+    select: {
+      telegramChatId: true,
+      emailNotifications: true,
+      timezone: true,
+    },
+  });
   return NextResponse.json(settings ?? {});
 }
 
@@ -16,7 +23,6 @@ export async function PATCH(req: Request) {
 
   const body = await req.json();
   const allowed = {
-    telegramToken:        body.telegramToken,
     telegramChatId:       body.telegramChatId,
     emailNotifications:   body.emailNotifications,
     timezone:             body.timezone,
@@ -27,6 +33,11 @@ export async function PATCH(req: Request) {
     where: { userId },
     create: { userId, ...update },
     update,
+    select: {
+      telegramChatId: true,
+      emailNotifications: true,
+      timezone: true,
+    },
   });
   return NextResponse.json(settings);
 }

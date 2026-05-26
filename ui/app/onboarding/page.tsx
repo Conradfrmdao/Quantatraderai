@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useUser } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowRight, Check, User, Zap, BarChart2, TrendingUp, Shield,
@@ -576,6 +577,18 @@ export default function OnboardingPage() {
                     <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.25)', marginTop: 4 }}>
                       Click a venue to see the exact setup guidance and direct link.
                     </p>
+                    <Link
+                      href="/docs/api-keys"
+                      style={{
+                        fontSize: 12,
+                        color: "#4ade80",
+                        textDecoration: "none",
+                        fontWeight: 600,
+                        marginTop: 4,
+                      }}
+                    >
+                      Need exact API key steps for each venue? Open the guide hub →
+                    </Link>
                   </div>
                 )}
 
@@ -618,6 +631,9 @@ export default function OnboardingPage() {
                       {mode === "beginner"
                         ? `Next: connect your ${selectedVenueCapability.shortLabel} credentials in Settings. We'll show you exactly how.`
                         : `Head straight to Settings and connect your ${selectedVenueCapability.shortLabel} credentials.`}
+                    </p>
+                    <p style={{ fontSize: 12, color: "rgba(255,255,255,0.32)", lineHeight: 1.7, marginTop: 10 }}>
+                      If you want a venue-by-venue walkthrough first, open the API key guides in Docs.
                     </p>
                     {mode === "beginner" && (
                       <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6, textAlign: "left" }}>

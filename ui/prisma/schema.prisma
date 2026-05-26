@@ -51,6 +51,8 @@ model User {
   aiUsageLogs       AIUsageLog[]
   aiDecisions       AIDecision[]
   aiCouncilVotes    AICouncilVote[]
+  positions         Position[]
+  tradeReceipts     TradeReceipt[]
   copyLeading       CopyRelationship[] @relation("CopyLeader")
   copyFollowing     CopyRelationship[] @relation("CopyFollower")
 
@@ -355,6 +357,66 @@ model AICouncilVote {
 
   @@index([decisionId, createdAt])
   @@index([userId, createdAt])
+  @@index([traceId])
+}
+
+model Position {
+  id                 String   @id @default(cuid())
+  userId             String
+  venue              String
+  assetClass         String
+  market             String
+  mode               String   @default("paper")
+  symbol             String
+  side               String
+  quantity           Float
+  entryPrice         Float
+  currentPrice       Float
+  realizedPnl        Float    @default(0)
+  unrealizedPnl      Float    @default(0)
+  leverage           Float?
+  liquidationPrice   Float?
+  source             String
+  externalPositionId String?
+  traceId            String
+  status             String   @default("open")
+  openedAt           DateTime?
+  closedAt           DateTime?
+  lastSyncedAt       DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, venue, symbol, market, mode])
+  @@index([userId, status, updatedAt])
+  @@index([userId, venue, market, mode])
+  @@index([traceId])
+}
+
+model TradeReceipt {
+  id            String   @id @default(cuid())
+  userId        String
+  positionKey   String?
+  tradeId       String   @unique
+  traceId       String
+  venue         String
+  symbol        String
+  action        String
+  mode          String   @default("paper")
+  quantity      Float
+  price         Float
+  allocationUsd Float    @default(0)
+  pnl           Float    @default(0)
+  confidence    Float    @default(0)
+  riskSummary   String   @db.Text
+  receiptHash   String
+  receiptJson   String   @db.Text
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, symbol, createdAt])
   @@index([traceId])
 }
 

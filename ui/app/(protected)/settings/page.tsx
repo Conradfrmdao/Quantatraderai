@@ -49,7 +49,6 @@ interface RiskProfile {
 }
 
 interface UserSettings {
-  telegramToken: string | null;
   telegramChatId: string | null;
   emailNotifications: boolean;
   timezone: string;
@@ -728,7 +727,12 @@ export default function SettingsPage() {
               )}
 
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
-                <h2 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" }}>Connected Venues</h2>
+                <div>
+                  <h2 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" }}>Connected Venues</h2>
+                  <Link href="/docs/api-keys" style={{ fontSize: 12, color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>
+                    Need API key help? Open the venue setup guides →
+                  </Link>
+                </div>
                 {!showVenueForm && (
                   <button style={btnPrimary} onClick={() => setShowVenueForm(true)}>
                     <Plus size={13} /> Add Venue
@@ -889,6 +893,9 @@ export default function SettingsPage() {
                 {/* Step-by-step instructions */}
                 <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "16px 18px", marginBottom: 20 }}>
                   <p style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.3)", marginBottom: 14 }}>3 steps to connect</p>
+                  <p style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", lineHeight: 1.6, marginBottom: 14 }}>
+                    QuantatraderAI uses the platform Telegram bot. You only need your personal Chat ID here.
+                  </p>
                   {[
                     { n: 1, title: "Start the bot", body: <span>Open Telegram and start <a href="https://t.me/QuantatraderAI_bot" target="_blank" rel="noopener noreferrer" style={{ color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>@QuantatraderAI_bot</a> — tap Start or send any message.</span> },
                     { n: 2, title: "Get your Chat ID", body: <span>Message <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" style={{ color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>@userinfobot</a> on Telegram. It will instantly reply with your Chat ID — a number like <span style={{ fontFamily: "monospace", color: "rgba(255,255,255,0.6)" }}>1234567890</span>. Copy it.</span> },

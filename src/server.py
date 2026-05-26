@@ -78,6 +78,21 @@ from src.services.market_context import (
     repair_market_gaps,
     sync_market_history,
 )
+from src.services.position_reconciliation import ReconciliationResult, list_positions as list_reconciled_positions, reconcile_positions
+from src.services.trading_events import (
+    TradingEventDeps,
+    current_open_position_count,
+    on_agent_started,
+    on_agent_stopped,
+    on_confidence_gate_skipped,
+    on_daily_loss_limit_reached,
+    on_kill_switch_completed,
+    on_kill_switch_started,
+    on_market_data_stale,
+    on_order_filled,
+    on_order_rejected,
+    on_risk_blocked,
+)
 from src.venues.base import Venue
 from src.venues.crypto.spot_portfolio import PREFERRED_SPOT_QUOTES
 from src.venues.crypto.spot_portfolio import base_currency_from_symbol
@@ -183,10 +198,15 @@ async def _get_pool():
             raise
 
 
-async def _notify_user(user_id: str, event: "TradingEvent") -> None:
-    """Send a Telegram alert to the user's personal chat ID (if they set one)."""
+async def _notify_user(user_id: str, event: "TradingEvent") -> bool | None:
+    """Send a Telegram alert to the user's configured chat ID.
+
+    Returns:
+        True if Telegram accepted the message, False on delivery failure,
+        or None when alerts are not configured for this user.
+    """
     if not _TG_TOKEN or not user_id:
-        return
+        return None
     try:
         pool = await _get_pool()
         row = await pool.fetchrow(
@@ -196,31 +216,33 @@ async def _notify_user(user_id: str, event: "TradingEvent") -> None:
         )
         chat_id = row["telegramChatId"] if row else None
         if not chat_id:
-            return
-        emoji = {
-            "trade_opened":          "📈",
-            "trade_closed":          "📉",
-            "stop_loss_hit":         "🛑",
-            "circuit_breaker_tripped": "⚡",
-            "decision_error":        "⚠️",
-            "info":                  "ℹ️",
-        }.get(event.kind, "🔔")
-        text = (
-            f"{emoji} <b>QuantatraderAI</b>\n"
-            f"<b>{event.kind.replace('_', ' ').title()}</b>\n"
-            f"Venue: {event.venue}"
-            + (f" · {event.symbol}" if event.symbol else "")
-            + (f"\n{event.message}" if event.message else "")
-        )
+            return None
+        text = redact_text(event.render_text())
         import aiohttp as _ah
         async with _ah.ClientSession() as sess:
-            await sess.post(
+            async with sess.post(
                 f"https://api.telegram.org/bot{_TG_TOKEN}/sendMessage",
-                json={"chat_id": chat_id, "text": text[:4096], "parse_mode": "HTML"},
+                json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                 timeout=_ah.ClientTimeout(total=3),
-            )
+            ) as resp:
+                await resp.read()
+                if resp.status == 200:
+                    return True
+                logger.warning(
+                    "per-user telegram returned %s for %s trace_id=%s",
+                    resp.status,
+                    user_id,
+                    event.trace_id,
+                )
+                return False
     except Exception as e:
-        logger.warning("per-user telegram failed for %s: %s", user_id, e)
+        logger.warning(
+            "per-user telegram failed for %s trace_id=%s: %s",
+            user_id,
+            event.trace_id,
+            e,
+        )
+        return False
 
 # ── JWKS / JWT helpers ────────────────────────────────────────────────────────
 _jwks_cache: dict | None = None
@@ -495,6 +517,64 @@ def _find_spot_holding_position(positions: list[dict] | list, symbol: str) -> di
     return None
 
 
+def _find_position_snapshot(positions: list[dict] | list, symbol: str) -> dict | None:
+    normalized_target = _normalize_market_symbol(symbol)
+    fallback = _find_spot_holding_position(positions, symbol)
+    for pos in positions or []:
+        pos_symbol = str((pos.get("symbol") if isinstance(pos, dict) else getattr(pos, "symbol", "")) or "")
+        if _normalize_market_symbol(pos_symbol) != normalized_target:
+            continue
+        qty = float((pos.get("quantity") if isinstance(pos, dict) else getattr(pos, "quantity", 0)) or 0.0)
+        if qty == 0:
+            continue
+        entry = float((pos.get("entry_price") if isinstance(pos, dict) else getattr(pos, "entry_price", 0)) or 0.0)
+        current = float((pos.get("current_price") if isinstance(pos, dict) else getattr(pos, "current_price", 0)) or 0.0)
+        return {
+            "symbol": pos_symbol,
+            "quantity": qty,
+            "entry_price": entry,
+            "current_price": current,
+        }
+    return fallback
+
+
+def _estimate_realized_pnl(
+    s: "AgentState",
+    *,
+    symbol: str,
+    action: str,
+    quantity: float,
+    price: float,
+) -> float | None:
+    if price <= 0 or quantity <= 0:
+        return None
+    match = _find_position_snapshot(s.positions, symbol)
+    if not match:
+        return 0.0
+    existing_qty = float(match.get("quantity") or 0.0)
+    entry_price = float(match.get("entry_price") or 0.0)
+    if existing_qty == 0 or entry_price <= 0:
+        return 0.0
+
+    closing_qty = min(abs(existing_qty), abs(quantity))
+    if closing_qty <= 0:
+        return 0.0
+
+    normalized_action = str(action or "").lower()
+    if normalized_action == "close":
+        closing_side = "short" if existing_qty < 0 else "long"
+    elif normalized_action == "sell" and existing_qty > 0:
+        closing_side = "long"
+    elif normalized_action == "buy" and existing_qty < 0:
+        closing_side = "short"
+    else:
+        return 0.0
+
+    if closing_side == "long":
+        return (price - entry_price) * closing_qty
+    return (entry_price - price) * closing_qty
+
+
 def _resolve_execution_quantity(
     s: "AgentState",
     action: str,
@@ -504,6 +584,15 @@ def _resolve_execution_quantity(
 ) -> tuple[float, float]:
     if price <= 0:
         return 0.0, 0.0
+
+    if action == "close":
+        pos = _find_position_snapshot(s.positions, symbol)
+        if not pos and s.is_paper:
+            pos = next((p for p in s.paper_positions if _normalize_market_symbol(str(p.get("symbol") or "")) == _normalize_market_symbol(symbol)), None)
+        if not pos:
+            return 0.0, 0.0
+        qty = abs(float(pos.get("quantity") or 0.0))
+        return qty, qty * price
 
     if action == "sell" and _is_live_spot_account(s.venue_name, s.market):
         pos = _find_spot_holding_position(s.positions, symbol)
@@ -664,9 +753,14 @@ class AgentState:
         self.tick_count:     int             = 0
         self.error:          str | None      = None
         self.last_tick_at:   datetime | None = None  # dead man's switch anchor
+        self.stop_reason:    str | None      = None
+        self.stop_notice_sent: bool          = False
         self.connected_account_cache: dict | None = None
         self.connected_positions_cache: list[dict] = []
         self.connected_snapshot_at: datetime | None = None
+        self.position_source: str | None = None
+        self.positions_reconciled_at: datetime | None = None
+        self.position_warnings: list[str] = []
         # Tracks last known unrealized PnL per symbol — used to record realized PnL on close
         self.prev_position_pnl: dict[str, float] = {}
 
@@ -682,6 +776,7 @@ class AgentState:
         self._loop_task:     asyncio.Task | None = None
         self._price_task:    asyncio.Task | None = None
         self._deadman_task:  asyncio.Task | None = None
+        self._reconcile_task: asyncio.Task | None = None
 
         # Guard settings (set by StartRequest)
         self.min_confidence_pct: float = 0.0    # 0 = no gate
@@ -1001,6 +1096,184 @@ async def _persist_trade(user_id: str | None, **kw):
         await write_trade_log(user_id, **kw)
     except Exception:
         pass
+
+
+def _event_deps() -> TradingEventDeps:
+    return TradingEventDeps(
+        broadcast=_broadcast,
+        emit_notifier=_notifier.emit,
+        notify_user=_notify_user,
+        persist_audit=_persist_audit,
+        persist_trade=_persist_trade,
+        persist_equity=_persist_equity,
+    )
+
+
+def _apply_reconciliation_to_state(s: "AgentState", result: ReconciliationResult) -> None:
+    s.positions = list(result.positions)
+    s.connected_positions_cache = list(result.positions)
+    s.position_source = result.source
+    s.position_warnings = list(result.warnings)
+    try:
+        s.positions_reconciled_at = datetime.fromisoformat(result.reconciled_at)
+    except Exception:
+        s.positions_reconciled_at = datetime.now(timezone.utc)
+    s.connected_snapshot_at = s.positions_reconciled_at
+
+
+async def _build_saved_reconcile_runtime(
+    clerk_user_id: str | None,
+    s: "AgentState",
+) -> tuple[dict[str, Any] | None, list[Any] | None]:
+    if not clerk_user_id:
+        return None, None
+    from src.services.supabase_reader import get_user_venues
+
+    venues = await get_user_venues(clerk_user_id, only_active=True)
+    if not venues:
+        venues = await get_user_venues(clerk_user_id, only_active=False)
+    if not venues:
+        return None, None
+
+    match = next((v for v in venues if v.get("isActive")), venues[0])
+    venue_type = str(match.get("type") or "")
+    venue_key = _VENUE_TYPE_TO_NAME.get(venue_type, "").lower()
+    if not venue_key:
+        return None, None
+
+    is_paper = bool(match.get("isPaper", True))
+    runtime: dict[str, Any] = {
+        "venue_name": venue_key,
+        "market": str(match.get("market") or "spot"),
+        "is_paper": is_paper,
+        "paper_positions": list(s.paper_positions),
+        "price_cache": dict(s.price_cache),
+        "asset_class": _infer_asset_class(venue_key, str(match.get("market") or "spot")),
+        "symbols": list(s.symbols),
+    }
+    if is_paper:
+        return runtime, None
+
+    runtime_config, _venue_registry_name, venue_market = _runtime_config_from_saved_venue(
+        user_id=clerk_user_id,
+        match=match,
+        requested_venue=venue_key,
+        is_paper=False,
+    )
+    venue = build_venue_from_runtime(runtime_config)
+    venue.is_paper = False
+    runtime["market"] = venue_market
+    runtime["asset_class"] = _infer_asset_class(venue_key, venue_market)
+    runtime["venue"] = venue
+    balances = await venue.get_balances()
+    return runtime, balances
+
+
+async def _reconcile_state_positions(
+    s: "AgentState",
+    clerk_user_id: str | None,
+    *,
+    reason: str,
+    trace_id: str | None = None,
+    force: bool = False,
+) -> ReconciliationResult | None:
+    if not clerk_user_id:
+        return None
+    now = datetime.now(timezone.utc)
+    if (
+        not force
+        and s.positions_reconciled_at is not None
+        and (now - s.positions_reconciled_at).total_seconds() < 5
+    ):
+        return ReconciliationResult(
+            positions=list(s.positions),
+            source=s.position_source or ("paper_ledger" if s.is_paper else s.venue_name),
+            reconciled_at=s.positions_reconciled_at.isoformat(),
+            warnings=list(s.position_warnings),
+            changes=[],
+            is_paper=s.is_paper,
+        )
+
+    balances: list[Any] | None = None
+    try:
+        if s.status in ("running", "stopping") and (s.is_paper or s.venue is not None):
+            runtime = {
+                "venue_name": s.venue_name,
+                "market": s.market,
+                "is_paper": s.is_paper,
+                "venue": s.venue,
+                "paper_positions": list(s.paper_positions),
+                "price_cache": dict(s.price_cache),
+                "asset_class": _infer_asset_class(s.venue_name, s.market),
+                "symbols": list(s.symbols),
+            }
+            if not s.is_paper and s.venue is not None:
+                try:
+                    balances = await s.venue.get_balances()
+                except Exception:
+                    balances = None
+        else:
+            runtime, balances = await _build_saved_reconcile_runtime(clerk_user_id, s)
+            if runtime is None:
+                return None
+
+        result = await reconcile_positions(clerk_user_id, runtime, "paper" if bool(runtime.get("is_paper")) else "live", reason, trace_id or new_trace_id())
+    except Exception as exc:
+        warning = f"Position reconciliation skipped: {exc}"
+        s.position_warnings = [warning]
+        return None
+
+    _apply_reconciliation_to_state(s, result)
+
+    if bool(runtime.get("is_paper")):
+        positions = list(result.positions)
+        paper_bal = float(s.paper_balance)
+        pnl_total = sum(float(p.get("unrealized_pnl", 0.0) or 0.0) for p in positions)
+        initial_equity = s.initial_equity if s.initial_equity is not None else paper_bal
+        s.account = _build_account_payload(paper_bal, paper_bal + pnl_total, len(positions), initial_equity)
+    elif balances is not None:
+        from src.venues.models import Position as VenuePosition
+
+        live_positions = [
+            VenuePosition(
+                symbol=str(item.get("symbol") or ""),
+                quantity=float(item.get("quantity") or 0.0),
+                entry_price=float(item.get("entry_price") or 0.0),
+                unrealized_pnl=float(item.get("unrealized_pnl") or 0.0),
+                leverage=float(item["leverage"]) if item.get("leverage") is not None else None,
+                liquidation_price=float(item["liquidation_price"]) if item.get("liquidation_price") is not None else None,
+                current_price=float(item.get("current_price") or 0.0),
+            )
+            for item in result.positions
+        ]
+        balance, equity, _pnl_total = _calculate_live_account_snapshot(
+            balances,
+            live_positions,
+            str(runtime.get("venue_name") or s.venue_name),
+            str(runtime.get("market") or s.market),
+        )
+        initial_equity = s.initial_equity if s.initial_equity is not None else equity
+        if s.initial_equity is None:
+            s.initial_equity = equity
+        s.account = _build_account_payload(balance, equity, len(result.positions), initial_equity)
+    s.connected_account_cache = s.account
+    return result
+
+
+async def _position_reconcile_worker(s: "AgentState") -> None:
+    while s.status == "running":
+        if s.user_id:
+            try:
+                await _reconcile_state_positions(
+                    s,
+                    s.user_id,
+                    reason="periodic_worker",
+                    trace_id=new_trace_id(),
+                    force=True,
+                )
+            except Exception as exc:
+                s.log(f"Position reconciliation warning: {exc}")
+        await asyncio.sleep(15)
 
 
 async def _mirror_to_followers(leader_id: str, symbol: str, action: str,
@@ -1623,6 +1896,24 @@ async def _tick_for(s: "AgentState"):
                      "deadlock": dec.get("deadlock"), "venue": s.venue_name,
                      "rationale": (dec.get("rationale") or "")[:200]},
                 ))
+        stale_symbols: set[str] = set()
+        for dec in decisions:
+            if str(dec.get("reason_code") or "") != "market_data_stale":
+                continue
+            sym = str(dec.get("asset") or "")
+            if not sym or sym in stale_symbols:
+                continue
+            stale_symbols.add(sym)
+            await on_market_data_stale(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                symbol=sym,
+                trace_id=decision_trace_id,
+                reason=str(dec.get("rationale") or "Market data is stale. Agent paused trading for safety."),
+            )
 
     # Record tick duration metric
     if _metrics.get("tick_duration"):
@@ -1676,6 +1967,18 @@ async def _tick_for(s: "AgentState"):
                 ok, reason, dec = s.risk_mgr.validate_trade(dec, acc_state_paper, s.initial_equity or 0)
                 if not ok:
                     s.log(f"[PAPER] BLOCKED {sym}: {reason}")
+                    await on_risk_blocked(
+                        _event_deps(),
+                        clerk_user_id=s.user_id,
+                        ws_user_id=s.user_id,
+                        venue=s.venue_name,
+                        mode="paper",
+                        symbol=sym,
+                        action=action,
+                        trace_id=decision_trace_id,
+                        reason=reason,
+                        confidence=float(dec.get("confidence") or 0.0),
+                    )
                     continue
 
             price = dec.get("current_price") or s.price_cache.get(sym.replace("/", ""), 0)
@@ -1685,9 +1988,11 @@ async def _tick_for(s: "AgentState"):
 
             qty = alloc / price
             pnl = 0.0
+            before_balance = balance
 
             # Lock so tick loop and any concurrent order can't corrupt paper state.
             async with s._paper_lock:
+                before_balance = s.paper_balance
                 if action == "buy":
                     s.paper_balance -= alloc
                     s.paper_positions.append({
@@ -1701,7 +2006,6 @@ async def _tick_for(s: "AgentState"):
                         pnl = (price - matched["entry_price"]) * matched["quantity"]
                         s.paper_balance += matched["quantity"] * price
                         s.paper_positions = [p for p in s.paper_positions if p["symbol"] != sym]
-                        s.trade_log.append({"action": "sell", "price": price, "qty": qty, "pnl": pnl})
                         if pnl < 0: s.consecutive_losses += 1
                         else:       s.consecutive_losses = 0
                         s.daily_loss_usd += pnl
@@ -1722,10 +2026,34 @@ async def _tick_for(s: "AgentState"):
                 action=action)
             s.log(f"[PAPER] {action.upper()} {sym} qty={qty:.6f} @ ${price:.2f} "
                   f"balance=${_bal_snapshot:.2f} — {dec.get('rationale','')[:60]}")
-            await _broadcast({"type": "trade_executed", "data": {
-                "symbol": sym, "action": action, "price": price, "qty": qty,
-                "venue": s.venue_name, "paper": True,
-            }}, s.user_id)
+            reconciliation = await on_order_filled(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue_runtime=s,
+                symbol=sym,
+                action=action,
+                quantity=qty,
+                price=price,
+                allocation_usd=alloc,
+                rationale=str(dec.get("rationale") or ""),
+                risk_summary={
+                    "max_position_pct": s.risk_mgr.config.get("max_position_pct") if s.risk_mgr else "?",
+                    "max_leverage": s.risk_mgr.config.get("max_leverage") if s.risk_mgr else "?",
+                    "original_allocation_usd": float(dec.get("allocation_usd") or alloc),
+                },
+                before_balance=before_balance,
+                after_balance=_bal_snapshot,
+                indicators={},
+                trace_id=decision_trace_id,
+                source="paper_agent",
+                confidence=float(dec.get("confidence") or 0.0),
+                tp_price=dec.get("tp_price"),
+                sl_price=dec.get("sl_price"),
+                tick_count=s.tick_count,
+                realized_pnl=pnl if action == "sell" else 0.0,
+            )
+            _apply_reconciliation_to_state(s, reconciliation)
 
         return
 
@@ -1754,6 +2082,16 @@ async def _tick_for(s: "AgentState"):
             s.status = "stopping"
             s.log(f"LOSS PROTECTION: daily loss {loss_pct:.1f}% hit limit {s.max_daily_loss_pct}% — stopping agent")
             s.timeline_event("blocked", "", f"Daily loss limit {s.max_daily_loss_pct}% reached — agent paused")
+            await on_daily_loss_limit_reached(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                trace_id=decision_trace_id,
+                loss_pct=loss_pct,
+                limit_pct=s.max_daily_loss_pct,
+            )
             return
 
     # ── Loss Protection: max trades per day ──────────────────────────────────────
@@ -1796,6 +2134,17 @@ async def _tick_for(s: "AgentState"):
                 s.timeline_event("blocked", sym,
                     f"Confidence gate: {conf_pct:.0f}% below {s.min_confidence_pct:.0f}% threshold — skipped",
                     confidence=conf_pct/100, action=action)
+                await on_confidence_gate_skipped(
+                    _event_deps(),
+                    clerk_user_id=s.user_id,
+                    ws_user_id=s.user_id,
+                    venue=s.venue_name,
+                    mode="paper" if s.is_paper else "live",
+                    symbol=sym,
+                    trace_id=decision_trace_id,
+                    confidence=conf_pct / 100,
+                    threshold_pct=s.min_confidence_pct,
+                )
                 continue
 
         # G23: Correlation hedge — reduce size if we already hold a correlated position
@@ -1825,29 +2174,18 @@ async def _tick_for(s: "AgentState"):
         if not ok:
             s.log(f"RISK BLOCKED {sym}: {reason}")
             s.timeline_event("blocked", sym, f"Risk blocked — {reason}", action=action)
-            _rbe = TradingEvent(
-                kind="circuit_breaker_tripped", venue=s.venue_name, symbol=sym,
-                message=f"Risk blocked {action.upper()} {sym}: {reason}",
+            await on_risk_blocked(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                symbol=sym,
+                action=action,
+                trace_id=decision_trace_id,
+                reason=reason,
+                confidence=float(dec.get("confidence") or 0.0),
             )
-            await _notifier.emit(_rbe)
-            if s.user_id:
-                asyncio.create_task(_notify_user(s.user_id, _rbe))
-            asyncio.create_task(_persist_audit(
-                s.user_id, "risk_block", sym, action,
-                {"reason": reason, "allocation_usd": alloc, "venue": s.venue_name},
-            ))
-            if s.user_id:
-                asyncio.create_task(capture_posthog("trade_blocked_by_risk", {
-                    "user_id": s.user_id,
-                    "plan": await _get_user_plan(s.user_id),
-                    "mode": "paper" if s.is_paper else "live",
-                    "venue": s.venue_name,
-                    "persona": s.strategy_type or "",
-                    "provider": outputs.get("provider") if isinstance(outputs, dict) else "",
-                    "trace_id": decision_trace_id,
-                    "success": True,
-                    "reason_code": "risk_block",
-                }))
             continue
 
         price = dec["current_price"]
@@ -1879,40 +2217,43 @@ async def _tick_for(s: "AgentState"):
             s.timeline_event("executed", sym,
                 f"Order filled: {action.upper()} {qty:.6f} @ ${price:.4f}",
                 action=action)
-            await _broadcast({
-                "type": "trade_executed",
-                "data": {"symbol": sym, "action": action, "price": price, "qty": qty, "venue": s.venue_name},
-            }, s.user_id)
-            _te = TradingEvent(
-                kind="trade_opened", venue=s.venue_name, symbol=sym,
-                message=f"{action.upper()} {qty:.6f} @ ${price:.4f} — {dec.get('rationale','')[:80]}",
-                data={"allocation_usd": exec_alloc, "sl": dec.get("sl_price"), "tp": dec.get("tp_price")},
+            estimated_after_balance = balance
+            if _is_live_spot_account(s.venue_name, s.market):
+                estimated_after_balance = max(balance - exec_alloc, 0.0) if action == "buy" else balance + exec_alloc
+            reconciliation = await on_order_filled(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue_runtime=s,
+                symbol=sym,
+                action=action,
+                quantity=qty,
+                price=price,
+                allocation_usd=exec_alloc,
+                rationale=str(dec.get("rationale") or ""),
+                risk_summary={
+                    "max_position_pct": s.risk_mgr.config.get("max_position_pct") if s.risk_mgr else "?",
+                    "max_leverage": s.risk_mgr.config.get("max_leverage") if s.risk_mgr else "?",
+                    "original_allocation_usd": float(dec.get("allocation_usd") or exec_alloc),
+                },
+                before_balance=balance,
+                after_balance=estimated_after_balance,
+                indicators={},
+                trace_id=decision_trace_id,
+                source="agent",
+                confidence=float(dec.get("confidence") or 0.0),
+                tp_price=dec.get("tp_price"),
+                sl_price=dec.get("sl_price"),
+                tick_count=s.tick_count,
+                realized_pnl=_estimate_realized_pnl(
+                    s,
+                    symbol=sym,
+                    action=action,
+                    quantity=qty,
+                    price=price,
+                ),
             )
-            await _notifier.emit(_te)
-            if s.user_id:
-                asyncio.create_task(_notify_user(s.user_id, _te))
-            # Persist to TradeLog + AuditLog
-            asyncio.create_task(_persist_trade(
-                s.user_id, symbol=sym, action=action, quantity=qty, price=price,
-                allocation_usd=exec_alloc, source="agent", rationale=dec.get("rationale"),
-                tp_price=dec.get("tp_price"), sl_price=dec.get("sl_price"),
-            ))
-            asyncio.create_task(_persist_audit(
-                s.user_id, "order", sym, action,
-                {"qty": qty, "price": price, "venue": s.venue_name, "allocation_usd": exec_alloc},
-            ))
-            if s.user_id:
-                asyncio.create_task(capture_posthog("trade_executed", {
-                    "user_id": s.user_id,
-                    "plan": await _get_user_plan(s.user_id),
-                    "mode": "paper" if s.is_paper else "live",
-                    "venue": s.venue_name,
-                    "persona": s.strategy_type or "",
-                    "provider": outputs.get("provider") if isinstance(outputs, dict) else "",
-                    "trace_id": decision_trace_id,
-                    "success": True,
-                    "reason_code": "trade_executed",
-                }))
+            _apply_reconciliation_to_state(s, reconciliation)
             # Mirror to copy-trading followers
             if s.user_id and (_plan_allows(await _get_user_plan(s.user_id), "copyTrading") or os.getenv("ENABLE_COPY_TRADING", "false").lower() in ("1", "true", "yes")):
                 asyncio.create_task(_mirror_to_followers(
@@ -1921,6 +2262,17 @@ async def _tick_for(s: "AgentState"):
                 ))
         except Exception as e:
             s.log(f"Order error {sym}: {e}")
+            await on_order_rejected(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                symbol=sym,
+                action=action,
+                trace_id=decision_trace_id,
+                reason=str(e),
+            )
 
 
 async def _tick():
@@ -2027,7 +2379,16 @@ async def _run_loop_for(s: "AgentState"):
     s.start_time   = datetime.now(timezone.utc)
     s.last_tick_at = datetime.now(timezone.utc)
     s.log(f"Agent started — symbols={s.symbols} tf={s.timeframe} paper={s.is_paper}")
-    await _broadcast({"type": "status_update", "status": "running", "paper": s.is_paper}, s.user_id)
+    await on_agent_started(
+        _event_deps(),
+        clerk_user_id=s.user_id,
+        ws_user_id=s.user_id,
+        venue=s.venue_name,
+        mode="paper" if s.is_paper else "live",
+        symbols=list(s.symbols),
+        timeframe=s.timeframe,
+        trace_id=new_trace_id(),
+    )
 
     # Only stream Binance prices for crypto venues; FOREX uses REST polling in _tick_for
     _forex_venues = ("oanda", "metatrader", "ibkr", "alpaca")
@@ -2037,6 +2398,7 @@ async def _run_loop_for(s: "AgentState"):
         s._price_task = None  # no Binance stream for FOREX
 
     s._deadman_task      = asyncio.create_task(_dead_mans_switch_for(s))
+    s._reconcile_task    = asyncio.create_task(_position_reconcile_worker(s))
     s._llm_worker_task   = asyncio.create_task(_llm_worker(s))
     s._order_worker_task = asyncio.create_task(_order_worker(s))
 
@@ -2061,12 +2423,34 @@ async def _run_loop_for(s: "AgentState"):
             message=f"Agent loop crashed: {e}",
         ))
     finally:
-        for task in (s._price_task, s._deadman_task, s._llm_worker_task, s._order_worker_task):
+        for task in (s._price_task, s._deadman_task, s._reconcile_task, s._llm_worker_task, s._order_worker_task):
             if task:
                 task.cancel()
         s.status = "stopped"
         s.log("Agent stopped")
-        await _broadcast({"type": "status_update", "status": "stopped"}, s.user_id)
+        if s.user_id and not s.stop_notice_sent:
+            try:
+                result = await _reconcile_state_positions(
+                    s,
+                    s.user_id,
+                    reason="loop_finalizer",
+                    trace_id=new_trace_id(),
+                    force=True,
+                )
+                open_remaining = len(result.positions) if result else len(s.positions)
+            except Exception:
+                open_remaining = len(s.positions)
+            await on_agent_stopped(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                trace_id=new_trace_id(),
+                reason=s.stop_reason or "loop_ended",
+                open_positions_remaining=open_remaining,
+            )
+            s.stop_notice_sent = True
         # Fire agent-stopped email via Next.js (non-blocking)
         if s.user_id and os.getenv("NEXT_PUBLIC_APP_URL"):
             try:
@@ -2356,6 +2740,12 @@ async def get_status(request: Request, userId: Optional[str] = None):
 
     # Get the most recent log message so dashboard can show "what is it doing?"
     latest_log = list(s.logs)[-1] if s.logs else None
+    open_positions_count = len(s.positions)
+    stopped_message = (
+        "Agent stopped. Open positions are still active."
+        if s.status == "stopped" and open_positions_count > 0
+        else None
+    )
 
     return {
         "status":           s.status,
@@ -2378,6 +2768,11 @@ async def get_status(request: Request, userId: Optional[str] = None):
         "consecutive_losses": s.consecutive_losses,
         "readiness_state":  (s.readiness or {}).get("state"),
         "readiness_summary": (s.readiness or {}).get("summary"),
+        "open_positions_count": open_positions_count,
+        "position_source": s.position_source,
+        "positions_reconciled_at": s.positions_reconciled_at.isoformat() if s.positions_reconciled_at else None,
+        "position_warnings": list(s.position_warnings),
+        "stopped_message": stopped_message,
     }
 
 
@@ -2406,16 +2801,42 @@ async def get_account(request: Request, userId: Optional[str] = None):
 async def get_positions(request: Request, userId: Optional[str] = None):
     userId = await _resolve_request_user_id(request, userId)
     s = get_state(userId)
-    # Always return paper positions in paper mode (real exchange positions are irrelevant)
-    if s.status in ("running", "stopping") and s.is_paper:
-        return {"positions": s.paper_positions, "is_paper": True}
-    if s.status in ("running", "stopping"):
-        return {"positions": s.positions, "is_paper": False}
+    force_refresh = (
+        s.positions_reconciled_at is None
+        or (datetime.now(timezone.utc) - s.positions_reconciled_at).total_seconds() >= 5
+    )
+    reconciliation = await _reconcile_state_positions(
+        s,
+        userId,
+        reason="positions_endpoint",
+        trace_id=new_trace_id(),
+        force=force_refresh,
+    )
+    if reconciliation:
+        return {
+            "positions": reconciliation.positions,
+            "is_paper": reconciliation.is_paper,
+            "source": reconciliation.source,
+            "reconciled_at": reconciliation.reconciled_at,
+            "warnings": reconciliation.warnings,
+        }
     snapshot = await _load_connected_snapshot(s, userId)
     if snapshot:
         _account, positions, is_paper = snapshot
-        return {"positions": positions, "is_paper": is_paper}
-    return {"positions": s.paper_positions if s.is_paper else [], "is_paper": s.is_paper}
+        return {
+            "positions": positions,
+            "is_paper": is_paper,
+            "source": "snapshot_cache",
+            "reconciled_at": s.connected_snapshot_at.isoformat() if s.connected_snapshot_at else None,
+            "warnings": list(s.position_warnings),
+        }
+    return {
+        "positions": s.paper_positions if s.is_paper else [],
+        "is_paper": s.is_paper,
+        "source": s.position_source or ("paper_ledger" if s.is_paper else "memory"),
+        "reconciled_at": s.positions_reconciled_at.isoformat() if s.positions_reconciled_at else None,
+        "warnings": list(s.position_warnings),
+    }
 
 
 @app.get("/api/risk")
@@ -2436,6 +2857,40 @@ async def get_risk(request: Request, userId: Optional[str] = None):
         "max_total_exposure_pct":         cfg.get("max_total_exposure_pct"),
         "max_concurrent_positions":       cfg.get("max_concurrent_positions"),
     }
+
+
+@app.get("/api/trade-receipts")
+async def get_trade_receipts(
+    request: Request,
+    userId: Optional[str] = None,
+    symbol: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = 100,
+    from_ts: Optional[str] = None,
+    to_ts: Optional[str] = None,
+):
+    clerk_user_id = await _resolve_request_user_id(request, userId)
+    from src.services.persistence import list_trade_receipts
+
+    start_dt = None
+    end_dt = None
+    try:
+        if from_ts:
+            start_dt = datetime.fromisoformat(from_ts.replace("Z", "+00:00"))
+        if to_ts:
+            end_dt = datetime.fromisoformat(to_ts.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid timestamp filter: {exc}") from exc
+
+    receipts = await list_trade_receipts(
+        clerk_user_id,
+        symbol=symbol,
+        action=action,
+        limit=limit,
+        from_ts=start_dt,
+        to_ts=end_dt,
+    )
+    return {"receipts": receipts}
 
 
 class RiskRefreshRequest(BaseModel):
@@ -4293,9 +4748,14 @@ async def _do_start(
     final_state.tick_count          = 0
     final_state.error               = None
     final_state.last_tick_at        = datetime.now(timezone.utc)
+    final_state.stop_reason         = None
+    final_state.stop_notice_sent    = False
     final_state.connected_account_cache = None
     final_state.connected_positions_cache = []
     final_state.connected_snapshot_at = None
+    final_state.position_source      = None
+    final_state.positions_reconciled_at = None
+    final_state.position_warnings    = []
     final_state.warm_snapshot_at    = candidate_state.warm_snapshot_at
     final_state.min_confidence_pct  = min_confidence_pct
     final_state.max_daily_loss_pct  = max_daily_loss_pct
@@ -4341,10 +4801,6 @@ async def _do_start(
         except Exception as e:
             logger.warning("AgentRun persist failed: %s", e)
         await _persist_warm_snapshot(final_state, market_sections=readiness.get("market", {}).get("sections"))
-        asyncio.create_task(_persist_audit(
-            user_id, "agent_start", None, None,
-            {"venue": v_key, "symbols": symbols, "timeframe": timeframe, "is_paper": is_paper},
-        ))
         asyncio.create_task(capture_posthog("agent_started", {
             "user_id": user_id,
             "plan": await _get_user_plan(user_id),
@@ -4549,12 +5005,15 @@ async def stop_agent(request: Request, body: dict = {}):
     if s.status not in ("running", "starting"):
         return {"ok": False, "error": "Agent is not running"}
     s.status = "stopping"
+    s.stop_reason = "user_stop"
+    s.stop_notice_sent = False
+    trace_id = new_trace_id()
 
     # Cancel main loop + ALL child tasks (price stream, dead-man's-switch,
     # LLM worker, order worker). Without this, child tasks keep running
     # after stop, leaking WS connections and potentially executing trades.
     tasks_to_cancel = [
-        s._loop_task, s._price_task, s._deadman_task,
+        s._loop_task, s._price_task, s._deadman_task, s._reconcile_task,
         s._llm_worker_task, s._order_worker_task,
     ]
     for t in tasks_to_cancel:
@@ -4570,8 +5029,25 @@ async def stop_agent(request: Request, body: dict = {}):
         logger.warning("agent stop: some tasks did not exit within 5s")
 
     s.status = "stopped"
-    # Broadcast so all connected WebSocket clients update immediately
-    await _broadcast({"type": "status_update", "status": "stopped", "reason": "user_stop", "paper": s.is_paper}, s.user_id)
+    reconciliation = await _reconcile_state_positions(
+        s,
+        s.user_id,
+        reason="agent_stop",
+        trace_id=trace_id,
+        force=True,
+    )
+    open_positions_remaining = len(reconciliation.positions) if reconciliation else (len(s.paper_positions) if s.is_paper else len(s.positions))
+    await on_agent_stopped(
+        _event_deps(),
+        clerk_user_id=s.user_id,
+        ws_user_id=s.user_id,
+        venue=s.venue_name,
+        mode="paper" if s.is_paper else "live",
+        trace_id=trace_id,
+        reason="user_stop",
+        open_positions_remaining=open_positions_remaining,
+    )
+    s.stop_notice_sent = True
     if s.user_id:
         try:
             from src.services.supabase_reader import upsert_agent_run
@@ -4581,21 +5057,13 @@ async def stop_agent(request: Request, body: dict = {}):
             )
         except Exception:
             pass
-        asyncio.create_task(_persist_audit(
-            s.user_id, "agent_stop", None, None, {"venue": s.venue_name},
-        ))
-        asyncio.create_task(capture_posthog("agent_stopped", {
-            "user_id": s.user_id,
-            "plan": await _get_user_plan(s.user_id),
-            "mode": "paper" if s.is_paper else "live",
-            "venue": s.venue_name,
-            "persona": s.strategy_type or "",
-            "provider": s.ai_agent.provider.name if s.ai_agent else "",
-            "trace_id": new_trace_id(),
-            "success": True,
-            "reason_code": "agent_stopped",
-        }))
-    return {"ok": True}
+    return {
+        "ok": True,
+        "status": "stopped",
+        "open_positions_remaining": open_positions_remaining,
+        "message": "Agent stopped. Open positions are still active." if open_positions_remaining else "Agent stopped. No open positions remain.",
+        "trace_id": trace_id,
+    }
 
 
 class StrategyRequest(BaseModel):
@@ -5305,19 +5773,67 @@ async def execute_signal(request: Request, req: SignalRequest):
     ok, reason, trade = s.risk_mgr.validate_trade(trade, acc_state, s.initial_equity or 0)
 
     if not ok:
-        await _notifier.emit(TradingEvent(
-            kind="circuit_breaker_tripped", venue="binance", symbol=req.symbol,
-            message=f"[TV signal] Risk blocked {req.action.upper()} {req.symbol}: {reason}",
-        ))
+        await on_risk_blocked(
+            _event_deps(),
+            clerk_user_id=s.user_id,
+            ws_user_id=s.user_id,
+            venue=s.venue_name,
+            mode="paper" if s.is_paper else "live",
+            symbol=req.symbol,
+            action=req.action,
+            trace_id=new_trace_id(),
+            reason=reason,
+        )
         return {"ok": False, "blocked": True, "reason": reason}
 
     price = trade["current_price"]
     if req.action == "close":
         try:
+            match = next((p for p in s.positions if p.get("symbol") == req.symbol), None)
+            qty = abs(float((match or {}).get("quantity") or 0.0))
             await s.venue.close_position(req.symbol)
             s.log(f"[TV] CLOSE {req.symbol}")
-            return {"ok": True, "action": "close", "symbol": req.symbol}
+            reconciliation = await on_order_filled(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue_runtime=s,
+                symbol=req.symbol,
+                action="close",
+                quantity=qty,
+                price=price,
+                allocation_usd=0.0,
+                rationale="[TradingView] close signal",
+                risk_summary={"max_position_pct": s.risk_mgr.config.get("max_position_pct") if s.risk_mgr else "?"},
+                before_balance=balance,
+                after_balance=balance,
+                indicators={},
+                trace_id=new_trace_id(),
+                source="tradingview",
+                tp_price=req.tp_price,
+                sl_price=trade.get("sl_price"),
+                realized_pnl=_estimate_realized_pnl(
+                    s,
+                    symbol=req.symbol,
+                    action="close",
+                    quantity=qty,
+                    price=price,
+                ),
+            )
+            _apply_reconciliation_to_state(s, reconciliation)
+            return {"ok": True, "action": "close", "symbol": req.symbol, "qty": qty}
         except Exception as e:
+            await on_order_rejected(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue=s.venue_name,
+                mode="paper" if s.is_paper else "live",
+                symbol=req.symbol,
+                action="close",
+                trace_id=new_trace_id(),
+                reason=str(e),
+            )
             return {"ok": False, "error": str(e)}
 
     if price <= 0:
@@ -5334,22 +5850,47 @@ async def execute_signal(request: Request, req: SignalRequest):
         )
         s.log(f"[TV signal] {req.action.upper()} {req.symbol} qty={qty:.6f} @ ~${price}")
         s.trade_log.append({"action": req.action, "price": price, "qty": qty, "source": "tradingview"})
-        await _broadcast({
-            "type": "trade_executed",
-            "data": {"symbol": req.symbol, "action": req.action, "price": price, "qty": qty, "source": "tradingview"},
-        })
-        await _notifier.emit(TradingEvent(
-            kind="trade_opened", venue=s.venue_name, symbol=req.symbol,
-            message=f"[TradingView] {req.action.upper()} {qty:.6f} @ ${price:.4f}",
-        ))
-        if s.user_id:
-            asyncio.create_task(_persist_trade(
-                s.user_id, symbol=req.symbol, action=req.action, quantity=qty, price=price,
-                allocation_usd=exec_alloc, source="tradingview",
-                tp_price=req.tp_price, sl_price=trade.get("sl_price"),
-            ))
+        reconciliation = await on_order_filled(
+            _event_deps(),
+            clerk_user_id=s.user_id,
+            ws_user_id=s.user_id,
+            venue_runtime=s,
+            symbol=req.symbol,
+            action=req.action,
+            quantity=qty,
+            price=price,
+            allocation_usd=exec_alloc,
+            rationale="[TradingView] external signal",
+            risk_summary={"max_position_pct": s.risk_mgr.config.get("max_position_pct") if s.risk_mgr else "?"},
+            before_balance=balance,
+            after_balance=balance,
+            indicators={},
+            trace_id=new_trace_id(),
+            source="tradingview",
+            tp_price=req.tp_price,
+            sl_price=trade.get("sl_price"),
+            realized_pnl=_estimate_realized_pnl(
+                s,
+                symbol=req.symbol,
+                action=req.action,
+                quantity=qty,
+                price=price,
+            ),
+        )
+        _apply_reconciliation_to_state(s, reconciliation)
         return {"ok": True, "action": req.action, "symbol": req.symbol, "qty": qty, "price": price}
     except Exception as e:
+        await on_order_rejected(
+            _event_deps(),
+            clerk_user_id=s.user_id,
+            ws_user_id=s.user_id,
+            venue=s.venue_name,
+            mode="paper" if s.is_paper else "live",
+            symbol=req.symbol,
+            action=req.action,
+            trace_id=new_trace_id(),
+            reason=str(e),
+        )
         return {"ok": False, "error": str(e)}
 
 
@@ -5412,11 +5953,22 @@ async def create_pending_order(request: Request, req: PendingOrderRequest):
             )
             if not ok:
                 s.log(f"[PENDING] RISK BLOCKED {req.symbol}: {reason}")
+                await on_risk_blocked(
+                    _event_deps(),
+                    clerk_user_id=s.user_id,
+                    ws_user_id=s.user_id,
+                    venue=s.venue_name,
+                    mode="paper" if s.is_paper else "live",
+                    symbol=req.symbol,
+                    action=req.action,
+                    trace_id=new_trace_id(),
+                    reason=reason,
+                )
                 return
             price = trade["current_price"]
             if price <= 0:
                 return
-            qty, _exec_alloc = _resolve_execution_quantity(s, req.action, req.symbol, req.size_usd, price)
+            qty, exec_alloc = _resolve_execution_quantity(s, req.action, req.symbol, req.size_usd, price)
             if qty <= 0:
                 return
             if req.action in ("buy", "sell"):
@@ -5428,12 +5980,47 @@ async def create_pending_order(request: Request, req: PendingOrderRequest):
             else:
                 await s.venue.close_position(req.symbol)
             s.log(f"[PENDING EXECUTED] {req.action.upper()} {req.symbol}")
-            await _broadcast({"type": "trade_executed", "data": {
-                "symbol": req.symbol, "action": req.action,
-                "price": price, "qty": qty, "source": "pending",
-            }}, user_id)
+            reconciliation = await on_order_filled(
+                _event_deps(),
+                clerk_user_id=s.user_id,
+                ws_user_id=s.user_id,
+                venue_runtime=s,
+                symbol=req.symbol,
+                action=req.action,
+                quantity=qty,
+                price=price,
+                allocation_usd=exec_alloc,
+                rationale="[Pending order] staged execution",
+                risk_summary={"max_position_pct": s.risk_mgr.config.get("max_position_pct") if s.risk_mgr else "?"},
+                before_balance=balance,
+                after_balance=balance,
+                indicators={},
+                trace_id=new_trace_id(),
+                source="pending",
+                tp_price=req.tp_price,
+                sl_price=trade.get("sl_price"),
+                realized_pnl=_estimate_realized_pnl(
+                    s,
+                    symbol=req.symbol,
+                    action=req.action,
+                    quantity=qty,
+                    price=price,
+                ),
+            )
+            _apply_reconciliation_to_state(s, reconciliation)
         except Exception as e:
             logger.error("Pending order execution failed: %s", e)
+            await on_order_rejected(
+                _event_deps(),
+                clerk_user_id=s.user_id if user_id else None,
+                ws_user_id=user_id,
+                venue=s.venue_name if s else "unknown",
+                mode="paper" if s and s.is_paper else "live",
+                symbol=req.symbol,
+                action=req.action,
+                trace_id=new_trace_id(),
+                reason=str(e),
+            )
         finally:
             _pending_orders.pop(order_id, None)
 
@@ -5482,10 +6069,32 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     s = get_state(user_id) if user_id else _state
+    s.stop_reason = "kill_switch"
+    s.stop_notice_sent = False
+    trace_id = new_trace_id()
     closed = []
     errors = []
+    await on_kill_switch_started(
+        _event_deps(),
+        clerk_user_id=s.user_id,
+        ws_user_id=s.user_id,
+        venue=s.venue_name,
+        mode="paper" if s.is_paper else "live",
+        trace_id=trace_id,
+    )
 
-    if s.venue and s.positions and not s.is_paper:
+    if s.is_paper:
+        async with s._paper_lock:
+            for pos in list(s.paper_positions):
+                sym = str(pos.get("symbol") or "")
+                qty = abs(float(pos.get("quantity") or 0.0))
+                price = float(pos.get("current_price") or pos.get("entry_price") or 0.0)
+                if qty <= 0:
+                    continue
+                s.paper_balance += qty * price
+                closed.append(sym)
+            s.paper_positions = []
+    elif s.venue and s.positions:
         for pos in list(s.positions):
             sym = pos.get("symbol", "")
             qty = abs(float(pos.get("quantity", 0)))
@@ -5497,13 +6106,37 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
                     errors.append(f"{sym}: {e}")
 
     s.status = "stopped"
-    if s._loop_task:
-        s._loop_task.cancel()
-    await _broadcast({"type": "status_update", "status": "stopped", "reason": "kill_switch"}, s.user_id)
-    await _notifier.emit(TradingEvent(
-        kind="circuit_breaker_tripped", venue=s.venue_name,
-        message=f"Kill switch activated. Closed: {closed}. Errors: {errors}",
-    ))
+    for task in (s._loop_task, s._price_task, s._deadman_task, s._reconcile_task, s._llm_worker_task, s._order_worker_task):
+        if task and not task.done():
+            task.cancel()
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[t for t in (s._loop_task, s._price_task, s._deadman_task, s._reconcile_task, s._llm_worker_task, s._order_worker_task) if t], return_exceptions=True),
+            timeout=5.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("kill switch: some tasks did not exit within 5s")
+
+    reconciliation = await _reconcile_state_positions(
+        s,
+        s.user_id,
+        reason="kill_switch",
+        trace_id=trace_id,
+        force=True,
+    )
+    remaining_open = len(reconciliation.positions) if reconciliation else (len(s.paper_positions) if s.is_paper else len(s.positions))
+    await on_kill_switch_completed(
+        _event_deps(),
+        clerk_user_id=s.user_id,
+        ws_user_id=s.user_id,
+        venue=s.venue_name,
+        mode="paper" if s.is_paper else "live",
+        trace_id=trace_id,
+        closed=closed,
+        remaining_open=remaining_open,
+        errors=errors,
+    )
+    s.stop_notice_sent = True
     if s.user_id:
         try:
             from src.services.supabase_reader import upsert_agent_run
@@ -5513,10 +6146,6 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
             )
         except Exception:
             pass
-        asyncio.create_task(_persist_audit(
-            s.user_id, "kill_switch", None, None,
-            {"venue": s.venue_name, "closed": closed, "errors": errors},
-        ))
         asyncio.create_task(capture_posthog("kill_switch_triggered", {
             "user_id": s.user_id,
             "plan": await _get_user_plan(s.user_id),
@@ -5524,11 +6153,11 @@ async def kill_switch(request: Request, req: KillSwitchRequest):
             "venue": s.venue_name,
             "persona": s.strategy_type or "",
             "provider": s.ai_agent.provider.name if s.ai_agent else "",
-            "trace_id": new_trace_id(),
+            "trace_id": trace_id,
             "success": True,
             "reason_code": "kill_switch",
         }))
-    return {"ok": True, "closed": closed, "errors": errors}
+    return {"ok": True, "closed": closed, "remaining_open": remaining_open, "errors": errors, "trace_id": trace_id}
 
 
 # ── WebSocket (JWT-gated) ─────────────────────────────────────────────────────

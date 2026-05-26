@@ -237,6 +237,11 @@ export default function DocsPage() {
               only place and close orders, <strong style={{ color: "rgba(255,255,255,0.7)" }}>never withdraw funds</strong>.
               Follow the guide for your exchange:
             </P>
+            <P>
+              <Link href="/docs/api-keys" style={{ color: "#4ade80", textDecoration: "none", fontWeight: 600 }}>
+                Open the step-by-step venue API key guide hub →
+              </Link>
+            </P>
 
             {[
               {

@@ -104,8 +104,52 @@ function usePolled<T>(path: string, interval = 8000, sessionKey?: string | null,
 }
 
 interface AccountData   { balance: number; equity: number; initial_equity: number; total_return_pct: number; open_positions: number; sharpe: number }
-interface PositionsData { positions: { symbol: string; quantity: number; entry_price: number; current_price: number; unrealized_pnl: number; leverage?: number; liquidation_price?: number }[]; is_paper?: boolean }
-interface StatusData    { status: string; provider: string; model: string; venue: string; tick_count: number; uptime_seconds: number; assets: string[]; timeframe?: string; market?: string; asset_class?: string; is_paper?: boolean; last_tick_ago_s?: number | null; next_tick_in_s?: number | null; tick_interval_s?: number; strategy_type?: string | null; latest_log?: { ts: string; msg: string } | null; daily_trade_count?: number; readiness_state?: string | null; readiness_summary?: string | null }
+interface PositionsData {
+  positions: {
+    symbol: string;
+    quantity: number;
+    entry_price: number;
+    current_price: number;
+    unrealized_pnl: number;
+    realized_pnl?: number;
+    leverage?: number;
+    liquidation_price?: number;
+    status?: string;
+    source?: string;
+    trace_id?: string;
+    reconciled_at?: string | null;
+  }[];
+  is_paper?: boolean;
+  source?: string | null;
+  reconciled_at?: string | null;
+  warnings?: string[];
+}
+interface StatusData {
+  status: string;
+  provider: string;
+  model: string;
+  venue: string;
+  tick_count: number;
+  uptime_seconds: number;
+  assets: string[];
+  timeframe?: string;
+  market?: string;
+  asset_class?: string;
+  is_paper?: boolean;
+  last_tick_ago_s?: number | null;
+  next_tick_in_s?: number | null;
+  tick_interval_s?: number;
+  strategy_type?: string | null;
+  latest_log?: { ts: string; msg: string } | null;
+  daily_trade_count?: number;
+  readiness_state?: string | null;
+  readiness_summary?: string | null;
+  open_positions_count?: number;
+  position_source?: string | null;
+  positions_reconciled_at?: string | null;
+  position_warnings?: string[];
+  stopped_message?: string | null;
+}
 interface RiskData      { max_position_pct: string; max_leverage: string; mandatory_sl_pct: string; max_loss_per_position_pct: string; daily_loss_circuit_breaker_pct: string; max_total_exposure_pct: string; max_concurrent_positions: string }
 interface CommitteeOpinionData { role?: string; provider: string; action: string; rationale: string; confidence: number; veto?: boolean }
 interface CommitteeSummaryData { asset: string; opinions: CommitteeOpinionData[]; vote: string; confidence: number; deadlock: boolean }
@@ -384,6 +428,20 @@ export default function Dashboard() {
       const ev = lastEvent as { type: string; data?: PositionsData };
       if (ev.data) positions.set(ev.data);
     }
+    if (
+      lastEvent.type === "order_filled" ||
+      lastEvent.type === "order_rejected" ||
+      lastEvent.type === "position_opened" ||
+      lastEvent.type === "position_updated" ||
+      lastEvent.type === "position_closed" ||
+      lastEvent.type === "kill_switch_completed" ||
+      lastEvent.type === "agent_started" ||
+      lastEvent.type === "agent_stopped"
+    ) {
+      positions.refresh();
+      account.refresh();
+      status.refresh();
+    }
     if (lastEvent.type === "decision" || lastEvent.type === "decisions_update") {
       decisions.refresh();
     }
@@ -433,7 +491,7 @@ export default function Dashboard() {
       account.refresh();
     }
     if (lastEvent.type === "status_update") {
-      const ev = lastEvent as { type: string; status?: string; paper?: boolean };
+      const ev = lastEvent as { type: string; status?: string; paper?: boolean; open_positions_remaining?: number; message?: string | null };
       status.set((prev) => ({
         ...(prev ?? {
           provider: "groq",
@@ -448,6 +506,8 @@ export default function Dashboard() {
         }),
         status: ev.status ?? prev?.status ?? "idle",
         is_paper: typeof ev.paper === "boolean" ? ev.paper : prev?.is_paper,
+        open_positions_count: typeof ev.open_positions_remaining === "number" ? ev.open_positions_remaining : prev?.open_positions_count,
+        stopped_message: ev.message ?? prev?.stopped_message ?? null,
       }));
       status.refresh();
     }
@@ -633,7 +693,16 @@ export default function Dashboard() {
           const err = await res.json().catch(() => ({}));
           toast((err as { error?: string }).error ?? `Failed (HTTP ${res.status})`, "error");
         } else {
-          status.set((prev) => prev ? { ...prev, status: "stopped" } : prev);
+          const data = await res.json().catch(() => ({})) as { open_positions_remaining?: number; message?: string; trace_id?: string };
+          status.set((prev) => prev ? {
+            ...prev,
+            status: "stopped",
+            open_positions_count: data.open_positions_remaining ?? prev.open_positions_count,
+            stopped_message: data.message ?? prev.stopped_message ?? null,
+          } : prev);
+          if (data.message) {
+            toast(data.message, data.open_positions_remaining ? "warning" : "success");
+          }
         }
         setTimeout(() => { status.refresh(); setAgentLoading(false); }, 1200);
       } catch { setAgentLoading(false); }
@@ -661,7 +730,12 @@ export default function Dashboard() {
         const err = await res.json().catch(() => ({}));
         toast((err as { error?: string }).error ?? "Kill switch failed", "error");
       } else {
-        toast("All positions closed. Agent stopped.", "success");
+        const data = await res.json().catch(() => ({})) as { remaining_open?: number; errors?: string[] };
+        if ((data.remaining_open ?? 0) > 0) {
+          toast("Kill switch completed, but some positions are still open. Review warnings immediately.", "warning");
+        } else {
+          toast("All positions closed. Agent stopped.", "success");
+        }
       }
       setTimeout(() => { status.refresh(); positions.refresh(); setAgentLoading(false); }, 1200);
     } catch { setAgentLoading(false); }
@@ -833,6 +907,19 @@ export default function Dashboard() {
             </a>
           </div>
         )
+      )}
+
+      {status.data?.status === "stopped" && pos.length > 0 && (
+        <div style={{
+          background: "rgba(251,191,36,0.08)",
+          borderBottom: "1px solid rgba(251,191,36,0.22)",
+          padding: isMobile ? "10px 12px" : "8px 20px",
+          color: "#fcd34d",
+          fontSize: 12,
+          fontWeight: 600,
+        }}>
+          {status.data?.stopped_message ?? "Agent stopped. Open positions are still active."}
+        </div>
       )}
 
       {/* ── Guard Settings Drawer ──────────────────────────────────── */}
@@ -1296,11 +1383,26 @@ export default function Dashboard() {
 
             {/* Open Positions */}
             <motion.section className="card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, delay: 0.32 }}>
-              <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ padding: "20px 24px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <Layers size={14} style={{ color: "rgba(255,255,255,0.4)" }} />
                 <span style={{ fontSize: 12, fontWeight: 600, color: "rgba(255,255,255,0.8)", letterSpacing: "0.02em" }}>Open Positions</span>
-                <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 10px", borderRadius: 20 }}>{pos.length}</span>
+                <span style={{ fontSize: 11, color: "var(--muted)", background: "rgba(255,255,255,0.05)", padding: "2px 10px", borderRadius: 20 }}>{pos.length}</span>
+                {positions.data?.source && (
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 999, padding: "2px 8px" }}>
+                    Source {positions.data.source}
+                  </span>
+                )}
+                {positions.data?.reconciled_at && (
+                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.45)" }}>
+                    Synced {new Date(positions.data.reconciled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                  </span>
+                )}
               </div>
+              {!!positions.data?.warnings?.length && (
+                <div style={{ padding: "10px 24px 0", fontSize: 11, color: "#fca5a5" }}>
+                  {positions.data.warnings[0]}
+                </div>
+              )}
               <PositionsTable positions={pos} isPaper={effectiveIsPaper} venueType={venueType} />
             </motion.section>
           </div>

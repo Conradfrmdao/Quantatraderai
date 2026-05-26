@@ -203,6 +203,7 @@ def build_trade_receipt(
     sl_price:       float | None = None,
     is_paper:       bool = True,
     trace_id:       str | None = None,
+    realized_pnl:   float | None = None,
 ) -> TradeReceipt:
     """Construct a complete TradeReceipt — call after order fills."""
     trade_id   = str(uuid.uuid4())
@@ -226,7 +227,7 @@ def build_trade_receipt(
     confidence = _confidence_from_indicators(action, {**inds, "current_price": price})
     explanation = _ai_explanation(action, symbol, rationale, inds, confidence, risk)
 
-    pnl = after_balance - before_balance
+    pnl = float(realized_pnl) if realized_pnl is not None else (after_balance - before_balance)
 
     receipt = TradeReceipt(
         trade_id=trade_id, trace_id=trace_id,

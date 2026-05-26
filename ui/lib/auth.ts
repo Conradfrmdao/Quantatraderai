@@ -30,7 +30,6 @@ export type AuthUser = {
   }[];
   settings: {
     id: string;
-    telegramToken: string | null;
     telegramChatId: string | null;
     emailNotifications: boolean;
     timezone: string;

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger("quantatraderai.persistence")
@@ -309,3 +310,141 @@ async def write_ai_council_vote(
     except Exception as e:
         logger.debug("write_ai_council_vote skipped: %s", e)
         return None
+
+
+async def write_trade_receipt(
+    clerk_user_id: str | None,
+    *,
+    position_key: str | None,
+    receipt: dict[str, Any],
+) -> str | None:
+    if not clerk_user_id:
+        return None
+    try:
+        conn = await _connect()
+        if conn is None:
+            return None
+        try:
+            user_id = await _user_id_for_clerk(conn, clerk_user_id)
+            if not user_id:
+                return None
+            receipt_payload = json.dumps(receipt, default=str)
+            confidence = receipt.get("confidence") or {}
+            risk = receipt.get("risk") or {}
+            row_id = str(uuid.uuid4())
+            await conn.execute(
+                """
+                INSERT INTO "TradeReceipt"
+                    ("id","userId","positionKey","tradeId","traceId","venue","symbol","action",
+                     "mode","quantity","price","allocationUsd","pnl","confidence","riskSummary",
+                     "receiptHash","receiptJson","createdAt","updatedAt")
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW(),NOW())
+                ON CONFLICT ("tradeId") DO UPDATE SET
+                    "positionKey" = EXCLUDED."positionKey",
+                    "traceId" = EXCLUDED."traceId",
+                    "venue" = EXCLUDED."venue",
+                    "symbol" = EXCLUDED."symbol",
+                    "action" = EXCLUDED."action",
+                    "mode" = EXCLUDED."mode",
+                    "quantity" = EXCLUDED."quantity",
+                    "price" = EXCLUDED."price",
+                    "allocationUsd" = EXCLUDED."allocationUsd",
+                    "pnl" = EXCLUDED."pnl",
+                    "confidence" = EXCLUDED."confidence",
+                    "riskSummary" = EXCLUDED."riskSummary",
+                    "receiptHash" = EXCLUDED."receiptHash",
+                    "receiptJson" = EXCLUDED."receiptJson",
+                    "updatedAt" = NOW()
+                """,
+                row_id,
+                user_id,
+                position_key,
+                str(receipt.get("trade_id") or row_id),
+                str(receipt.get("trace_id") or ""),
+                str(receipt.get("venue") or ""),
+                str(receipt.get("symbol") or ""),
+                str(receipt.get("action") or ""),
+                str(receipt.get("mode") or "paper"),
+                float(receipt.get("quantity") or 0.0),
+                float(receipt.get("price") or 0.0),
+                float(receipt.get("allocation_usd") or 0.0),
+                float(receipt.get("pnl_unrealized") or 0.0),
+                float(confidence.get("overall") or receipt.get("confidence") or 0.0),
+                risk.get("human_summary") or risk.get("reason") or "",
+                str(receipt.get("receipt_hash") or ""),
+                receipt_payload,
+            )
+            return str(receipt.get("trade_id") or row_id)
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.debug("write_trade_receipt skipped: %s", e)
+        return None
+
+
+async def list_trade_receipts(
+    clerk_user_id: str | None,
+    *,
+    symbol: str | None = None,
+    action: str | None = None,
+    limit: int = 100,
+    from_ts: datetime | None = None,
+    to_ts: datetime | None = None,
+) -> list[dict[str, Any]]:
+    if not clerk_user_id:
+        return []
+    try:
+        conn = await _connect()
+        if conn is None:
+            return []
+        try:
+            user_id = await _user_id_for_clerk(conn, clerk_user_id)
+            if not user_id:
+                return []
+            clauses = ['"userId" = $1']
+            params: list[Any] = [user_id]
+            if symbol:
+                params.append(symbol)
+                clauses.append(f'"symbol" = ${len(params)}')
+            if action:
+                params.append(action)
+                clauses.append(f'"action" = ${len(params)}')
+            if from_ts is not None:
+                params.append(from_ts)
+                clauses.append(f'"createdAt" >= ${len(params)}')
+            if to_ts is not None:
+                params.append(to_ts)
+                clauses.append(f'"createdAt" <= ${len(params)}')
+            params.append(max(1, min(int(limit), 500)))
+            rows = await conn.fetch(
+                f'''
+                SELECT *
+                FROM "TradeReceipt"
+                WHERE {' AND '.join(clauses)}
+                ORDER BY "createdAt" DESC
+                LIMIT ${len(params)}
+                ''',
+                *params,
+            )
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                payload = json.loads(str(row["receiptJson"])) if row["receiptJson"] else {}
+                payload.setdefault("trade_id", row["tradeId"])
+                payload.setdefault("trace_id", row["traceId"])
+                payload.setdefault("symbol", row["symbol"])
+                payload.setdefault("action", row["action"])
+                payload.setdefault("venue", row["venue"])
+                payload.setdefault("mode", row["mode"])
+                payload.setdefault("quantity", row["quantity"])
+                payload.setdefault("price", row["price"])
+                payload.setdefault("allocation_usd", row["allocationUsd"])
+                payload.setdefault("receipt_hash", row["receiptHash"])
+                payload["created_at"] = row["createdAt"].isoformat() if row["createdAt"] else None
+                payload["position_key"] = row["positionKey"]
+                results.append(payload)
+            return results
+        finally:
+            await conn.close()
+    except Exception as e:
+        logger.debug("list_trade_receipts skipped: %s", e)
+        return []
