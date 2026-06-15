@@ -2,7 +2,7 @@
   "symbol": "BTC/USDT",
   "interval": "1h",
   "days": 90,
-  "generated": "2026-06-08T10:20:33.022245+00:00",
+  "generated": "2026-06-15T11:48:38.723595+00:00",
   "personas": [
     {
       "persona_id": "MOMENTUM_HUNTER",
@@ -321,7 +321,7 @@
         }
       ],
       "verified": true,
-      "run_at": "2026-06-08T10:20:33.015693+00:00",
+      "run_at": "2026-06-15T11:48:38.716951+00:00",
       "data_source": "Binance public REST"
     },
     {
@@ -641,7 +641,7 @@
         }
       ],
       "verified": true,
-      "run_at": "2026-06-08T10:20:33.017865+00:00",
+      "run_at": "2026-06-15T11:48:38.719148+00:00",
       "data_source": "Binance public REST"
     },
     {
@@ -961,7 +961,7 @@
         }
       ],
       "verified": true,
-      "run_at": "2026-06-08T10:20:33.019933+00:00",
+      "run_at": "2026-06-15T11:48:38.721248+00:00",
       "data_source": "Binance public REST"
     },
     {
@@ -1281,7 +1281,7 @@
         }
       ],
       "verified": true,
-      "run_at": "2026-06-08T10:20:33.022025+00:00",
+      "run_at": "2026-06-15T11:48:38.723372+00:00",
       "data_source": "Binance public REST"
     }
   ]
